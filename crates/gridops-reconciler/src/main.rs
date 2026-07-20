@@ -1,7 +1,9 @@
 use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context as _, Result, bail};
-use gridops_core::{Config, GitHubClient, JitRequest, RunnerTarget, connect_database, now_millis};
+use gridops_core::{
+    Config, GitHubClient, JitRequest, RunnerTarget, Vault, connect_database, now_millis,
+};
 use reqwest::{Method, StatusCode};
 use secrecy::ExposeSecret as _;
 use serde::{Deserialize, Serialize};
@@ -14,6 +16,7 @@ struct Reconciler {
     config: Config,
     database: SqlitePool,
     github: GitHubClient,
+    vault: Vault,
     http: reqwest::Client,
 }
 
@@ -91,10 +94,12 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
     let database = connect_database(&config).await?;
     let github = GitHubClient::new(config.clone())?;
+    let vault = Vault::from_config(&config)?;
     let reconciler = Reconciler {
         config,
         database,
         github,
+        vault,
         http: reqwest::Client::builder()
             .user_agent("GridOps reconciler/0.1")
             .build()?,
@@ -156,6 +161,10 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
     }
     cleanup_retention(app).await?;
     sqlx::query("DELETE FROM oauth_states WHERE expires_at < ?")
+        .bind(now_millis())
+        .execute(&app.database)
+        .await?;
+    sqlx::query("DELETE FROM github_app_manifest_states WHERE expires_at < ?")
         .bind(now_millis())
         .execute(&app.database)
         .await?;
@@ -312,9 +321,7 @@ async fn maybe_scale_down(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> 
 }
 
 async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
-    let token = app
-        .github
-        .installation_token(pool.installation_id)
+    let token = installation_token(app, pool.installation_id)
         .await?
         .context("GitHub App credentials are required for autonomous reconciliation")?;
     let runner_id = uuid::Uuid::new_v4().to_string();
@@ -427,9 +434,7 @@ async fn delete_runner(app: &Reconciler, pool: &Pool, runner: &Runner) -> Result
         }
     }
     if let Some(github_runner_id) = runner.github_runner_id {
-        let token = app
-            .github
-            .installation_token(pool.installation_id)
+        let token = installation_token(app, pool.installation_id)
             .await?
             .context("GitHub App credentials are required for autonomous reconciliation")?;
         let path = match (&pool.repository_owner, &pool.repository_name) {
@@ -536,6 +541,41 @@ async fn setting_i64(database: &SqlitePool, key: &str, fallback: i64) -> i64 {
         .flatten()
         .and_then(|row| serde_json::from_str::<i64>(row.get::<&str, _>("value")).ok())
         .unwrap_or(fallback)
+}
+
+async fn installation_token(app: &Reconciler, installation_id: i64) -> Result<Option<String>> {
+    let app_id = match runtime_secret(app, "github.app_id").await? {
+        Some(value) => Some(value),
+        None => app.config.github_app_id().map(ToOwned::to_owned),
+    };
+    let private_key = match runtime_secret(app, "github.app_private_key").await? {
+        Some(value) => Some(value),
+        None => app
+            .config
+            .github_app_private_key()
+            .map(|value| value.expose_secret().to_owned()),
+    };
+    let Some((app_id, private_key)) = app_id.zip(private_key) else {
+        return Ok(None);
+    };
+    app.github
+        .installation_token_with_credentials(installation_id, &app_id, &private_key)
+        .await
+        .map(Some)
+}
+
+async fn runtime_secret(app: &Reconciler, key: &str) -> Result<Option<String>> {
+    let sealed = sqlx::query_scalar::<_, String>("SELECT value FROM runtime_secrets WHERE key=?")
+        .bind(key)
+        .fetch_optional(&app.database)
+        .await?;
+    sealed
+        .map(|value| {
+            app.vault
+                .open(&value)
+                .context("could not decrypt runtime secret")
+        })
+        .transpose()
 }
 
 async fn system_event(

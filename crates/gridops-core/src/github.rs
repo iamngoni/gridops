@@ -21,6 +21,7 @@ pub struct GitHubClient {
 
 #[derive(Clone)]
 struct CachedToken {
+    app_id: String,
     token: String,
     expires_at: i64,
 }
@@ -117,10 +118,26 @@ impl GitHubClient {
         ) else {
             return Ok(None);
         };
+        self.installation_token_with_credentials(
+            installation_id,
+            app_id,
+            private_key.expose_secret(),
+        )
+        .await
+        .map(Some)
+    }
+
+    pub async fn installation_token_with_credentials(
+        &self,
+        installation_id: i64,
+        app_id: &str,
+        private_key: &str,
+    ) -> Result<String> {
         if let Some(cached) = self.installation_tokens.read().await.get(&installation_id)
+            && cached.app_id == app_id
             && cached.expires_at > now_millis() + 5 * 60_000
         {
-            return Ok(Some(cached.token.clone()));
+            return Ok(cached.token.clone());
         }
         let now = chrono::Utc::now().timestamp();
         let claims = AppClaims {
@@ -128,7 +145,7 @@ impl GitHubClient {
             exp: now + 9 * 60,
             iss: app_id.to_owned(),
         };
-        let key = EncodingKey::from_rsa_pem(private_key.expose_secret().as_bytes())?;
+        let key = EncodingKey::from_rsa_pem(private_key.as_bytes())?;
         let jwt = encode(&Header::new(Algorithm::RS256), &claims, &key)?;
         let response: InstallationToken = self
             .post(
@@ -142,11 +159,12 @@ impl GitHubClient {
         self.installation_tokens.write().await.insert(
             installation_id,
             CachedToken {
+                app_id: app_id.to_owned(),
                 token: response.token.clone(),
                 expires_at,
             },
         );
-        Ok(Some(response.token))
+        Ok(response.token)
     }
 
     pub async fn generate_jit_config(

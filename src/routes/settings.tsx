@@ -1,6 +1,6 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { CheckCircle2, CircleX, DatabaseBackup, LoaderCircle, Save, Settings, ShieldCheck } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { CheckCircle2, CircleX, DatabaseBackup, Github, LoaderCircle, Save, Settings, ShieldCheck } from "lucide-react";
+import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { ResourcePage } from "~/components/resource-page";
@@ -8,7 +8,7 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
-import { getSettingsPage, saveSettingsAction } from "~/features/operations/operations.functions";
+import { createGitHubAppManifestAction, getSettingsPage, saveSettingsAction } from "~/features/operations/operations.functions";
 
 export const Route = createFileRoute("/settings")({
   loader: () => getSettingsPage(),
@@ -28,6 +28,37 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
   const save = saveSettingsAction;
   const router = useRouter();
   const [pending, setPending] = useState(false);
+  const [manifestPending, setManifestPending] = useState(false);
+
+  useEffect(() => {
+    const search = new URLSearchParams(window.location.search);
+    const appError = search.get("appError");
+    if (search.get("appCreated") === "1") toast.success("GitHub App credentials were encrypted and activated.");
+    if (appError) toast.error(appError);
+    if (search.has("appCreated") || search.has("appError")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
+  async function createGitHubApp() {
+    setManifestPending(true);
+    try {
+      const setup = await createGitHubAppManifestAction({ data: { ownerType: "user" } });
+      const form = document.createElement("form");
+      form.action = `${setup.action}?state=${encodeURIComponent(setup.state)}`;
+      form.method = "post";
+      const manifest = document.createElement("input");
+      manifest.type = "hidden";
+      manifest.name = "manifest";
+      manifest.value = setup.manifest;
+      form.append(manifest);
+      document.body.append(form);
+      form.submit();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not start GitHub App setup.");
+      setManifestPending(false);
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -62,7 +93,7 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
     <ResourcePage title="Settings" description="Configure GitHub, runner defaults, retention, backups, and system policy." icon={Settings} emptyTitle="Settings unavailable" emptyDescription="Connect GitHub to manage GridOps.">
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardHeader><div><CardTitle>Security and integrations</CardTitle><p className="mt-1 text-xs text-muted-foreground">Secrets are loaded from the host environment and are never rendered here.</p></div><ShieldCheck className="size-5 text-emerald-400" /></CardHeader>
+          <CardHeader><div><CardTitle>Security and integrations</CardTitle><p className="mt-1 text-xs text-muted-foreground">Secrets come from the host environment or encrypted runtime storage and are never rendered here.</p></div><ShieldCheck className="size-5 text-emerald-400" /></CardHeader>
           <CardContent className="space-y-2">
             {checks.map(([label, ready, detail]) => (
               <div className="flex items-center gap-3 rounded-md border border-border p-3" key={label}>
@@ -75,6 +106,21 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
               <CopyRow label="OAuth callback" value={data.configuration.callbackUrl} />
               <CopyRow label="Webhook URL" value={data.configuration.webhookUrl} />
             </div>
+            {!data.configuration.githubAppControl || !data.configuration.webhookVerification ? (
+              <div className="mt-4 rounded-md border border-amber-500/20 bg-amber-500/5 p-4">
+                <div className="text-sm font-medium">Finish GitHub App setup</div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  GridOps can create a private GitHub App with the runner, Actions, installation, and webhook permissions it needs. GitHub returns the private key and webhook secret directly to this instance, where they are encrypted at rest.
+                </p>
+                <Button className="mt-3" disabled={manifestPending} onClick={() => void createGitHubApp()} type="button">
+                  {manifestPending ? <LoaderCircle className="animate-spin" /> : <Github />}
+                  {manifestPending ? "Opening GitHub…" : "Create GitHub App"}
+                </Button>
+                {data.configuration.webhookUrl.startsWith("http://localhost") ? (
+                  <p className="mt-2 text-[11px] leading-4 text-amber-300/80">The manifest will leave webhook delivery disabled while GridOps uses localhost. Set a public HTTPS base URL before enabling GitHub deliveries.</p>
+                ) : null}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 

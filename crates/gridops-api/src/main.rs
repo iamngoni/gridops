@@ -1,5 +1,6 @@
 mod auth;
 mod error;
+mod github_app;
 mod oauth;
 mod resources;
 mod state;
@@ -44,6 +45,7 @@ async fn main() -> Result<()> {
     let vault = Vault::from_config(&config)?;
     let github = GitHubClient::new(config.clone())?;
     let state = AppState::new(config.clone(), database, vault, github)?;
+    state.validate_api().await?;
     let request_id = HeaderName::from_static("x-request-id");
     let origin: HeaderValue = config.base_url().origin().ascii_serialization().parse()?;
 
@@ -57,6 +59,10 @@ async fn main() -> Result<()> {
         .route("/auth/github", get(oauth::begin))
         .route("/auth/github/callback", get(oauth::callback))
         .route("/auth/logout", post(auth::logout))
+        .route(
+            "/auth/github-app/manifest/callback",
+            get(github_app::manifest_callback),
+        )
         .route("/api/webhooks/github", post(webhooks::receive))
         .route("/api/v1/overview", get(resources::overview))
         .route("/api/v1/search", get(resources::search))
@@ -114,6 +120,10 @@ async fn main() -> Result<()> {
         .route(
             "/api/v1/settings",
             get(resources::settings).put(resources::save_settings),
+        )
+        .route(
+            "/api/v1/github-app/manifest",
+            post(github_app::create_manifest),
         )
         .route("/api/v1/backups/database", get(resources::database_backup))
         .route("/api/backups/database", get(resources::database_backup))

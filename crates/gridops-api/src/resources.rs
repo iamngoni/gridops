@@ -101,7 +101,7 @@ pub async fn overview(
     State(state): State<AppState>,
     OptionalAuth(user): OptionalAuth,
 ) -> ApiResult<Json<Value>> {
-    let configuration = configuration(&state);
+    let configuration = configuration(&state).await?;
     let Some(user) = user else {
         return Ok(Json(json!({
             "authenticated": false,
@@ -568,9 +568,10 @@ pub async fn runner_pool_options(
         "id": row.get::<i64,_>("id"), "installationId": row.get::<i64,_>("installation_id"),
         "fullName": row.get::<String,_>("full_name"), "private": row.get::<bool,_>("private"),
     })).collect::<Vec<_>>();
+    let app_slug = state.github_app_slug().await.map_err(ApiError::Internal)?;
     Ok(Json(json!({
         "authenticated": true, "installations": installations, "repositories": repositories,
-        "installUrl": format!("https://github.com/apps/{}/installations/new", state.config.github_app_slug()),
+        "installUrl": format!("https://github.com/apps/{app_slug}/installations/new"),
         "defaults": {
             "image": state.config.runner_image(), "labels": ["gridops"], "cpuLimit": 2,
             "memoryLimitMb": 4096, "desiredCount": 0, "minCount": 0, "maxCount": 10,
@@ -937,7 +938,7 @@ pub async fn settings(
         Err(error) => json!({ "ok": false, "error": error.to_string() }),
     };
     Ok(Json(json!({ "authenticated": true, "data": {
-        "configuration": configuration(&state), "manager": manager,
+        "configuration": configuration(&state).await?, "manager": manager,
         "settings": {
             "logRetentionDays": stored_i64(&stored, "logRetentionDays", 30),
             "webhookRetentionDays": stored_i64(&stored, "webhookRetentionDays", 90),
@@ -1354,18 +1355,31 @@ async fn manager_text(state: &AppState, path: &str) -> ApiResult<String> {
     Ok(text)
 }
 
-fn configuration(state: &AppState) -> ConfigurationState {
-    ConfigurationState {
-        github_oauth: state.config.github_client_id().is_some()
-            && state.config.github_client_secret().is_some(),
-        github_app_control: state.config.github_app_id().is_some()
-            && state.config.github_app_private_key().is_some(),
-        webhook_verification: state.config.github_webhook_secret().is_some(),
+async fn configuration(state: &AppState) -> ApiResult<ConfigurationState> {
+    Ok(ConfigurationState {
+        github_oauth: state
+            .github_oauth_credentials()
+            .await
+            .map_err(ApiError::Internal)?
+            .is_some(),
+        github_app_control: state
+            .github_app_credentials()
+            .await
+            .map_err(ApiError::Internal)?
+            .is_some(),
+        webhook_verification: state
+            .github_webhook_secret()
+            .await
+            .map_err(ApiError::Internal)?
+            .is_some(),
         secure_storage: state.config.session_secret().is_some()
             && state.config.encryption_key().is_some(),
         runner_manager: state.config.manager_token().is_some(),
-        installation_tokens: state.config.github_app_id().is_some()
-            && state.config.github_app_private_key().is_some(),
+        installation_tokens: state
+            .github_app_credentials()
+            .await
+            .map_err(ApiError::Internal)?
+            .is_some(),
         callback_url: state
             .config
             .base_url()
@@ -1376,7 +1390,7 @@ fn configuration(state: &AppState) -> ConfigurationState {
             .base_url()
             .join("/api/webhooks/github")
             .map_or_else(|_| "/api/webhooks/github".into(), |url| url.to_string()),
-    }
+    })
 }
 
 fn workflow_run_json(row: &sqlx::sqlite::SqliteRow) -> Value {

@@ -10,7 +10,6 @@ use gridops_core::{
     crypto::hash_token, now_millis,
 };
 use reqwest::Method;
-use secrecy::ExposeSecret as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -82,10 +81,7 @@ pub async fn begin(
     State(state): State<AppState>,
     Query(query): Query<BeginQuery>,
 ) -> ApiResult<Redirect> {
-    let client_id = state
-        .config
-        .github_client_id()
-        .ok_or_else(|| ApiError::BadRequest("GitHub OAuth is not configured.".into()))?;
+    let (client_id, _) = oauth_credentials(&state).await?;
     let oauth_state = random_token(32);
     let verifier = random_token(48);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
@@ -107,7 +103,7 @@ pub async fn begin(
         .map_err(|error| ApiError::Internal(error.into()))?;
     authorize
         .query_pairs_mut()
-        .append_pair("client_id", client_id)
+        .append_pair("client_id", &client_id)
         .append_pair("redirect_uri", &callback_url(&state))
         .append_pair("state", &oauth_state)
         .append_pair("code_challenge", &challenge)
@@ -341,7 +337,6 @@ pub async fn control_token(
     installation_id: i64,
 ) -> ApiResult<String> {
     if let Some(token) = state
-        .github
         .installation_token(installation_id)
         .await
         .map_err(ApiError::Internal)?
@@ -352,11 +347,12 @@ pub async fn control_token(
 }
 
 async fn exchange_code(state: &AppState, code: &str, verifier: &str) -> ApiResult<TokenResponse> {
+    let (client_id, client_secret) = oauth_credentials(state).await?;
     token_request(
         state,
         &[
-            ("client_id", oauth_client_id(state)?),
-            ("client_secret", oauth_client_secret(state)?),
+            ("client_id", &client_id),
+            ("client_secret", &client_secret),
             ("code", code),
             ("redirect_uri", &callback_url(state)),
             ("code_verifier", verifier),
@@ -366,11 +362,12 @@ async fn exchange_code(state: &AppState, code: &str, verifier: &str) -> ApiResul
 }
 
 async fn refresh_access_token(state: &AppState, refresh_token: &str) -> ApiResult<TokenResponse> {
+    let (client_id, client_secret) = oauth_credentials(state).await?;
     token_request(
         state,
         &[
-            ("client_id", oauth_client_id(state)?),
-            ("client_secret", oauth_client_secret(state)?),
+            ("client_id", &client_id),
+            ("client_secret", &client_secret),
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
         ],
@@ -624,18 +621,11 @@ async fn sync_recent_runs(
     Ok(())
 }
 
-fn oauth_client_id(state: &AppState) -> ApiResult<&str> {
+async fn oauth_credentials(state: &AppState) -> ApiResult<(String, String)> {
     state
-        .config
-        .github_client_id()
-        .ok_or_else(|| ApiError::BadRequest("GitHub OAuth is not configured.".into()))
-}
-
-fn oauth_client_secret(state: &AppState) -> ApiResult<&str> {
-    state
-        .config
-        .github_client_secret()
-        .map(|value| value.expose_secret())
+        .github_oauth_credentials()
+        .await
+        .map_err(ApiError::Internal)?
         .ok_or_else(|| ApiError::BadRequest("GitHub OAuth is not configured.".into()))
 }
 

@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM node:22-bookworm-slim AS ui-dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -16,7 +18,13 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY migrations ./migrations
-RUN cargo build --workspace --release --locked
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked \
+    cargo build --workspace --release --locked \
+    && mkdir -p /app/bin \
+    && cp /app/target/release/gridops-api /app/bin/gridops-api \
+    && cp /app/target/release/gridops-manager /app/bin/gridops-manager \
+    && cp /app/target/release/gridops-reconciler /app/bin/gridops-reconciler
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine AS web
 COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
@@ -33,17 +41,17 @@ RUN apt-get update \
 WORKDIR /app
 
 FROM rust-runtime AS api
-COPY --from=rust-build /app/target/release/gridops-api /usr/local/bin/gridops-api
+COPY --from=rust-build /app/bin/gridops-api /usr/local/bin/gridops-api
 USER gridops
 EXPOSE 8080
 CMD ["gridops-api"]
 
 FROM rust-runtime AS reconciler
-COPY --from=rust-build /app/target/release/gridops-reconciler /usr/local/bin/gridops-reconciler
+COPY --from=rust-build /app/bin/gridops-reconciler /usr/local/bin/gridops-reconciler
 USER gridops
 CMD ["gridops-reconciler"]
 
 FROM rust-runtime AS manager
-COPY --from=rust-build /app/target/release/gridops-manager /usr/local/bin/gridops-manager
+COPY --from=rust-build /app/bin/gridops-manager /usr/local/bin/gridops-manager
 EXPOSE 8788
 CMD ["gridops-manager"]

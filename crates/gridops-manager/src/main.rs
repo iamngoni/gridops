@@ -60,6 +60,7 @@ impl FromRequestParts<ManagerState> for ManagerAuth {
 #[derive(Debug)]
 enum ManagerError {
     Unauthorized,
+    Forbidden(String),
     BadRequest(String),
     Conflict(String),
     NotFound(String),
@@ -70,6 +71,7 @@ impl IntoResponse for ManagerError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".into()),
+            Self::Forbidden(message) => (StatusCode::FORBIDDEN, message),
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::NotFound(message) => (StatusCode::NOT_FOUND, message),
@@ -341,6 +343,7 @@ async fn control_runner(
     _auth: ManagerAuth,
 ) -> Result<Json<Value>, ManagerError> {
     validate_container_id(&container_id)?;
+    assert_managed_container(&state.docker, &container_id).await?;
     let status = match action.as_str() {
         "stop" => {
             state
@@ -386,6 +389,7 @@ async fn logs(
     _auth: ManagerAuth,
 ) -> Result<Response, ManagerError> {
     validate_container_id(&container_id)?;
+    assert_managed_container(&state.docker, &container_id).await?;
     let options = LogsOptionsBuilder::default()
         .stdout(true)
         .stderr(true)
@@ -416,6 +420,7 @@ async fn delete_runner(
     _auth: ManagerAuth,
 ) -> Result<Json<Value>, ManagerError> {
     validate_container_id(&container_id)?;
+    assert_managed_container(&state.docker, &container_id).await?;
     state
         .docker
         .remove_container(
@@ -501,10 +506,51 @@ fn validate_container_id(id: &str) -> Result<(), ManagerError> {
     ))
 }
 
+async fn assert_managed_container(docker: &Docker, id: &str) -> Result<(), ManagerError> {
+    let details = docker.inspect_container(id, None).await?;
+    let labels = details.config.and_then(|config| config.labels);
+    if labels.as_ref().is_some_and(managed_labels) {
+        return Ok(());
+    }
+    Err(ManagerError::Forbidden(
+        "GridOps can only control containers carrying its managed-runner label.".into(),
+    ))
+}
+
+fn managed_labels(labels: &HashMap<String, String>) -> bool {
+    labels.get("io.gridops.managed").map(String::as_str) == Some("true")
+        && labels
+            .get("io.gridops.runner-id")
+            .is_some_and(|value| !value.is_empty())
+        && labels
+            .get("io.gridops.pool-id")
+            .is_some_and(|value| !value.is_empty())
+}
+
 fn valid_docker_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requires_complete_gridops_management_labels() {
+        let mut labels = HashMap::from([
+            ("io.gridops.managed".into(), "true".into()),
+            ("io.gridops.runner-id".into(), "runner-1".into()),
+            ("io.gridops.pool-id".into(), "pool-1".into()),
+        ]);
+        assert!(managed_labels(&labels));
+        labels.remove("io.gridops.pool-id");
+        assert!(!managed_labels(&labels));
+        labels.insert("io.gridops.pool-id".into(), "pool-1".into());
+        labels.insert("io.gridops.managed".into(), "false".into());
+        assert!(!managed_labels(&labels));
+    }
 }

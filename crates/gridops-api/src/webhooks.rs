@@ -5,7 +5,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use hmac::{Hmac, Mac as _};
-use secrecy::ExposeSecret as _;
 use serde_json::{Map, Value, json};
 use sha2::Sha256;
 use sqlx::Row as _;
@@ -34,7 +33,7 @@ pub async fn receive(
     let signature = headers
         .get("x-hub-signature-256")
         .and_then(|value| value.to_str().ok());
-    let signature_valid = verify_signature(&state, &body, signature);
+    let signature_valid = verify_signature(&state, &body, signature).await?;
     let payload: Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::BadRequest("Webhook payload is not valid JSON.".into()))?;
     let object = payload
@@ -572,11 +571,21 @@ async fn scale_for_queued_job(
     Ok(())
 }
 
-fn verify_signature(state: &AppState, body: &[u8], signature: Option<&str>) -> bool {
-    let (Some(secret), Some(signature)) = (state.config.github_webhook_secret(), signature) else {
-        return false;
+async fn verify_signature(
+    state: &AppState,
+    body: &[u8],
+    signature: Option<&str>,
+) -> ApiResult<bool> {
+    let (Some(secret), Some(signature)) = (
+        state
+            .github_webhook_secret()
+            .await
+            .map_err(ApiError::Internal)?,
+        signature,
+    ) else {
+        return Ok(false);
     };
-    verify_signature_with_secret(body, signature, secret.expose_secret())
+    Ok(verify_signature_with_secret(body, signature, &secret))
 }
 
 fn verify_signature_with_secret(body: &[u8], signature: &str, secret: &str) -> bool {

@@ -157,7 +157,7 @@ mod tests {
         .fetch_one(&pool)
         .await?
         .get::<i64, _>("count");
-        assert_eq!(tables, 15);
+        assert_eq!(tables, 17);
         let columns = sqlx::query("PRAGMA table_info(runner_pools)")
             .fetch_all(&pool)
             .await?;
@@ -215,7 +215,7 @@ mod tests {
             sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'legacy'")
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(migration_count, 3);
+        assert_eq!(migration_count, 4);
         assert_eq!(preserved, "preserved");
         pool.close().await;
         fs::remove_dir_all(directory)?;

@@ -40,7 +40,9 @@ Configure:
 - Callback URL: `${GRIDOPS_BASE_URL}/auth/github/callback`
 - Webhook URL: `${GRIDOPS_BASE_URL}/api/webhooks/github`
 
-Set `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` so the reconciler can obtain short-lived installation tokens without depending on a logged-in browser session. User access and refresh tokens are authenticated-encrypted at rest. Secrets remain in the host environment.
+After signing in, Settings can launch GitHub's App-manifest flow with the exact permissions and webhook events GridOps needs. GitHub returns the App ID, private key, OAuth credentials, slug, and webhook secret directly to GridOps; they are authenticated-encrypted in SQLite and become active without a restart. Environment values remain supported as bootstrap or deployment-managed overrides.
+
+For localhost development the generated manifest leaves webhook delivery disabled because GitHub cannot reach a loopback URL. Set `GRIDOPS_BASE_URL` to a public HTTPS origin before enabling deliveries. OAuth, App credentials, and runner control continue to work locally.
 
 ## Run with Docker
 
@@ -88,4 +90,4 @@ cargo test --workspace
 docker compose --env-file .env.local config
 ```
 
-Back up the `gridops-data` volume or use the database backup control in Settings. SQLite runs in WAL mode; the download endpoint uses SQLite's consistent `VACUUM INTO` snapshot operation.
+Back up the `gridops-data` volume or use the database backup control in Settings. SQLite runs in WAL mode; the download endpoint uses SQLite's consistent `VACUUM INTO` snapshot operation. Backups contain encrypted GitHub credentials, so treat them as sensitive and retain the matching `GRIDOPS_ENCRYPTION_KEY`; without that key the credentials cannot be recovered.

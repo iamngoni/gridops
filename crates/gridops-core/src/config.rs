@@ -63,9 +63,6 @@ impl Config {
     }
 
     pub fn validate_api(&self) -> Result<()> {
-        if self.github_client_id().is_none() || self.github_client_secret().is_none() {
-            bail!("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are required");
-        }
         if self.session_secret().is_none() || self.encryption_key().is_none() {
             bail!("GRIDOPS_SESSION_SECRET and GRIDOPS_ENCRYPTION_KEY are required");
         }
