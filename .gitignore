@@ -1,29 +1,44 @@
-# Dependencies
-node_modules/
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# Build output
-.output/
-.vinxi/
-dist/
-coverage/
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
 
-# Local environment and secrets
-.env
-.env.*
+# testing
+/coverage
+
+# build output
+/.output/
+/dist/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files
+.env*
 !.env.example
 
-# Runtime state
-data/
-logs/
-*.db
-*.db-shm
-*.db-wal
+# runtime state
+/data/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 
-# Tooling
-.DS_Store
-*.log
-.idea/
-.vscode/
+# generated and local tooling
+/src/routeTree.gen.ts
+/.wrangler/
+/outputs/
+/work/

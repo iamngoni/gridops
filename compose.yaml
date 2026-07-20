@@ -1,0 +1,77 @@
+name: gridops
+
+services:
+  app:
+    build:
+      context: .
+      target: app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      GRIDOPS_BASE_URL: ${GRIDOPS_BASE_URL:-http://localhost:3000}
+      GRIDOPS_DATABASE_PATH: /app/data/gridops.sqlite
+      GRIDOPS_LOG_DIRECTORY: /app/data/logs
+      GRIDOPS_MANAGER_URL: http://manager:8788
+    ports:
+      - "${GRIDOPS_PORT:-3000}:3000"
+    volumes:
+      - gridops-data:/app/data
+    depends_on:
+      manager:
+        condition: service_healthy
+    networks:
+      - control-plane
+
+  manager:
+    build:
+      context: .
+      target: manager
+    restart: unless-stopped
+    environment:
+      GRIDOPS_MANAGER_TOKEN: ${GRIDOPS_MANAGER_TOKEN:?GRIDOPS_MANAGER_TOKEN is required}
+      GRIDOPS_DOCKER_SOCKET: /var/run/docker.sock
+      GRIDOPS_MANAGER_PORT: 8788
+      GRIDOPS_MANAGER_HOST: 0.0.0.0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8788/v1/health',{headers:{Authorization:'Bearer '+process.env.GRIDOPS_MANAGER_TOKEN}}).then(r=>{if(!r.ok)process.exit(1)})",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - control-plane
+
+  reconciler:
+    build:
+      context: .
+      target: reconciler
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      GRIDOPS_DATABASE_PATH: /app/data/gridops.sqlite
+      GRIDOPS_LOG_DIRECTORY: /app/data/logs
+      GRIDOPS_MANAGER_URL: http://manager:8788
+    volumes:
+      - gridops-data:/app/data
+    depends_on:
+      manager:
+        condition: service_healthy
+    networks:
+      - control-plane
+
+networks:
+  control-plane:
+    driver: bridge
+
+volumes:
+  gridops-data:
