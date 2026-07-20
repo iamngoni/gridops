@@ -1,6 +1,5 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
-import { CheckCircle2, CircleX, LoaderCircle, Save, Settings, ShieldCheck } from "lucide-react";
+import { CheckCircle2, CircleX, DatabaseBackup, LoaderCircle, Save, Settings, ShieldCheck } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 
@@ -26,7 +25,7 @@ function SettingsPage() {
 }
 
 function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<typeof Route.useLoaderData>, { authenticated: true }>['data']> }) {
-  const save = useServerFn(saveSettingsAction);
+  const save = saveSettingsAction;
   const router = useRouter();
   const [pending, setPending] = useState(false);
 
@@ -85,9 +84,11 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
             <InfoRow label="Manager" value={data.manager.ok ? "Authenticated and reachable" : "Unavailable"} />
             <InfoRow label="Docker Engine" value={data.manager.dockerVersion ?? "—"} />
             <InfoRow label="Docker API" value={data.manager.apiVersion ?? "—"} />
+            <InfoRow label="GitHub control token" value={data.configuration.installationTokens ? "Installation token" : "Authorized user token fallback"} />
             <InfoRow label="Database" value="SQLite · WAL mode" />
             <InfoRow label="Signed in as" value={data.user.login} />
             {!data.manager.ok && data.manager.error ? <p className="rounded-md border border-red-500/20 bg-red-500/5 p-3 text-xs leading-5 text-red-300">{data.manager.error}</p> : null}
+            <a className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border px-3 text-xs font-medium hover:bg-accent" href="/api/backups/database"><DatabaseBackup className="size-4" />Download SQLite backup</a>
           </CardContent>
         </Card>
       </div>

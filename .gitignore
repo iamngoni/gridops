@@ -16,6 +16,7 @@
 # build output
 /.output/
 /dist/
+/target/
 
 # misc
 .DS_Store

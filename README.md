@@ -1,32 +1,91 @@
 # GridOps
 
-GridOps is a self-hosted control plane for GitHub Actions runners. It connects through a GitHub App and provides one place to provision Docker-based runners, manage runner pools, inspect workflow activity, stream logs, and audit operational changes.
+GridOps is a self-hosted control plane for GitHub Actions runners. Connect a GitHub App, select repositories or organizations, and operate isolated Docker runner pools from one interface.
 
-## Product scope
+## Capabilities
 
-- GitHub App authentication, installations, and repository access
+- GitHub App OAuth, installations, encrypted user tokens, and short-lived installation tokens
 - Repository and organization-scoped runner pools
-- Ephemeral and persistent Docker runners
-- Provision, drain, pause, resume, restart, rebuild, and delete controls
-- Labels, CPU and memory limits, concurrency, and autoscaling policies
-- Workflow run and job monitoring, cancellation, and reruns
-- Live logs, completed-log retention, and downloads
-- Webhook delivery history, reconciliation, and audit trails
-- Runner image, update, notification, backup, and recovery settings
+- Ephemeral and persistent Docker runners with labels, CPU, memory, PID, and capability limits
+- Provision, scale, reconcile, pause, resume, stop, restart, rebuild, drain, and delete controls
+- Queue-driven autoscaling and idle scale-down
+- Workflow runs, jobs, cancellation, reruns, downloadable logs, and runner log streaming
+- Signed, idempotent GitHub webhooks with delivery retry and audit history
+- SQLite WAL persistence, retention policy, and consistent downloadable backups
+- A continuously running reconciler that repairs desired versus actual runner state
 
-## Stack
+## Architecture
 
-- TanStack Start, Router, Query, Table, and Virtual
-- React 19, Tailwind CSS 4, and shadcn/ui
-- SQLite with Drizzle ORM
-- Server-Sent Events for live operational updates
-- Docker Compose for self-hosting
+- TanStack Router, React 19, Tailwind CSS 4, and shadcn-style UI components in the browser
+- Rust/Axum control-plane API
+- Rust/SQLx with SQLite migrations
+- Rust/Bollard runner manager as the only service with Docker socket access
+- Rust background reconciler
+- Nginx serves the client and proxies same-origin API and OAuth traffic
 
-## Development
+TypeScript is confined to the browser application. All authentication, GitHub credentials, persistence, webhooks, runner orchestration, Docker access, and reconciliation live in Rust.
 
-1. Copy `.env.example` to `.env.local` and provide the GitHub App values.
-2. Install dependencies with `npm install`.
-3. Run `npm run db:migrate`.
-4. Start GridOps with `npm run dev`.
+## GitHub App setup
 
-The GitHub App callback URL is `${GRIDOPS_BASE_URL}/auth/github/callback`. The webhook URL is `${GRIDOPS_BASE_URL}/api/webhooks/github`.
+Create a GitHub App with these repository permissions:
+
+- Actions: read and write
+- Administration: read and write
+- Metadata: read-only
+
+For organization-scoped pools, grant organization self-hosted runners read and write access. Subscribe to `installation`, `installation_repositories`, `workflow_job`, `workflow_run`, and `github_app_authorization` events. Enable expiring user access tokens.
+
+Configure:
+
+- Callback URL: `${GRIDOPS_BASE_URL}/auth/github/callback`
+- Webhook URL: `${GRIDOPS_BASE_URL}/api/webhooks/github`
+
+Set `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` so the reconciler can obtain short-lived installation tokens without depending on a logged-in browser session. User access and refresh tokens are authenticated-encrypted at rest. Secrets remain in the host environment.
+
+## Run with Docker
+
+```sh
+cp .env.example .env
+# Fill the required values, then:
+docker compose up --build -d
+```
+
+Open `http://localhost:3000`. For a different public origin, set `GRIDOPS_BASE_URL` and configure the same URL in the GitHub App.
+
+For local credentials already stored in `.env.local`:
+
+```sh
+GRIDOPS_ENV_FILE=.env.local docker compose --env-file .env.local up --build
+```
+
+Only `manager` receives `/var/run/docker.sock`. Runner containers do not receive it. The API and reconciler share the `gridops-data` volume for SQLite and retained logs.
+
+## Develop
+
+Requirements: Node.js 22+, Rust 1.96+, Docker, and the values from `.env.example`.
+
+Run the services in separate terminals:
+
+```sh
+set -a; source .env.local; set +a
+cargo run -p gridops-manager
+cargo run -p gridops-api
+cargo run -p gridops-reconciler
+npm run dev
+```
+
+The Vite server proxies `/api` and `/auth` to Axum at `127.0.0.1:8080`.
+
+## Verify
+
+```sh
+npm run lint
+npm test
+npm run build
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+docker compose --env-file .env.local config
+```
+
+Back up the `gridops-data` volume or use the database backup control in Settings. SQLite runs in WAL mode; the download endpoint uses SQLite's consistent `VACUUM INTO` snapshot operation.

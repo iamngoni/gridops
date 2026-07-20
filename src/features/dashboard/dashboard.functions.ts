@@ -1,7 +1,6 @@
-import { createServerFn } from "@tanstack/react-start";
+import type { DashboardOverview } from "./types";
+import { api } from "~/lib/api";
 
-import { loadDashboardOverview } from "./dashboard.server";
-
-export const getDashboardOverview = createServerFn({ method: "GET" }).handler(
-  async () => loadDashboardOverview(),
-);
+export function getDashboardOverview() {
+  return api<DashboardOverview>("/api/v1/overview");
+}

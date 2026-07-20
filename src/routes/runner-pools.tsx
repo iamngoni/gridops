@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import { Boxes, Minus, Pause, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 import { AsyncActionButton } from "~/components/async-action-button";
@@ -18,7 +17,7 @@ export const Route = createFileRoute("/runner-pools")({
 
 function RunnerPoolsPage() {
   const data = Route.useLoaderData();
-  const control = useServerFn(runnerPoolAction);
+  const control = runnerPoolAction;
 
   return (
     <ResourcePage

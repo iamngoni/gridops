@@ -1,4 +1,5 @@
 export type DashboardOverview = {
+  authenticated: boolean;
   configuration: {
     githubOAuth: boolean;
     githubAppControl: boolean;

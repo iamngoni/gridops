@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import { ExternalLink, Lock, PackageSearch, RefreshCw } from "lucide-react";
 
 import { AsyncActionButton } from "~/components/async-action-button";
@@ -17,7 +16,7 @@ export const Route = createFileRoute("/repositories")({
 
 function RepositoriesPage() {
   const data = Route.useLoaderData();
-  const sync = useServerFn(syncGitHubAction);
+  const sync = syncGitHubAction;
 
   return (
     <ResourcePage

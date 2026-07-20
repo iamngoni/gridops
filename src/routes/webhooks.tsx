@@ -1,12 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { CheckCircle2, ShieldAlert, Webhook } from "lucide-react";
+import { CheckCircle2, RefreshCw, ShieldAlert, Webhook } from "lucide-react";
 
+import { AsyncActionButton } from "~/components/async-action-button";
 import { ResourcePage } from "~/components/resource-page";
 import { StatusBadge } from "~/components/status-badge";
 import { Badge } from "~/components/ui/badge";
 import { Card, CardContent } from "~/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
-import { getWebhooksPage } from "~/features/operations/operations.functions";
+import { getWebhooksPage, retryWebhookAction } from "~/features/operations/operations.functions";
 import { formatRelativeTime } from "~/lib/utils";
 
 export const Route = createFileRoute("/webhooks")({
@@ -16,6 +17,7 @@ export const Route = createFileRoute("/webhooks")({
 
 function WebhooksPage() {
   const data = Route.useLoaderData();
+  const retry = retryWebhookAction;
   return (
     <ResourcePage
       title="Webhooks"
@@ -28,7 +30,7 @@ function WebhooksPage() {
     >
       {data.items.length > 0 ? (
         <Card><CardContent className="px-0 py-0"><Table>
-          <TableHeader><TableRow><TableHead>Delivery</TableHead><TableHead>Event</TableHead><TableHead>Destination</TableHead><TableHead>Signature</TableHead><TableHead>Status</TableHead><TableHead>Received</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead>Delivery</TableHead><TableHead>Event</TableHead><TableHead>Destination</TableHead><TableHead>Signature</TableHead><TableHead>Status</TableHead><TableHead>Received</TableHead><TableHead /></TableRow></TableHeader>
           <TableBody>{data.items.map((delivery) => (
             <TableRow key={delivery.id}>
               <TableCell><div className="max-w-44 truncate font-mono text-xs" title={delivery.id}>{delivery.id}</div>{delivery.error ? <div className="mt-1 max-w-64 truncate text-[11px] text-red-400" title={String(delivery.error)}>{String(delivery.error)}</div> : null}</TableCell>
@@ -37,6 +39,7 @@ function WebhooksPage() {
               <TableCell>{delivery.signatureValid ? <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400"><CheckCircle2 className="size-3.5" />Verified</span> : <span className="inline-flex items-center gap-1.5 text-xs text-red-400"><ShieldAlert className="size-3.5" />Invalid</span>}</TableCell>
               <TableCell><StatusBadge status={delivery.status} /></TableCell>
               <TableCell className="text-xs text-muted-foreground">{formatRelativeTime(delivery.receivedAt)}</TableCell>
+              <TableCell>{delivery.status === "failed" && delivery.signatureValid ? <AsyncActionButton action={() => retry({ data: { deliveryId: delivery.id } })} icon={<RefreshCw />} size="icon" success="Webhook delivery reprocessed."><span className="sr-only">Retry delivery</span></AsyncActionButton> : null}</TableCell>
             </TableRow>
           ))}</TableBody>
         </Table></CardContent></Card>

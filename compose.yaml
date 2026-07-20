@@ -1,22 +1,54 @@
 name: gridops
 
 services:
-  app:
+  web:
     build:
       context: .
-      target: app
+      target: web
+    restart: unless-stopped
+    ports:
+      - "${GRIDOPS_PORT:-3000}:3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - control-plane
+
+  api:
+    build:
+      context: .
+      target: api
     restart: unless-stopped
     env_file:
-      - .env
+      - ${GRIDOPS_ENV_FILE:-.env}
     environment:
       GRIDOPS_BASE_URL: ${GRIDOPS_BASE_URL:-http://localhost:3000}
       GRIDOPS_DATABASE_PATH: /app/data/gridops.sqlite
       GRIDOPS_LOG_DIRECTORY: /app/data/logs
       GRIDOPS_MANAGER_URL: http://manager:8788
-    ports:
-      - "${GRIDOPS_PORT:-3000}:3000"
+      GRIDOPS_API_BIND: 0.0.0.0:8080
     volumes:
       - gridops-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     depends_on:
       manager:
         condition: service_healthy
@@ -31,18 +63,14 @@ services:
     environment:
       GRIDOPS_MANAGER_TOKEN: ${GRIDOPS_MANAGER_TOKEN:?GRIDOPS_MANAGER_TOKEN is required}
       GRIDOPS_DOCKER_SOCKET: /var/run/docker.sock
-      GRIDOPS_MANAGER_PORT: 8788
-      GRIDOPS_MANAGER_HOST: 0.0.0.0
+      GRIDOPS_MANAGER_BIND: 0.0.0.0:8788
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    tmpfs:
+      - /tmp
     healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:8788/v1/health',{headers:{Authorization:'Bearer '+process.env.GRIDOPS_MANAGER_TOKEN}}).then(r=>{if(!r.ok)process.exit(1)})",
-        ]
+      test: ["CMD-SHELL", "curl --fail --silent --header 'Authorization: Bearer $$GRIDOPS_MANAGER_TOKEN' http://127.0.0.1:8788/v1/health >/dev/null"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -56,15 +84,18 @@ services:
       target: reconciler
     restart: unless-stopped
     env_file:
-      - .env
+      - ${GRIDOPS_ENV_FILE:-.env}
     environment:
       GRIDOPS_DATABASE_PATH: /app/data/gridops.sqlite
       GRIDOPS_LOG_DIRECTORY: /app/data/logs
       GRIDOPS_MANAGER_URL: http://manager:8788
     volumes:
       - gridops-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
     depends_on:
-      manager:
+      api:
         condition: service_healthy
     networks:
       - control-plane

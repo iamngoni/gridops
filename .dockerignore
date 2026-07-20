@@ -3,6 +3,8 @@
 .output
 data
 node_modules
+target
+dist
 npm-debug.log*
 .env*
 !.env.example

@@ -1,5 +1,4 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import {
   Activity,
   ArrowRight,
@@ -42,7 +41,7 @@ export const Route = createFileRoute("/")({
 
 function OverviewPage() {
   const data = Route.useLoaderData();
-  const syncGitHub = useServerFn(syncGitHubAction);
+  const syncGitHub = syncGitHubAction;
   const configurationComplete =
     data.configuration.githubOAuth &&
     data.configuration.githubAppControl &&

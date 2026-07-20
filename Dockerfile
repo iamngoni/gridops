@@ -1,39 +1,49 @@
-FROM node:22-bookworm-slim AS dependencies
+FROM node:22-bookworm-slim AS ui-dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
-FROM dependencies AS build
-WORKDIR /app
-COPY . .
+FROM ui-dependencies AS ui-build
+COPY index.html tsconfig.json vite.config.ts ./
+COPY src ./src
 RUN npm run build
 
-FROM node:22-bookworm-slim AS app
-ENV NODE_ENV=production
+FROM rust:1.96-slim-bookworm AS rust-build
 WORKDIR /app
-COPY --from=dependencies /app/node_modules ./node_modules
-COPY --from=build /app/.output ./.output
-COPY --from=build /app/drizzle ./drizzle
-COPY --from=build /app/package.json ./package.json
-RUN mkdir -p /app/data && chown -R node:node /app
-USER node
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY migrations ./migrations
+RUN cargo build --workspace --release --locked
+
+FROM nginxinc/nginx-unprivileged:1.27-alpine AS web
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=ui-build /app/dist /usr/share/nginx/html
 EXPOSE 3000
-CMD ["sh", "-c", "node .output/server/index.mjs"]
 
-FROM node:22-bookworm-slim AS manager
-ENV NODE_ENV=production
+FROM debian:bookworm-slim AS rust-runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 gridops \
+    && mkdir -p /app/data/logs \
+    && chown -R gridops:gridops /app
 WORKDIR /app
-COPY --from=dependencies /app/node_modules ./node_modules
-COPY --from=build /app/.output/manager ./manager
+
+FROM rust-runtime AS api
+COPY --from=rust-build /app/target/release/gridops-api /usr/local/bin/gridops-api
+USER gridops
+EXPOSE 8080
+CMD ["gridops-api"]
+
+FROM rust-runtime AS reconciler
+COPY --from=rust-build /app/target/release/gridops-reconciler /usr/local/bin/gridops-reconciler
+USER gridops
+CMD ["gridops-reconciler"]
+
+FROM rust-runtime AS manager
+COPY --from=rust-build /app/target/release/gridops-manager /usr/local/bin/gridops-manager
 EXPOSE 8788
-CMD ["node", "manager/index.mjs"]
-
-FROM node:22-bookworm-slim AS reconciler
-ENV NODE_ENV=production
-WORKDIR /app
-COPY --from=dependencies /app/node_modules ./node_modules
-COPY --from=build /app/.output/reconciler ./reconciler
-COPY --from=build /app/drizzle ./drizzle
-RUN mkdir -p /app/data && chown -R node:node /app
-USER node
-CMD ["node", "reconciler/index.mjs"]
+CMD ["gridops-manager"]

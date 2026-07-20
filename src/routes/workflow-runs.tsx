@@ -1,5 +1,4 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import { ExternalLink, GitPullRequestArrow, RefreshCw, RotateCcw, Square } from "lucide-react";
 
 import { AsyncActionButton } from "~/components/async-action-button";
@@ -17,7 +16,7 @@ export const Route = createFileRoute("/workflow-runs")({
 
 function WorkflowRunsPage() {
   const data = Route.useLoaderData();
-  const control = useServerFn(workflowRunAction);
+  const control = workflowRunAction;
 
   return (
     <ResourcePage

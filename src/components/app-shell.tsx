@@ -1,5 +1,4 @@
 import { Link, getRouteApi, useRouterState } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import {
   Activity,
   Bell,
@@ -14,7 +13,6 @@ import {
   Radio,
   Search,
   Settings,
-  SlidersHorizontal,
   Webhook,
   X,
 } from "lucide-react";
@@ -24,6 +22,7 @@ import { GridLogo } from "./grid-logo";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { cn } from "~/lib/utils";
+import { api } from "~/lib/api";
 import { searchAction } from "~/features/operations/operations.functions";
 
 const navigation = [
@@ -42,7 +41,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const viewer = getRouteApi("__root__").useLoaderData();
-  const search = useServerFn(searchAction);
+  const search = searchAction;
   const searchInput = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Array<{ kind: string; id: string; title: string; subtitle: string; href: string }>>([]);
@@ -61,7 +60,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!viewer || query.trim().length < 2) {
-      setResults([]);
       return;
     }
     const timeout = window.setTimeout(() => {
@@ -206,7 +204,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <summary className="inline-flex size-9 cursor-pointer list-none items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><ChevronDown className="size-4" /><span className="sr-only">Account menu</span></summary>
               <div className="absolute right-0 top-11 z-50 w-48 rounded-md border border-border bg-popover p-1 shadow-2xl">
                 <a className="block rounded-sm px-3 py-2 text-xs hover:bg-accent" href="/settings">Settings</a>
-                {viewer ? <a className="block rounded-sm px-3 py-2 text-xs text-red-300 hover:bg-accent" href="/auth/logout">Sign out</a> : <a className="block rounded-sm px-3 py-2 text-xs hover:bg-accent" href="/auth/github">Connect GitHub</a>}
+                {viewer ? <button className="block w-full rounded-sm px-3 py-2 text-left text-xs text-red-300 hover:bg-accent" type="button" onClick={() => void api("/auth/logout", { method: "POST" }).then(() => { window.location.href = "/"; })}>Sign out</button> : <a className="block rounded-sm px-3 py-2 text-xs hover:bg-accent" href="/auth/github">Connect GitHub</a>}
               </div>
             </details>
           </div>

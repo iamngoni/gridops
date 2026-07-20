@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import { LoaderCircle, Pause, Play, Radio, RefreshCw, Terminal } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
@@ -16,7 +15,7 @@ export const Route = createFileRoute("/live-logs")({
 
 function LiveLogsPage() {
   const data = Route.useLoaderData();
-  const getLogs = useServerFn(runnerLogsAction);
+  const getLogs = runnerLogsAction;
   const [runnerId, setRunnerId] = useState(data.items[0]?.id ?? "");
   const [logs, setLogs] = useState("");
   const [streaming, setStreaming] = useState(true);
@@ -38,10 +37,13 @@ function LiveLogsPage() {
   }, [getLogs, runnerId]);
 
   useEffect(() => {
-    void refresh();
-    if (!streaming) return;
+    const initial = window.setTimeout(() => void refresh(), 0);
+    if (!streaming) return () => window.clearTimeout(initial);
     const interval = window.setInterval(() => void refresh(), 2_000);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
   }, [refresh, streaming]);
 
   const selected = data.items.find((item) => item.id === runnerId);

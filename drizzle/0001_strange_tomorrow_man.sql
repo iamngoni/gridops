@@ -1,1 +1,0 @@
-ALTER TABLE `runner_pools` ADD `runner_group_id` integer DEFAULT 1 NOT NULL;

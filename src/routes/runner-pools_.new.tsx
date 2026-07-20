@@ -1,4 +1,3 @@
-import { useServerFn } from "@tanstack/react-start";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Github, LoaderCircle, Server } from "lucide-react";
 import { type FormEvent, useMemo, useState } from "react";
@@ -37,6 +36,25 @@ function NewRunnerPoolPage() {
     );
   }
 
+  if (options.installations.length === 0) {
+    return (
+      <AppShell>
+        <Card className="mx-auto max-w-xl">
+          <CardContent className="flex min-h-80 flex-col items-center justify-center p-8 text-center">
+            <Server className="size-8 text-muted-foreground" />
+            <h1 className="mt-4 text-xl font-semibold">Install the GitHub App</h1>
+            <p className="mt-2 max-w-sm text-sm leading-6 text-muted-foreground">
+              Choose the account and repositories GridOps may operate, then return here and sync GitHub.
+            </p>
+            <a className={cn(buttonVariants(), "mt-5")} href={options.installUrl} rel="noreferrer" target="_blank">
+              <Github />Install GridOps on GitHub
+            </a>
+          </CardContent>
+        </Card>
+      </AppShell>
+    );
+  }
+
   return <RunnerPoolForm options={options} />;
 }
 
@@ -62,10 +80,11 @@ type RunnerPoolFormOptions = {
     idleTimeoutMinutes: number;
     runnerGroupId: number;
   };
+  installUrl: string;
 };
 
 function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
-  const createPool = useServerFn(createRunnerPoolAction);
+  const createPool = createRunnerPoolAction;
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);

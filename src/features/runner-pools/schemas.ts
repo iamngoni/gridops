@@ -53,6 +53,13 @@ export const createRunnerPoolSchema = z
         message: "Desired capacity cannot exceed maximum capacity.",
       });
     }
+    if (value.desiredCount < value.minCount) {
+      context.addIssue({
+        code: "custom",
+        path: ["desiredCount"],
+        message: "Desired capacity cannot be below minimum capacity.",
+      });
+    }
   });
 
 export type CreateRunnerPoolInput = z.infer<typeof createRunnerPoolSchema>;
