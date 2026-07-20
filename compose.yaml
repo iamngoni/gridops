@@ -50,8 +50,25 @@ services:
       retries: 5
       start_period: 10s
     depends_on:
+      data-init:
+        condition: service_completed_successfully
       manager:
         condition: service_healthy
+    networks:
+      - control-plane
+
+  data-init:
+    build:
+      context: .
+      target: api
+    user: "0:0"
+    command:
+      - /bin/sh
+      - -c
+      - mkdir -p /app/data/logs && chown -R 10001:10001 /app/data
+    volumes:
+      - gridops-data:/app/data
+    read_only: true
     networks:
       - control-plane
 
@@ -70,7 +87,7 @@ services:
     tmpfs:
       - /tmp
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail --silent --header 'Authorization: Bearer $$GRIDOPS_MANAGER_TOKEN' http://127.0.0.1:8788/v1/health >/dev/null"]
+      test: ["CMD-SHELL", "curl --fail --silent --header \"Authorization: Bearer $$GRIDOPS_MANAGER_TOKEN\" http://127.0.0.1:8788/v1/health >/dev/null"]
       interval: 10s
       timeout: 3s
       retries: 5
