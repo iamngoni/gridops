@@ -283,6 +283,7 @@ async fn reconcile_pool(
         .bind(&pool.id)
         .execute(&app.database)
         .await?;
+    record_capacity_sample(app, pool, &final_runners).await?;
     if provisioned > 0 || removed > 0 || rotated > 0 {
         system_event(
             app,
@@ -304,21 +305,7 @@ async fn maybe_scale_down(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> 
     if runners.iter().any(|runner| runner.busy) {
         return Ok(());
     }
-    let queued = sqlx::query(
-        r#"SELECT COUNT(*) AS count FROM workflow_jobs wj
-          JOIN workflow_runs wr ON wr.id=wj.run_id JOIN repositories repo ON repo.id=wr.repository_id
-          WHERE wj.status='queued' AND (
-            repo.id=(SELECT repository_id FROM runner_pools WHERE id=?) OR
-            ((SELECT scope FROM runner_pools WHERE id=?)='organization' AND
-             repo.installation_id=(SELECT installation_id FROM runner_pools WHERE id=?))
-          )"#,
-    )
-    .bind(&pool.id)
-    .bind(&pool.id)
-    .bind(&pool.id)
-    .fetch_one(&app.database)
-    .await?
-    .get::<i64, _>("count");
+    let queued = queued_jobs(&app.database, pool).await?;
     if queued > 0 {
         return Ok(());
     }
@@ -343,6 +330,50 @@ async fn maybe_scale_down(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> 
         &pool.id,
         json!({ "desiredCount": pool.min_count }),
     )
+    .await?;
+    Ok(())
+}
+
+async fn queued_jobs(database: &SqlitePool, pool: &Pool) -> Result<i64> {
+    Ok(sqlx::query(
+        r#"SELECT COUNT(*) AS count FROM workflow_jobs wj
+          JOIN workflow_runs wr ON wr.id=wj.run_id JOIN repositories repo ON repo.id=wr.repository_id
+          WHERE wj.status='queued' AND (
+            repo.id=(SELECT repository_id FROM runner_pools WHERE id=?) OR
+            ((SELECT scope FROM runner_pools WHERE id=?)='organization' AND
+             repo.installation_id=(SELECT installation_id FROM runner_pools WHERE id=?))
+          )"#,
+    )
+    .bind(&pool.id)
+    .bind(&pool.id)
+    .bind(&pool.id)
+    .fetch_one(database)
+    .await?
+    .get::<i64, _>("count"))
+}
+
+async fn record_capacity_sample(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Result<()> {
+    let online = runners
+        .iter()
+        .filter(|runner| matches!(runner.status.as_str(), "online" | "idle" | "busy"))
+        .count();
+    let busy = runners.iter().filter(|runner| runner.busy).count();
+    let available = online.saturating_sub(busy);
+    let queued = queued_jobs(&app.database, pool).await?;
+    let recorded_at = now_millis().div_euclid(60_000) * 60_000;
+    sqlx::query(
+        r#"INSERT INTO capacity_samples (id,installation_id,pool_id,available,busy,queued,recorded_at)
+          VALUES (?,?,?,?,?,?,?) ON CONFLICT(pool_id,recorded_at) DO UPDATE SET
+          available=excluded.available,busy=excluded.busy,queued=excluded.queued"#,
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(pool.installation_id)
+    .bind(&pool.id)
+    .bind(i64::try_from(available).unwrap_or(i64::MAX))
+    .bind(i64::try_from(busy).unwrap_or(i64::MAX))
+    .bind(queued)
+    .bind(recorded_at)
+    .execute(&app.database)
     .await?;
     Ok(())
 }
@@ -579,6 +610,7 @@ async fn cleanup_retention(app: &Reconciler) -> Result<()> {
         now - setting_i64(&app.database, "webhookRetentionDays", 90).await * 86_400_000;
     let audit_cutoff =
         now - setting_i64(&app.database, "auditRetentionDays", 365).await * 86_400_000;
+    let capacity_cutoff = now - 31 * 86_400_000;
     let expired_logs =
         sqlx::query("SELECT path FROM log_streams WHERE expires_at IS NOT NULL AND expires_at < ?")
             .bind(now)
@@ -606,6 +638,10 @@ async fn cleanup_retention(app: &Reconciler) -> Result<()> {
         .await?;
     sqlx::query("DELETE FROM audit_events WHERE created_at < ?")
         .bind(audit_cutoff)
+        .execute(&app.database)
+        .await?;
+    sqlx::query("DELETE FROM capacity_samples WHERE recorded_at < ?")
+        .bind(capacity_cutoff)
         .execute(&app.database)
         .await?;
     Ok(())

@@ -102,6 +102,11 @@ pub(crate) struct SearchQuery {
 }
 
 #[derive(Deserialize)]
+pub(crate) struct CapacityQuery {
+    window: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub(crate) struct LogStreamQuery {
     tail: Option<String>,
 }
@@ -174,7 +179,14 @@ pub async fn overview(
     let pool_rows = sqlx::query(
         r#"SELECT p.id,p.name,p.scope,p.desired_count,p.mode,p.state,p.paused,
           COUNT(CASE WHEN r.deleted_at IS NULL AND r.status IN ('idle','busy','online') THEN 1 END) AS online,
-          COUNT(CASE WHEN r.deleted_at IS NULL AND r.busy=1 THEN 1 END) AS busy
+          COUNT(CASE WHEN r.deleted_at IS NULL AND r.busy=1 THEN 1 END) AS busy,
+          (SELECT COUNT(*) FROM workflow_jobs wj
+            JOIN workflow_runs wr ON wr.id=wj.run_id
+            JOIN repositories queued_repo ON queued_repo.id=wr.repository_id
+            WHERE wj.status='queued' AND (
+              queued_repo.id=p.repository_id OR
+              (p.scope='organization' AND queued_repo.installation_id=p.installation_id)
+            )) AS queued
         FROM runner_pools p JOIN user_installations ui ON ui.installation_id=p.installation_id
         LEFT JOIN runners r ON r.pool_id=p.id WHERE ui.user_id=?
         GROUP BY p.id ORDER BY p.created_at DESC LIMIT 8"#,
@@ -188,7 +200,8 @@ pub async fn overview(
             json!({
                 "id": row.get::<String, _>("id"), "name": row.get::<String, _>("name"),
                 "scope": row.get::<String, _>("scope"), "desired": row.get::<i64, _>("desired_count"),
-                "online": row.get::<i64, _>("online"), "busy": row.get::<i64, _>("busy"), "queue": 0,
+                "online": row.get::<i64, _>("online"), "busy": row.get::<i64, _>("busy"),
+                "queue": row.get::<i64, _>("queued"),
                 "mode": row.get::<String, _>("mode"),
                 "status": if row.get::<bool, _>("paused") { "paused".into() } else { row.get::<String, _>("state") },
             })
@@ -253,6 +266,51 @@ pub async fn overview(
         },
         "pools": pools, "runs": runs, "activity": activity, "installations": installations,
     })))
+}
+
+pub async fn capacity_history(
+    State(state): State<AppState>,
+    Query(query): Query<CapacityQuery>,
+    OptionalAuth(user): OptionalAuth,
+) -> ApiResult<Json<Value>> {
+    let window = query.window.as_deref().unwrap_or("24h");
+    let (window_millis, bucket_millis) = capacity_window(window)
+        .ok_or_else(|| ApiError::BadRequest("Capacity window must be 24h, 7d, or 30d.".into()))?;
+    let Some(user) = user else {
+        return Ok(Json(json!({ "window": window, "points": [] })));
+    };
+    let cutoff = now_millis().saturating_sub(window_millis);
+    let rows = sqlx::query(
+        r#"SELECT bucket,SUM(available) AS available,SUM(busy) AS busy,SUM(queued) AS queued
+          FROM (
+            SELECT cs.pool_id,(cs.recorded_at / ?) * ? AS bucket,
+              CAST(ROUND(AVG(cs.available)) AS INTEGER) AS available,
+              CAST(ROUND(AVG(cs.busy)) AS INTEGER) AS busy,
+              CAST(ROUND(AVG(cs.queued)) AS INTEGER) AS queued
+            FROM capacity_samples cs
+            JOIN user_installations ui ON ui.installation_id=cs.installation_id
+            WHERE ui.user_id=? AND cs.recorded_at>=?
+            GROUP BY cs.pool_id,bucket
+          ) samples GROUP BY bucket ORDER BY bucket"#,
+    )
+    .bind(bucket_millis)
+    .bind(bucket_millis)
+    .bind(&user.id)
+    .bind(cutoff)
+    .fetch_all(&state.database)
+    .await?;
+    let points = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "recordedAt": iso(row.get::<i64, _>("bucket")),
+                "available": row.get::<i64, _>("available"),
+                "busy": row.get::<i64, _>("busy"),
+                "queued": row.get::<i64, _>("queued"),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({ "window": window, "points": points })))
 }
 
 pub async fn repositories(
@@ -1939,6 +1997,15 @@ fn normalized_pool_labels(name: &str, additional: &[String]) -> ApiResult<Vec<St
     Ok(labels)
 }
 
+fn capacity_window(window: &str) -> Option<(i64, i64)> {
+    match window {
+        "24h" => Some((86_400_000, 5 * 60_000)),
+        "7d" => Some((7 * 86_400_000, 30 * 60_000)),
+        "30d" => Some((30 * 86_400_000, 2 * 60 * 60_000)),
+        _ => None,
+    }
+}
+
 fn iso(value: i64) -> String {
     iso_optional(Some(value)).unwrap_or_default()
 }
@@ -1992,4 +2059,29 @@ fn runner_registration_url(pool: &PoolAccess) -> String {
 #[allow(dead_code)]
 fn backup_path(database: &PathBuf, name: &str) -> PathBuf {
     database.with_file_name(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capacity_windows_have_bounded_chart_resolution() {
+        assert_eq!(capacity_window("24h"), Some((86_400_000, 300_000)));
+        assert_eq!(capacity_window("7d"), Some((604_800_000, 1_800_000)));
+        assert_eq!(capacity_window("30d"), Some((2_592_000_000, 7_200_000)));
+        assert_eq!(capacity_window("1y"), None);
+    }
+
+    #[test]
+    fn pool_labels_include_name_and_enforce_total_limit() {
+        assert_eq!(
+            normalized_pool_labels("linux", &["docker".into(), "docker".into()]).ok(),
+            Some(vec!["docker".into(), "linux".into()])
+        );
+        let too_many = (0..20)
+            .map(|index| format!("label-{index}"))
+            .collect::<Vec<_>>();
+        assert!(normalized_pool_labels("linux", &too_many).is_err());
+    }
 }

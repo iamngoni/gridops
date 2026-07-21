@@ -65,6 +65,10 @@ async fn main() -> Result<()> {
         )
         .route("/api/webhooks/github", post(webhooks::receive))
         .route("/api/v1/overview", get(resources::overview))
+        .route(
+            "/api/v1/overview/capacity",
+            get(resources::capacity_history),
+        )
         .route("/api/v1/search", get(resources::search))
         .route("/api/v1/repositories", get(resources::repositories))
         .route("/api/v1/repositories/sync", post(oauth::sync))
