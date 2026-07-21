@@ -1,4 +1,9 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    io::SeekFrom,
+    path::{Path as FilePath, PathBuf},
+    time::Duration,
+};
 
 use axum::{
     Json,
@@ -8,11 +13,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{SecondsFormat, Utc};
-use futures_util::TryStreamExt as _;
+use futures_util::{StreamExt as _, TryStreamExt as _};
 use gridops_core::{ConfigurationState, CreateRunnerPool, JitRequest, RunnerTarget, now_millis};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 use sqlx::{FromRow, Row as _};
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
 
 use crate::{
     auth::{AuthUser, OptionalAuth, assert_same_origin, audit},
@@ -21,6 +28,9 @@ use crate::{
     state::AppState,
 };
 
+const MAX_ARCHIVED_LOG_BYTES: i64 = 100 * 1_024 * 1_024;
+const MAX_ARCHIVED_LOG_VIEW_BYTES: u64 = 1_000_000;
+
 #[derive(Debug, FromRow)]
 struct PoolAccess {
     installation_id: i64,
@@ -28,6 +38,7 @@ struct PoolAccess {
     repository_owner: Option<String>,
     repository_name: Option<String>,
     name: String,
+    mode: String,
     labels: String,
     image: String,
     desired_count: i64,
@@ -48,7 +59,9 @@ struct RunnerAccess {
     github_runner_id: Option<i64>,
     runner_status: String,
     busy: bool,
+    ephemeral: bool,
     pool_id: String,
+    pool_name: String,
     installation_id: i64,
     account_login: String,
     repository_owner: Option<String>,
@@ -75,6 +88,11 @@ pub(crate) struct WorkflowAction {
 #[derive(Deserialize)]
 pub(crate) struct SearchQuery {
     q: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct LogStreamQuery {
+    tail: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -529,11 +547,29 @@ pub async fn log_targets(
     .bind(&user.id)
     .fetch_all(&state.database)
     .await?;
-    let items = rows.iter().map(|row| json!({
+    let mut items = rows.iter().map(|row| json!({
         "id": row.get::<String,_>("id"), "name": row.get::<String,_>("name"), "status": row.get::<String,_>("status"),
         "busy": row.get::<bool,_>("busy"), "containerId": row.get::<String,_>("container_id"), "updatedAt": iso(row.get::<i64,_>("updated_at")),
-        "poolName": row.get::<String,_>("pool_name"), "repository": row.try_get::<Option<String>,_>("full_name").ok().flatten(),
+        "poolName": row.get::<String,_>("pool_name"), "repository": row.try_get::<Option<String>,_>("full_name").ok().flatten(), "kind": "live",
     })).collect::<Vec<_>>();
+    let archives = sqlx::query(
+        r#"SELECT ls.id,ls.runner_id,ls.runner_name,ls.pool_name,ls.repository,ls.size_bytes,
+          ls.created_at FROM log_streams ls JOIN user_installations ui
+          ON ui.installation_id=ls.installation_id AND ui.user_id=?
+          WHERE ls.complete=1 ORDER BY ls.created_at DESC LIMIT 100"#,
+    )
+    .bind(&user.id)
+    .fetch_all(&state.database)
+    .await?;
+    items.extend(archives.iter().map(|row| json!({
+        "id": row.get::<String,_>("id"), "runnerId": row.try_get::<Option<String>,_>("runner_id").ok().flatten(),
+        "name": row.try_get::<Option<String>,_>("runner_name").ok().flatten().unwrap_or_else(|| "Archived runner".into()),
+        "status": "archived", "busy": false, "containerId": null,
+        "updatedAt": iso(row.get::<i64,_>("created_at")),
+        "poolName": row.try_get::<Option<String>,_>("pool_name").ok().flatten().unwrap_or_else(|| "Deleted pool".into()),
+        "repository": row.try_get::<Option<String>,_>("repository").ok().flatten(),
+        "sizeBytes": row.get::<i64,_>("size_bytes"), "kind": "archive",
+    })));
     Ok(Json(json!({ "authenticated": true, "items": items })))
 }
 
@@ -758,7 +794,13 @@ pub async fn runner_action(
             delete_runner_resources(&state, &user, &runner).await?;
             provision(&state, &user, &runner.pool_id).await?;
         }
-        "stop" | "pause" | "resume" | "restart" => {
+        "start" | "stop" | "pause" | "resume" | "restart" => {
+            if runner.ephemeral && matches!(input.action.as_str(), "start" | "restart") {
+                return Err(ApiError::Conflict(
+                    "Ephemeral runners cannot be started or restarted; rebuild the runner instead."
+                        .into(),
+                ));
+            }
             let container_id = runner
                 .container_id
                 .as_deref()
@@ -809,6 +851,92 @@ pub async fn runner_logs(
     Ok(Json(
         json!({ "runnerId": runner_id, "name": runner.runner_name, "logs": logs }),
     ))
+}
+
+pub async fn runner_log_stream(
+    State(state): State<AppState>,
+    Path(runner_id): Path<String>,
+    Query(query): Query<LogStreamQuery>,
+    user: AuthUser,
+) -> ApiResult<Response> {
+    let runner = runner_access(&state, &user, &runner_id).await?;
+    let container_id = runner
+        .container_id
+        .ok_or_else(|| ApiError::Conflict("Runner has no active container log stream.".into()))?;
+    let tail = query.tail.as_deref().unwrap_or("500");
+    if tail != "0"
+        && !tail
+            .parse::<u32>()
+            .is_ok_and(|lines| (1..=5_000).contains(&lines))
+    {
+        return Err(ApiError::BadRequest(
+            "Log stream tail must be from 0 to 5000.".into(),
+        ));
+    }
+    let response = manager_get(
+        &state,
+        &format!("v1/runners/{container_id}/logs?follow=true&tail={tail}"),
+    )
+    .await?;
+    let stream = response
+        .bytes_stream()
+        .take_until(tokio::time::sleep(Duration::from_secs(25)))
+        .map_err(std::io::Error::other);
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CACHE_CONTROL, "private, no-store"),
+            (header::HeaderName::from_static("x-accel-buffering"), "no"),
+        ],
+        Body::from_stream(stream),
+    )
+        .into_response())
+}
+
+pub async fn archived_logs(
+    State(state): State<AppState>,
+    Path(stream_id): Path<String>,
+    user: AuthUser,
+) -> ApiResult<Json<Value>> {
+    let row = sqlx::query(
+        r#"SELECT ls.path,ls.runner_name FROM log_streams ls
+          JOIN user_installations ui ON ui.installation_id=ls.installation_id
+          WHERE ls.id=? AND ui.user_id=? AND ls.complete=1"#,
+    )
+    .bind(&stream_id)
+    .bind(&user.id)
+    .fetch_optional(&state.database)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("Archived runner log does not exist.".into()))?;
+    let filename = row.get::<String, _>("path");
+    let path = safe_log_path(&state, &filename)?;
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|error| ApiError::Internal(error.into()))?;
+    let size = file
+        .metadata()
+        .await
+        .map_err(|error| ApiError::Internal(error.into()))?
+        .len();
+    let start = size.saturating_sub(MAX_ARCHIVED_LOG_VIEW_BYTES);
+    file.seek(SeekFrom::Start(start))
+        .await
+        .map_err(|error| ApiError::Internal(error.into()))?;
+    let mut bytes = Vec::with_capacity((size - start) as usize);
+    file.read_to_end(&mut bytes)
+        .await
+        .map_err(|error| ApiError::Internal(error.into()))?;
+    let prefix = if start > 0 {
+        "[GridOps is showing the final 1 MB of this retained log.]\n"
+    } else {
+        ""
+    };
+    Ok(Json(json!({
+        "streamId": stream_id,
+        "name": row.try_get::<Option<String>,_>("runner_name").ok().flatten().unwrap_or_else(|| "Archived runner".into()),
+        "logs": format!("{prefix}{}", String::from_utf8_lossy(&bytes)),
+    })))
 }
 
 pub async fn workflow_run_action(
@@ -1046,25 +1174,43 @@ async fn provision(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResul
             (Some(owner), Some(repository)) => RunnerTarget::Repository { owner, repository },
             _ => RunnerTarget::Organization { organization: &pool.account_login },
         };
-        let jit = state.github.generate_jit_config(target, &token, &JitRequest {
-            name: runner_name.clone(), runner_group_id: pool.runner_group_id,
-            labels, work_folder: "_work".into(),
-        }).await.map_err(ApiError::Internal)?;
-        let manager = manager_json(state, Method::POST, "v1/runners", Some(json!({
+        let mut request = json!({
             "runnerId": runner_id, "poolId": pool_id, "name": runner_name, "image": pool.image,
-            "jitConfig": jit.encoded_jit_config, "cpuLimit": pool.cpu_limit,
+            "mode": pool.mode, "labels": labels, "cpuLimit": pool.cpu_limit,
             "memoryLimitMb": pool.memory_limit_mb, "network": state.config.runner_network(),
-        }))).await?;
+            "pullImage": setting_bool(state, "autoUpdateImages", false).await,
+        });
+        let github_runner_id = if pool.ephemeral {
+            let jit = state.github.generate_jit_config(target, &token, &JitRequest {
+                name: runner_name.clone(), runner_group_id: pool.runner_group_id,
+                labels: json_array(&pool.labels), work_folder: "_work".into(),
+            }).await.map_err(ApiError::Internal)?;
+            request["jitConfig"] = Value::String(jit.encoded_jit_config);
+            Some(jit.runner.id)
+        } else {
+            let registration = state.github.generate_registration_token(target, &token)
+                .await.map_err(ApiError::Internal)?;
+            request["registrationToken"] = Value::String(registration.token);
+            request["registrationUrl"] = Value::String(runner_registration_url(&pool));
+            if pool.repository_owner.is_none() && pool.runner_group_id != 1 {
+                let group = state.github.runner_group_name(
+                    &pool.account_login, pool.runner_group_id, &token,
+                ).await.map_err(ApiError::Internal)?;
+                request["runnerGroup"] = Value::String(group);
+            }
+            None
+        };
+        let manager = manager_json(state, Method::POST, "v1/runners", Some(request)).await?;
         let container_id = manager.get("id").and_then(Value::as_str).ok_or_else(|| ApiError::ServiceUnavailable("Runner manager returned an invalid container identifier.".into()))?;
         let status = if manager.get("state").and_then(Value::as_str) == Some("running") { "online" } else { "starting" };
         let updated = now_millis();
         sqlx::query("UPDATE runners SET github_runner_id=?,container_id=?,container_name=?,status=?,registered_at=?,last_heartbeat_at=?,updated_at=? WHERE id=?")
-            .bind(jit.runner.id).bind(container_id).bind(manager.get("name").and_then(Value::as_str)).bind(status)
+            .bind(github_runner_id).bind(container_id).bind(manager.get("name").and_then(Value::as_str)).bind(status)
             .bind(updated).bind(updated).bind(updated).bind(&runner_id).execute(&state.database).await?;
         sqlx::query("INSERT INTO runner_events (id,runner_id,pool_id,event,message,metadata,created_at) VALUES (?,?,?,'Runner started',?,?,?)")
             .bind(uuid::Uuid::new_v4().to_string()).bind(&runner_id).bind(pool_id).bind(format!("{runner_name} started in pool {}", pool.name))
-            .bind(json!({ "containerId": container_id, "githubRunnerId": jit.runner.id }).to_string()).bind(updated).execute(&state.database).await?;
-        audit(state, user, "runner.provisioned", "runner", Some(&runner_id), json!({ "poolId": pool_id, "containerId": container_id, "githubRunnerId": jit.runner.id })).await?;
+            .bind(json!({ "containerId": container_id, "githubRunnerId": github_runner_id, "mode": pool.mode }).to_string()).bind(updated).execute(&state.database).await?;
+        audit(state, user, "runner.provisioned", "runner", Some(&runner_id), json!({ "poolId": pool_id, "containerId": container_id, "githubRunnerId": github_runner_id, "mode": pool.mode })).await?;
         Ok::<Value, ApiError>(json!({ "runnerId": runner_id, "status": status }))
     }.await;
     if let Err(error) = &result {
@@ -1155,7 +1301,8 @@ async fn reconcile_pool(state: &AppState, user: &AuthUser, pool_id: &str) -> Api
                 "running" if runner.busy => "busy",
                 "running" => "online",
                 "paused" => "paused",
-                "exited" | "dead" | "missing" => "stopped",
+                "exited" | "dead" if runner.runner_status == "stopped" => "stopped",
+                "exited" | "dead" | "missing" => "failed",
                 other => other,
             };
             sqlx::query("UPDATE runners SET status=?,last_heartbeat_at=?,updated_at=? WHERE id=?")
@@ -1171,6 +1318,14 @@ async fn reconcile_pool(state: &AppState, user: &AuthUser, pool_id: &str) -> Api
         return Ok(
             json!({ "ok": true, "desired": pool.desired_count, "active": 0, "provisioned": 0, "removed": 0 }),
         );
+    }
+    let failed = runners_for_pool(state, pool_id)
+        .await?
+        .into_iter()
+        .filter(|runner| runner.runner_status == "failed")
+        .collect::<Vec<_>>();
+    for runner in &failed {
+        delete_runner_resources(state, user, runner).await?;
     }
     let refreshed = runners_for_pool(state, pool_id).await?;
     let active = refreshed
@@ -1216,22 +1371,28 @@ async fn delete_runner_resources(
     user: &AuthUser,
     runner: &RunnerAccess,
 ) -> ApiResult<()> {
-    if let Some(container_id) = &runner.container_id {
-        if let Err(error) = manager_json(
-            state,
-            Method::DELETE,
-            &format!("v1/runners/{container_id}"),
-            None,
-        )
-        .await
-        {
-            if !matches!(error, ApiError::NotFound(_)) {
-                return Err(error);
-            }
-        }
+    if runner.container_id.is_some()
+        && let Err(error) = archive_runner_logs(state, runner).await
+    {
+        tracing::warn!(runner_id = %runner.runner_id, error = ?error, "could not archive runner logs");
     }
-    if let Some(github_runner_id) = runner.github_runner_id {
-        let token = control_token(state, &user.id, runner.installation_id).await?;
+    let token = control_token(state, &user.id, runner.installation_id).await?;
+    let target = match (&runner.repository_owner, &runner.repository_name) {
+        (Some(owner), Some(repository)) => RunnerTarget::Repository { owner, repository },
+        _ => RunnerTarget::Organization {
+            organization: &runner.account_login,
+        },
+    };
+    let github_runner_id = match runner.github_runner_id {
+        Some(id) => Some(id),
+        None => state
+            .github
+            .runner_by_name(target, &token, &runner.runner_name)
+            .await
+            .map_err(ApiError::Internal)?
+            .map(|runner| runner.id),
+    };
+    if let Some(github_runner_id) = github_runner_id {
         let path = match (&runner.repository_owner, &runner.repository_name) {
             (Some(owner), Some(repository)) => {
                 format!("/repos/{owner}/{repository}/actions/runners/{github_runner_id}")
@@ -1246,6 +1407,20 @@ async fn delete_runner_resources(
             .delete(&path, &token)
             .await
             .map_err(ApiError::Internal)?;
+    }
+    if let Some(container_id) = &runner.container_id {
+        if let Err(error) = manager_json(
+            state,
+            Method::DELETE,
+            &format!("v1/runners/{container_id}"),
+            None,
+        )
+        .await
+        {
+            if !matches!(error, ApiError::NotFound(_)) {
+                return Err(error);
+            }
+        }
     }
     let now = now_millis();
     sqlx::query("UPDATE runners SET status='deleted',busy=0,deleted_at=?,updated_at=? WHERE id=?")
@@ -1262,7 +1437,7 @@ async fn delete_runner_resources(
 
 async fn pool_access(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResult<PoolAccess> {
     sqlx::query_as::<_, PoolAccess>(r#"SELECT p.installation_id,i.account_login,
-      repo.owner AS repository_owner,repo.name AS repository_name,p.name,p.labels,p.image,p.desired_count,
+      repo.owner AS repository_owner,repo.name AS repository_name,p.name,p.mode,p.labels,p.image,p.desired_count,
       p.min_count,p.max_count,p.cpu_limit,p.memory_limit_mb,p.runner_group_id,p.ephemeral,p.paused
       FROM runner_pools p JOIN user_installations ui ON ui.installation_id=p.installation_id
       JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=p.repository_id
@@ -1277,7 +1452,7 @@ async fn runner_access(
     runner_id: &str,
 ) -> ApiResult<RunnerAccess> {
     sqlx::query_as::<_, RunnerAccess>(r#"SELECT r.id AS runner_id,r.name AS runner_name,r.container_id,
-      r.github_runner_id,r.status AS runner_status,r.busy,p.id AS pool_id,p.installation_id,i.account_login,
+      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
       repo.owner AS repository_owner,repo.name AS repository_name FROM runners r
       JOIN runner_pools p ON p.id=r.pool_id JOIN user_installations ui ON ui.installation_id=p.installation_id
       JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=p.repository_id
@@ -1288,7 +1463,7 @@ async fn runner_access(
 
 async fn runners_for_pool(state: &AppState, pool_id: &str) -> ApiResult<Vec<RunnerAccess>> {
     Ok(sqlx::query_as::<_, RunnerAccess>(r#"SELECT r.id AS runner_id,r.name AS runner_name,r.container_id,
-      r.github_runner_id,r.status AS runner_status,r.busy,p.id AS pool_id,p.installation_id,i.account_login,
+      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
       repo.owner AS repository_owner,repo.name AS repository_name FROM runners r
       JOIN runner_pools p ON p.id=r.pool_id JOIN installations i ON i.id=p.installation_id
       LEFT JOIN repositories repo ON repo.id=p.repository_id WHERE p.id=? AND r.deleted_at IS NULL ORDER BY r.created_at DESC"#)
@@ -1336,6 +1511,10 @@ async fn manager_json(
 }
 
 async fn manager_text(state: &AppState, path: &str) -> ApiResult<String> {
+    Ok(manager_get(state, path).await?.text().await?)
+}
+
+async fn manager_get(state: &AppState, path: &str) -> ApiResult<reqwest::Response> {
     let token = state.manager_token().ok_or_else(|| {
         ApiError::ServiceUnavailable("Runner manager authentication is not configured.".into())
     })?;
@@ -1346,13 +1525,122 @@ async fn manager_text(state: &AppState, path: &str) -> ApiResult<String> {
         .send()
         .await?;
     let status = response.status();
-    let text = response.text().await?;
     if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
         return Err(ApiError::ServiceUnavailable(format!(
-            "Runner manager request failed ({status})."
+            "Runner manager request failed ({status}): {}",
+            text.chars().take(300).collect::<String>()
         )));
     }
-    Ok(text)
+    Ok(response)
+}
+
+async fn archive_runner_logs(state: &AppState, runner: &RunnerAccess) -> ApiResult<Option<String>> {
+    let Some(container_id) = runner.container_id.as_deref() else {
+        return Ok(None);
+    };
+    if let Some(id) = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM log_streams WHERE runner_id=? AND source='docker' AND complete=1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&runner.runner_id)
+    .fetch_optional(&state.database)
+    .await?
+    {
+        return Ok(Some(id));
+    }
+
+    tokio::fs::create_dir_all(state.config.log_directory())
+        .await
+        .map_err(|error| ApiError::Internal(error.into()))?;
+    let stream_id = uuid::Uuid::new_v4().to_string();
+    let filename = format!("{stream_id}.log");
+    let path = safe_log_path(state, &filename)?;
+    let response = manager_get(
+        state,
+        &format!("v1/runners/{container_id}/logs?tail=100000"),
+    )
+    .await?;
+    let write_result = async {
+        let mut file = tokio::fs::File::create(&path)
+            .await
+            .map_err(|error| ApiError::Internal(error.into()))?;
+        let mut stream = response.bytes_stream();
+        let mut checksum = Sha256::new();
+        let mut size_bytes = 0_i64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            let remaining = usize::try_from(MAX_ARCHIVED_LOG_BYTES - size_bytes).unwrap_or(0);
+            if remaining == 0 {
+                break;
+            }
+            let retained = &chunk[..chunk.len().min(remaining)];
+            checksum.update(retained);
+            size_bytes =
+                size_bytes.saturating_add(i64::try_from(retained.len()).unwrap_or(i64::MAX));
+            file.write_all(retained)
+                .await
+                .map_err(|error| ApiError::Internal(error.into()))?;
+        }
+        file.flush()
+            .await
+            .map_err(|error| ApiError::Internal(error.into()))?;
+        ApiResult::<(i64, String)>::Ok((size_bytes, hex::encode(checksum.finalize())))
+    }
+    .await;
+    let (size_bytes, checksum) = match write_result {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(error);
+        }
+    };
+    let now = now_millis();
+    let retention_days = setting_i64_value(state, "logRetentionDays", 30).await;
+    let repository = runner
+        .repository_owner
+        .as_ref()
+        .zip(runner.repository_name.as_ref())
+        .map(|(owner, repository)| format!("{owner}/{repository}"));
+    let inserted = sqlx::query(
+        r#"INSERT INTO log_streams (
+          id,runner_id,installation_id,runner_name,pool_name,repository,source,path,
+          size_bytes,complete,checksum,expires_at,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,'docker',?, ?,1,?,?,?,?)"#,
+    )
+    .bind(&stream_id)
+    .bind(&runner.runner_id)
+    .bind(runner.installation_id)
+    .bind(&runner.runner_name)
+    .bind(&runner.pool_name)
+    .bind(repository)
+    .bind(&filename)
+    .bind(size_bytes)
+    .bind(checksum)
+    .bind(now + retention_days * 86_400_000)
+    .bind(now)
+    .bind(now)
+    .execute(&state.database)
+    .await;
+    if let Err(error) = inserted {
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err(error.into());
+    }
+    Ok(Some(stream_id))
+}
+
+fn safe_log_path(state: &AppState, filename: &str) -> ApiResult<PathBuf> {
+    let candidate = FilePath::new(filename);
+    if candidate.is_absolute()
+        || candidate.components().count() != 1
+        || candidate.file_name().and_then(|value| value.to_str()) != Some(filename)
+        || filename.len() > 128
+        || !filename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(ApiError::BadRequest("Archived log path is invalid.".into()));
+    }
+    Ok(state.config.log_directory().join(filename))
 }
 
 async fn configuration(state: &AppState) -> ApiResult<ConfigurationState> {
@@ -1425,11 +1713,43 @@ fn iso_optional(value: Option<i64>) -> Option<String> {
 }
 
 fn active_status(status: &str) -> bool {
-    matches!(status, "starting" | "online" | "idle" | "busy" | "paused")
+    matches!(
+        status,
+        "starting" | "online" | "idle" | "busy" | "paused" | "stopped"
+    )
 }
 
 fn stored_i64(values: &HashMap<String, Value>, key: &str, fallback: i64) -> i64 {
     values.get(key).and_then(Value::as_i64).unwrap_or(fallback)
+}
+
+async fn setting_bool(state: &AppState, key: &str, fallback: bool) -> bool {
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key=?")
+        .bind(key)
+        .fetch_optional(&state.database)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| serde_json::from_str::<bool>(&value).ok())
+        .unwrap_or(fallback)
+}
+
+async fn setting_i64_value(state: &AppState, key: &str, fallback: i64) -> i64 {
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key=?")
+        .bind(key)
+        .fetch_optional(&state.database)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| serde_json::from_str::<i64>(&value).ok())
+        .unwrap_or(fallback)
+}
+
+fn runner_registration_url(pool: &PoolAccess) -> String {
+    match (&pool.repository_owner, &pool.repository_name) {
+        (Some(owner), Some(repository)) => format!("https://github.com/{owner}/{repository}"),
+        _ => format!("https://github.com/{}", pool.account_login),
+    }
 }
 
 #[allow(dead_code)]

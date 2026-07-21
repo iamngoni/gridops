@@ -184,6 +184,68 @@ impl GitHubClient {
         self.post(&path, token, serde_json::to_value(request)?)
             .await
     }
+
+    pub async fn generate_registration_token(
+        &self,
+        target: RunnerTarget<'_>,
+        token: &str,
+    ) -> Result<RegistrationToken> {
+        let path = match target {
+            RunnerTarget::Repository { owner, repository } => {
+                format!("/repos/{owner}/{repository}/actions/runners/registration-token")
+            }
+            RunnerTarget::Organization { organization } => {
+                format!("/orgs/{organization}/actions/runners/registration-token")
+            }
+        };
+        self.post(&path, token, json!({})).await
+    }
+
+    pub async fn runner_by_name(
+        &self,
+        target: RunnerTarget<'_>,
+        token: &str,
+        name: &str,
+    ) -> Result<Option<JitRunner>> {
+        for page in 1..=100 {
+            let path = match target {
+                RunnerTarget::Repository { owner, repository } => {
+                    format!("/repos/{owner}/{repository}/actions/runners?per_page=100&page={page}")
+                }
+                RunnerTarget::Organization { organization } => {
+                    format!("/orgs/{organization}/actions/runners?per_page=100&page={page}")
+                }
+            };
+            let response: RunnerPage = self.get(&path, token).await?;
+            let final_page = response.runners.len() < 100;
+            if let Some(runner) = response
+                .runners
+                .into_iter()
+                .find(|runner| runner.name == name)
+            {
+                return Ok(Some(runner));
+            }
+            if final_page {
+                break;
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn runner_group_name(
+        &self,
+        organization: &str,
+        runner_group_id: i64,
+        token: &str,
+    ) -> Result<String> {
+        let group: RunnerGroup = self
+            .get(
+                &format!("/orgs/{organization}/actions/runner-groups/{runner_group_id}"),
+                token,
+            )
+            .await?;
+        Ok(group.name)
+    }
 }
 
 #[derive(Deserialize)]
@@ -252,6 +314,7 @@ pub struct GitHubOwner {
     pub login: String,
 }
 
+#[derive(Clone, Copy)]
 pub enum RunnerTarget<'a> {
     Repository { owner: &'a str, repository: &'a str },
     Organization { organization: &'a str },
@@ -271,10 +334,26 @@ pub struct JitResponse {
     pub encoded_jit_config: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct JitRunner {
     pub id: i64,
     pub name: String,
     pub status: String,
     pub busy: bool,
+}
+
+#[derive(Deserialize)]
+pub struct RegistrationToken {
+    pub token: String,
+    pub expires_at: String,
+}
+
+#[derive(Deserialize)]
+struct RunnerPage {
+    runners: Vec<JitRunner>,
+}
+
+#[derive(Deserialize)]
+struct RunnerGroup {
+    name: String,
 }

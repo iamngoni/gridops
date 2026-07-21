@@ -215,7 +215,7 @@ mod tests {
             sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'legacy'")
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
         assert_eq!(preserved, "preserved");
         pool.close().await;
         fs::remove_dir_all(directory)?;

@@ -447,9 +447,11 @@ async fn process_workflow_job(
             "in_progress" => {
                 sqlx::query(
                     r#"UPDATE runners SET busy=1,status='busy',current_job_id=?,
+                       github_runner_id=COALESCE(github_runner_id,?),
                        last_heartbeat_at=?,updated_at=? WHERE name=? AND deleted_at IS NULL"#,
                 )
                 .bind(id)
+                .bind(i64_value(job, "runner_id"))
                 .bind(now)
                 .bind(now)
                 .bind(runner_name)
@@ -459,8 +461,10 @@ async fn process_workflow_job(
             "completed" => {
                 sqlx::query(
                     r#"UPDATE runners SET busy=0,status='online',current_job_id=NULL,
+                       github_runner_id=COALESCE(github_runner_id,?),
                        last_heartbeat_at=?,updated_at=? WHERE name=? AND deleted_at IS NULL"#,
                 )
+                .bind(i64_value(job, "runner_id"))
                 .bind(now)
                 .bind(now)
                 .bind(runner_name)

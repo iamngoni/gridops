@@ -93,6 +93,10 @@ async fn main() -> Result<()> {
             "/api/v1/runners/{runner_id}/logs",
             get(resources::runner_logs),
         )
+        .route(
+            "/api/v1/runners/{runner_id}/logs/stream",
+            get(resources::runner_log_stream),
+        )
         .route("/api/v1/workflow-runs", get(resources::workflow_runs))
         .route(
             "/api/v1/workflow-runs/{run_id}",
@@ -117,6 +121,10 @@ async fn main() -> Result<()> {
         )
         .route("/api/v1/audit", get(resources::audit_events))
         .route("/api/v1/log-streams", get(resources::log_targets))
+        .route(
+            "/api/v1/log-streams/{stream_id}/logs",
+            get(resources::archived_logs),
+        )
         .route(
             "/api/v1/settings",
             get(resources::settings).put(resources::save_settings),

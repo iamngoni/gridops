@@ -3,7 +3,8 @@ use std::{collections::HashMap, env, time::Duration};
 use anyhow::{Context as _, Result};
 use axum::{
     Json, Router,
-    extract::{FromRequestParts, Path, State},
+    body::Body,
+    extract::{FromRequestParts, Path, Query, State},
     http::{StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -13,9 +14,9 @@ use bollard::{
     errors::Error as DockerError,
     models::{ContainerCreateBody, HostConfig, NetworkCreateRequest},
     query_parameters::{
-        CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
-        LogsOptionsBuilder, RemoveContainerOptionsBuilder, RestartContainerOptionsBuilder,
-        StartContainerOptions, StopContainerOptionsBuilder,
+        AttachContainerOptionsBuilder, CreateContainerOptionsBuilder, CreateImageOptionsBuilder,
+        ListContainersOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
+        RestartContainerOptionsBuilder, StartContainerOptions, StopContainerOptionsBuilder,
     },
 };
 use futures_util::{StreamExt as _, TryStreamExt as _};
@@ -23,6 +24,7 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq as _;
+use tokio::io::AsyncWriteExt as _;
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
@@ -102,14 +104,22 @@ impl From<DockerError> for ManagerError {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProvisionRunner {
     runner_id: String,
     pool_id: String,
     name: String,
     image: String,
-    jit_config: String,
+    mode: String,
+    jit_config: Option<String>,
+    registration_token: Option<String>,
+    registration_url: Option<String>,
+    #[serde(default)]
+    labels: Vec<String>,
+    runner_group: Option<String>,
+    #[serde(default)]
+    pull_image: bool,
     cpu_limit: f64,
     memory_limit_mb: i64,
     network: String,
@@ -130,10 +140,42 @@ impl ProvisionRunner {
         if self.image.trim().is_empty() || self.image.len() > 512 {
             return Err(ManagerError::BadRequest("Runner image is invalid.".into()));
         }
-        if self.jit_config.len() < 20 || self.jit_config.len() > 900_000 {
-            return Err(ManagerError::BadRequest(
-                "Runner JIT configuration is invalid.".into(),
-            ));
+        match self.mode.as_str() {
+            "ephemeral" => {
+                if self.jit_config.as_ref().is_none_or(|value| {
+                    !(20..=900_000).contains(&value.len()) || value.contains(['\n', '\r'])
+                }) {
+                    return Err(ManagerError::BadRequest(
+                        "Runner JIT configuration is invalid.".into(),
+                    ));
+                }
+            }
+            "persistent" => {
+                if self.registration_token.as_ref().is_none_or(|value| {
+                    !(20..=2_048).contains(&value.len()) || value.contains(['\n', '\r'])
+                }) || self
+                    .registration_url
+                    .as_deref()
+                    .is_none_or(|value| !valid_registration_url(value))
+                    || self.labels.is_empty()
+                    || self.labels.len() > 100
+                    || self.labels.iter().any(|label| {
+                        label.is_empty() || label.len() > 100 || label.contains([',', '\n', '\r'])
+                    })
+                    || self.runner_group.as_ref().is_some_and(|group| {
+                        group.is_empty() || group.len() > 100 || group.contains(['\n', '\r'])
+                    })
+                {
+                    return Err(ManagerError::BadRequest(
+                        "Persistent runner registration is invalid.".into(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(ManagerError::BadRequest(
+                    "Runner mode must be ephemeral or persistent.".into(),
+                ));
+            }
         }
         if !(0.25..=64.0).contains(&self.cpu_limit)
             || !(256..=262_144).contains(&self.memory_limit_mb)
@@ -156,6 +198,13 @@ struct ManagedRunner {
     status: String,
     labels: HashMap<String, String>,
     created_at: String,
+}
+
+#[derive(Deserialize)]
+struct LogsQuery {
+    #[serde(default)]
+    follow: bool,
+    tail: Option<String>,
 }
 
 #[tokio::main]
@@ -246,11 +295,12 @@ async fn list_runners(
 async fn provision_runner(
     State(state): State<ManagerState>,
     _auth: ManagerAuth,
-    Json(input): Json<ProvisionRunner>,
+    Json(mut input): Json<ProvisionRunner>,
 ) -> Result<(StatusCode, Json<Value>), ManagerError> {
     input.validate()?;
+    let bootstrap_secret = take_bootstrap_secret(&mut input)?;
     ensure_network(&state.docker, &input.network).await?;
-    ensure_image(&state.docker, &input.image).await?;
+    ensure_image(&state.docker, &input.image, input.pull_image).await?;
 
     let filters = HashMap::from([("name".to_owned(), vec![input.name.clone()])]);
     let existing = state
@@ -274,18 +324,19 @@ async fn provision_runner(
     }
 
     let memory_bytes = input.memory_limit_mb * 1_024 * 1_024;
+    let (cmd, env) = runner_command(&input)?;
     let labels = HashMap::from([
         ("io.gridops.managed".into(), "true".into()),
         ("io.gridops.runner-id".into(), input.runner_id),
         ("io.gridops.pool-id".into(), input.pool_id),
+        ("io.gridops.mode".into(), input.mode),
     ]);
     let body = ContainerCreateBody {
         image: Some(input.image),
-        cmd: Some(vec![
-            "/home/runner/run.sh".into(),
-            "--jitconfig".into(),
-            input.jit_config,
-        ]),
+        cmd: Some(cmd),
+        env: Some(env),
+        attach_stdin: Some(true),
+        open_stdin: Some(true),
         labels: Some(labels),
         host_config: Some(HostConfig {
             auto_remove: Some(false),
@@ -325,6 +376,47 @@ async fn provision_runner(
             .await;
         return Err(error.into());
     }
+    let bootstrap_result = async {
+        let mut connection = state
+            .docker
+            .attach_container(
+                &container.id,
+                Some(
+                    AttachContainerOptionsBuilder::default()
+                        .stdin(true)
+                        .stream(true)
+                        .build(),
+                ),
+            )
+            .await?;
+        connection
+            .input
+            .write_all(bootstrap_secret.expose_secret().as_bytes())
+            .await
+            .map_err(|error| ManagerError::Internal(error.into()))?;
+        connection
+            .input
+            .write_all(b"\n")
+            .await
+            .map_err(|error| ManagerError::Internal(error.into()))?;
+        connection
+            .input
+            .shutdown()
+            .await
+            .map_err(|error| ManagerError::Internal(error.into()))?;
+        Result::<(), ManagerError>::Ok(())
+    }
+    .await;
+    if let Err(error) = bootstrap_result {
+        let _ = state
+            .docker
+            .remove_container(
+                &container.id,
+                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+            )
+            .await;
+        return Err(error);
+    }
     let details = state.docker.inspect_container(&container.id, None).await?;
     Ok((
         StatusCode::CREATED,
@@ -343,8 +435,23 @@ async fn control_runner(
     _auth: ManagerAuth,
 ) -> Result<Json<Value>, ManagerError> {
     validate_container_id(&container_id)?;
-    assert_managed_container(&state.docker, &container_id).await?;
+    let labels = managed_container_labels(&state.docker, &container_id).await?;
+    if matches!(action.as_str(), "start" | "restart")
+        && labels.get("io.gridops.mode").map(String::as_str) == Some("ephemeral")
+    {
+        return Err(ManagerError::Conflict(
+            "Ephemeral runners cannot be started or restarted; rebuild the runner instead.".into(),
+        ));
+    }
     let status = match action.as_str() {
+        "start" => {
+            state
+                .docker
+                .start_container(&container_id, None::<StartContainerOptions>)
+                .await
+                .or_else(ignore_not_modified)?;
+            "running"
+        }
         "stop" => {
             state
                 .docker
@@ -376,7 +483,7 @@ async fn control_runner(
         }
         _ => {
             return Err(ManagerError::BadRequest(
-                "Runner action must be stop, pause, resume, or restart.".into(),
+                "Runner action must be start, stop, pause, resume, or restart.".into(),
             ));
         }
     };
@@ -386,30 +493,36 @@ async fn control_runner(
 async fn logs(
     State(state): State<ManagerState>,
     Path(container_id): Path<String>,
+    Query(query): Query<LogsQuery>,
     _auth: ManagerAuth,
 ) -> Result<Response, ManagerError> {
     validate_container_id(&container_id)?;
-    assert_managed_container(&state.docker, &container_id).await?;
+    managed_container_labels(&state.docker, &container_id).await?;
+    let tail = query.tail.unwrap_or_else(|| "500".into());
+    if !valid_log_tail(&tail) {
+        return Err(ManagerError::BadRequest(
+            "Log tail must be all or a number from 0 to 100000.".into(),
+        ));
+    }
     let options = LogsOptionsBuilder::default()
         .stdout(true)
         .stderr(true)
         .timestamps(true)
-        .tail("500")
+        .follow(query.follow)
+        .tail(&tail)
         .build();
-    let output = state
+    let stream = state
         .docker
         .logs(&container_id, Some(options))
-        .map(|result| result.map(|line| line.to_string()))
-        .try_collect::<Vec<_>>()
-        .await?
-        .join("");
+        .map(|result| result.map(|line| line.to_string()));
     Ok((
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
             (header::CACHE_CONTROL, "no-store"),
+            (header::HeaderName::from_static("x-accel-buffering"), "no"),
         ],
-        output,
+        Body::from_stream(stream),
     )
         .into_response())
 }
@@ -420,7 +533,7 @@ async fn delete_runner(
     _auth: ManagerAuth,
 ) -> Result<Json<Value>, ManagerError> {
     validate_container_id(&container_id)?;
-    assert_managed_container(&state.docker, &container_id).await?;
+    managed_container_labels(&state.docker, &container_id).await?;
     state
         .docker
         .remove_container(
@@ -460,10 +573,11 @@ async fn ensure_network(docker: &Docker, name: &str) -> Result<(), ManagerError>
     }
 }
 
-async fn ensure_image(docker: &Docker, image: &str) -> Result<(), ManagerError> {
+async fn ensure_image(docker: &Docker, image: &str, pull_image: bool) -> Result<(), ManagerError> {
     match docker.inspect_image(image).await {
-        Ok(_) => Ok(()),
-        Err(DockerError::DockerResponseServerError {
+        Ok(_) if !pull_image => Ok(()),
+        Ok(_)
+        | Err(DockerError::DockerResponseServerError {
             status_code: 404, ..
         }) => {
             docker
@@ -482,6 +596,61 @@ async fn ensure_image(docker: &Docker, image: &str) -> Result<(), ManagerError> 
         }
         Err(error) => Err(error.into()),
     }
+}
+
+fn runner_command(input: &ProvisionRunner) -> Result<(Vec<String>, Vec<String>), ManagerError> {
+    match input.mode.as_str() {
+        "ephemeral" => Ok((
+            vec![
+                "/bin/bash".into(),
+                "-lc".into(),
+                r#"set -euo pipefail
+IFS= read -r GRIDOPS_BOOTSTRAP_SECRET
+[ -n "$GRIDOPS_BOOTSTRAP_SECRET" ]
+exec /home/runner/run.sh --jitconfig "$GRIDOPS_BOOTSTRAP_SECRET""#
+                    .into(),
+            ],
+            vec!["ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1".into()],
+        )),
+        "persistent" => {
+            let registration_url = input.registration_url.as_ref().ok_or_else(|| {
+                ManagerError::BadRequest("Runner registration URL is required.".into())
+            })?;
+            let script = r#"set -euo pipefail
+if [ -f .runner ]; then exec ./run.sh; fi
+IFS= read -r GRIDOPS_BOOTSTRAP_SECRET
+[ -n "$GRIDOPS_BOOTSTRAP_SECRET" ]
+args=(--unattended --url "$GRIDOPS_REGISTRATION_URL" --token "$GRIDOPS_BOOTSTRAP_SECRET" --name "$GRIDOPS_RUNNER_NAME" --labels "$GRIDOPS_RUNNER_LABELS" --work _work --replace --disableupdate)
+if [ -n "${GRIDOPS_RUNNER_GROUP:-}" ]; then args+=(--runnergroup "$GRIDOPS_RUNNER_GROUP"); fi
+./config.sh "${args[@]}"
+unset GRIDOPS_BOOTSTRAP_SECRET
+exec ./run.sh"#;
+            Ok((
+                vec!["/bin/bash".into(), "-lc".into(), script.into()],
+                vec![
+                    format!("GRIDOPS_REGISTRATION_URL={registration_url}"),
+                    format!("GRIDOPS_RUNNER_NAME={}", input.name),
+                    format!("GRIDOPS_RUNNER_LABELS={}", input.labels.join(",")),
+                    format!(
+                        "GRIDOPS_RUNNER_GROUP={}",
+                        input.runner_group.as_deref().unwrap_or_default()
+                    ),
+                    "ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1".into(),
+                ],
+            ))
+        }
+        _ => Err(ManagerError::BadRequest("Runner mode is invalid.".into())),
+    }
+}
+
+fn take_bootstrap_secret(input: &mut ProvisionRunner) -> Result<SecretString, ManagerError> {
+    let value = match input.mode.as_str() {
+        "ephemeral" => input.jit_config.take(),
+        "persistent" => input.registration_token.take(),
+        _ => None,
+    }
+    .ok_or_else(|| ManagerError::BadRequest("Runner bootstrap credential is required.".into()))?;
+    Ok(SecretString::from(value))
 }
 
 fn ignore_not_modified(error: DockerError) -> Result<(), DockerError> {
@@ -506,11 +675,14 @@ fn validate_container_id(id: &str) -> Result<(), ManagerError> {
     ))
 }
 
-async fn assert_managed_container(docker: &Docker, id: &str) -> Result<(), ManagerError> {
+async fn managed_container_labels(
+    docker: &Docker,
+    id: &str,
+) -> Result<HashMap<String, String>, ManagerError> {
     let details = docker.inspect_container(id, None).await?;
     let labels = details.config.and_then(|config| config.labels);
-    if labels.as_ref().is_some_and(managed_labels) {
-        return Ok(());
+    if let Some(labels) = labels.filter(managed_labels) {
+        return Ok(labels);
     }
     Err(ManagerError::Forbidden(
         "GridOps can only control containers carrying its managed-runner label.".into(),
@@ -535,9 +707,39 @@ fn valid_docker_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+fn valid_registration_url(value: &str) -> bool {
+    value.starts_with("https://github.com/")
+        && value.len() <= 512
+        && !value.bytes().any(|byte| byte.is_ascii_whitespace())
+}
+
+fn valid_log_tail(value: &str) -> bool {
+    value == "all" || value.parse::<u32>().is_ok_and(|lines| lines <= 100_000)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn provision_request(mode: &str) -> ProvisionRunner {
+        ProvisionRunner {
+            runner_id: "runner-1".into(),
+            pool_id: "pool-1".into(),
+            name: "runner-1".into(),
+            image: "ghcr.io/actions/actions-runner:latest".into(),
+            mode: mode.into(),
+            jit_config: (mode == "ephemeral").then(|| "fake-jit-credential-123456".into()),
+            registration_token: (mode == "persistent").then(|| "fake-registration-123456".into()),
+            registration_url: (mode == "persistent")
+                .then(|| "https://github.com/iamngoni/gridops".into()),
+            labels: vec!["self-hosted".into(), "linux".into()],
+            runner_group: None,
+            pull_image: false,
+            cpu_limit: 2.0,
+            memory_limit_mb: 4_096,
+            network: "gridops-runners".into(),
+        }
+    }
 
     #[test]
     fn requires_complete_gridops_management_labels() {
@@ -552,5 +754,56 @@ mod tests {
         labels.insert("io.gridops.pool-id".into(), "pool-1".into());
         labels.insert("io.gridops.managed".into(), "false".into());
         assert!(!managed_labels(&labels));
+    }
+
+    #[test]
+    fn validates_registration_urls() {
+        assert!(valid_registration_url(
+            "https://github.com/iamngoni/gridops"
+        ));
+        assert!(valid_registration_url("https://github.com/iamngoni"));
+        assert!(!valid_registration_url(
+            "https://example.com/iamngoni/gridops"
+        ));
+        assert!(!valid_registration_url("https://github.com/iamngoni bad"));
+    }
+
+    #[test]
+    fn validates_log_tails() {
+        assert!(valid_log_tail("all"));
+        assert!(valid_log_tail("0"));
+        assert!(valid_log_tail("500"));
+        assert!(!valid_log_tail("100001"));
+        assert!(!valid_log_tail("recent"));
+    }
+
+    #[test]
+    fn keeps_ephemeral_bootstrap_credentials_out_of_docker_metadata() -> Result<(), ManagerError> {
+        let mut input = provision_request("ephemeral");
+        input.validate()?;
+        let secret = take_bootstrap_secret(&mut input)?;
+        let (command, environment) = runner_command(&input)?;
+        let metadata = format!("{command:?}{environment:?}");
+
+        assert_eq!(secret.expose_secret(), "fake-jit-credential-123456");
+        assert!(input.jit_config.is_none());
+        assert!(!metadata.contains(secret.expose_secret()));
+        assert!(metadata.contains("read -r GRIDOPS_BOOTSTRAP_SECRET"));
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_persistent_bootstrap_credentials_out_of_docker_metadata() -> Result<(), ManagerError> {
+        let mut input = provision_request("persistent");
+        input.validate()?;
+        let secret = take_bootstrap_secret(&mut input)?;
+        let (command, environment) = runner_command(&input)?;
+        let metadata = format!("{command:?}{environment:?}");
+
+        assert_eq!(secret.expose_secret(), "fake-registration-123456");
+        assert!(input.registration_token.is_none());
+        assert!(!metadata.contains(secret.expose_secret()));
+        assert!(metadata.contains("if [ -f .runner ]"));
+        Ok(())
     }
 }
