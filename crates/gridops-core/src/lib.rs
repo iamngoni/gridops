@@ -6,9 +6,10 @@ pub mod models;
 
 pub use config::Config;
 pub use crypto::Vault;
-pub use db::{connect_database, connect_database_path, now_millis};
+pub use db::{associate_runner_with_job, connect_database, connect_database_path, now_millis};
 pub use github::{
-    GitHubClient, GitHubInstallation, GitHubRepository, GitHubUser, InstallationPage, JitRequest,
-    JitResponse, RepositoryPage, RunnerTarget, WorkflowJobPage,
+    GitHubClient, GitHubInstallation, GitHubRepository, GitHubUser, GitHubWorkflowRun,
+    InstallationPage, JitRequest, JitResponse, RepositoryPage, RunnerTarget, WorkflowJobPage,
+    WorkflowRunPage,
 };
 pub use models::{Alerts, ConfigurationState, CreateRunnerPool, UpdateRunnerPool, Viewer};

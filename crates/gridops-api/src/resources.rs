@@ -118,6 +118,7 @@ pub struct SystemSettings {
     webhook_retention_days: i64,
     audit_retention_days: i64,
     reconcile_interval_seconds: i64,
+    github_sync_interval_seconds: i64,
     auto_update_images: bool,
 }
 
@@ -1308,6 +1309,7 @@ pub async fn settings(
             "webhookRetentionDays": stored_i64(&stored, "webhookRetentionDays", 90),
             "auditRetentionDays": stored_i64(&stored, "auditRetentionDays", 365),
             "reconcileIntervalSeconds": stored_i64(&stored, "reconcileIntervalSeconds", 30),
+            "githubSyncIntervalSeconds": stored_i64(&stored, "githubSyncIntervalSeconds", 60),
             "autoUpdateImages": stored.get("autoUpdateImages").and_then(Value::as_bool).unwrap_or(false),
         }, "user": { "login": user.login }
     }})))
@@ -1324,6 +1326,7 @@ pub async fn save_settings(
         || !(1..=3_650).contains(&input.webhook_retention_days)
         || !(1..=3_650).contains(&input.audit_retention_days)
         || !(5..=3_600).contains(&input.reconcile_interval_seconds)
+        || !(30..=3_600).contains(&input.github_sync_interval_seconds)
     {
         return Err(ApiError::BadRequest(
             "Retention or reconciliation settings are outside the supported range.".into(),
@@ -1337,6 +1340,10 @@ pub async fn save_settings(
             "reconcileIntervalSeconds",
             json!(input.reconcile_interval_seconds),
         ),
+        (
+            "githubSyncIntervalSeconds",
+            json!(input.github_sync_interval_seconds),
+        ),
         ("autoUpdateImages", json!(input.auto_update_images)),
     ];
     let now = now_millis();
@@ -1349,6 +1356,7 @@ pub async fn save_settings(
     audit(&state, &user, "settings.updated", "system", Some("gridops"), json!({
         "logRetentionDays": input.log_retention_days, "webhookRetentionDays": input.webhook_retention_days,
         "auditRetentionDays": input.audit_retention_days, "reconcileIntervalSeconds": input.reconcile_interval_seconds,
+        "githubSyncIntervalSeconds": input.github_sync_interval_seconds,
         "autoUpdateImages": input.auto_update_images,
     })).await?;
     Ok(Json(json!({ "ok": true })))

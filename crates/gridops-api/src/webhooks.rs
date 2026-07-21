@@ -14,7 +14,7 @@ use crate::{
     error::{ApiError, ApiResult},
     state::AppState,
 };
-use gridops_core::now_millis;
+use gridops_core::{associate_runner_with_job, now_millis};
 
 const MAX_WEBHOOK_BYTES: usize = 25 * 1024 * 1024;
 
@@ -542,58 +542,6 @@ async fn insert_placeholder_run(
     .execute(database)
     .await?;
     Ok(())
-}
-
-pub(crate) async fn associate_runner_with_job(
-    database: &SqlitePool,
-    job_id: i64,
-    status: &str,
-    github_runner_id: Option<i64>,
-    runner_name: Option<&str>,
-    now: i64,
-) -> ApiResult<Option<(String, String)>> {
-    let Some(runner_name) = runner_name else {
-        return Ok(None);
-    };
-    match status {
-        "in_progress" => {
-            sqlx::query(
-                r#"UPDATE runners SET busy=1,status='busy',current_job_id=?,last_job_id=?,
-                   github_runner_id=COALESCE(github_runner_id,?),
-                   last_heartbeat_at=?,updated_at=? WHERE name=? AND deleted_at IS NULL"#,
-            )
-            .bind(job_id)
-            .bind(job_id)
-            .bind(github_runner_id)
-            .bind(now)
-            .bind(now)
-            .bind(runner_name)
-            .execute(database)
-            .await?;
-        }
-        "completed" => {
-            sqlx::query(
-                r#"UPDATE runners SET busy=0,status='online',current_job_id=NULL,last_job_id=?,
-                   github_runner_id=COALESCE(github_runner_id,?),
-                   last_heartbeat_at=?,updated_at=? WHERE name=? AND deleted_at IS NULL"#,
-            )
-            .bind(job_id)
-            .bind(github_runner_id)
-            .bind(now)
-            .bind(now)
-            .bind(runner_name)
-            .execute(database)
-            .await?;
-        }
-        _ => {}
-    }
-    Ok(
-        sqlx::query("SELECT id,pool_id FROM runners WHERE name=? AND deleted_at IS NULL")
-            .bind(runner_name)
-            .fetch_optional(database)
-            .await?
-            .map(|row| (row.get("id"), row.get("pool_id"))),
-    )
 }
 
 async fn scale_for_queued_job(

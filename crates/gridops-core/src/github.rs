@@ -351,6 +351,36 @@ pub struct GitHubWorkflowJob {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct WorkflowRunPage {
+    pub workflow_runs: Vec<GitHubWorkflowRun>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubWorkflowRun {
+    pub id: i64,
+    pub workflow_id: Option<i64>,
+    pub name: Option<String>,
+    pub display_title: Option<String>,
+    pub run_number: i64,
+    pub run_attempt: i64,
+    pub event: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub head_branch: Option<String>,
+    pub head_sha: String,
+    pub actor: Option<WorkflowActor>,
+    pub html_url: String,
+    pub run_started_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WorkflowActor {
+    pub login: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct GitHubOwner {
     pub login: String,
 }

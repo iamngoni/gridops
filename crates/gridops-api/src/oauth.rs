@@ -9,7 +9,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use gridops_core::{
     GitHubInstallation, GitHubRepository, GitHubUser, InstallationPage, RepositoryPage,
-    WorkflowJobPage, crypto::hash_token, now_millis,
+    WorkflowJobPage, WorkflowRunPage, associate_runner_with_job, crypto::hash_token, now_millis,
 };
 use reqwest::Method;
 use serde::Deserialize;
@@ -47,36 +47,6 @@ struct TokenResponse {
     refresh_token_expires_in: Option<i64>,
     error: Option<String>,
     error_description: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct WorkflowRunPage {
-    workflow_runs: Vec<GitHubWorkflowRun>,
-}
-
-#[derive(Deserialize)]
-struct GitHubWorkflowRun {
-    id: i64,
-    workflow_id: Option<i64>,
-    name: Option<String>,
-    display_title: Option<String>,
-    run_number: i64,
-    run_attempt: i64,
-    event: String,
-    status: String,
-    conclusion: Option<String>,
-    head_branch: Option<String>,
-    head_sha: String,
-    actor: Option<WorkflowActor>,
-    html_url: String,
-    run_started_at: Option<String>,
-    created_at: String,
-    updated_at: String,
-}
-
-#[derive(Deserialize)]
-struct WorkflowActor {
-    login: String,
 }
 
 pub async fn begin(
@@ -765,7 +735,7 @@ async fn sync_run_jobs(
         }
         transaction.commit().await?;
         for job in &response.jobs {
-            crate::webhooks::associate_runner_with_job(
+            associate_runner_with_job(
                 &state.database,
                 job.id,
                 &job.status,

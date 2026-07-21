@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use sqlx::{
-    SqlitePool,
+    Row as _, SqlitePool,
     migrate::Migrator,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
 };
@@ -140,10 +140,62 @@ pub fn now_millis() -> i64 {
         })
 }
 
+pub async fn associate_runner_with_job(
+    database: &SqlitePool,
+    job_id: i64,
+    status: &str,
+    github_runner_id: Option<i64>,
+    runner_name: Option<&str>,
+    now: i64,
+) -> std::result::Result<Option<(String, String)>, sqlx::Error> {
+    let Some(runner_name) = runner_name else {
+        return Ok(None);
+    };
+    match status {
+        "in_progress" => {
+            sqlx::query(
+                r#"UPDATE runners SET busy=1,status='busy',current_job_id=?,last_job_id=?,
+                   github_runner_id=COALESCE(github_runner_id,?),
+                   last_heartbeat_at=?,updated_at=? WHERE name=? AND deleted_at IS NULL"#,
+            )
+            .bind(job_id)
+            .bind(job_id)
+            .bind(github_runner_id)
+            .bind(now)
+            .bind(now)
+            .bind(runner_name)
+            .execute(database)
+            .await?;
+        }
+        "completed" => {
+            sqlx::query(
+                r#"UPDATE runners SET busy=0,status='online',current_job_id=NULL,last_job_id=?,
+                   github_runner_id=COALESCE(github_runner_id,?),
+                   last_heartbeat_at=?,updated_at=? WHERE name=? AND deleted_at IS NULL"#,
+            )
+            .bind(job_id)
+            .bind(github_runner_id)
+            .bind(now)
+            .bind(now)
+            .bind(runner_name)
+            .execute(database)
+            .await?;
+        }
+        _ => {}
+    }
+    Ok(
+        sqlx::query("SELECT id,pool_id FROM runners WHERE name=? AND deleted_at IS NULL")
+            .bind(runner_name)
+            .fetch_optional(database)
+            .await?
+            .map(|row| (row.get("id"), row.get("pool_id"))),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::{Connection as _, Executor as _, Row as _, SqliteConnection};
+    use sqlx::{Connection as _, Executor as _, SqliteConnection};
 
     #[tokio::test]
     async fn fresh_database_applies_every_migration() -> Result<()> {

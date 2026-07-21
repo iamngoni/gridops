@@ -1,9 +1,13 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result, bail};
 use futures_util::StreamExt as _;
 use gridops_core::{
-    Config, GitHubClient, JitRequest, RunnerTarget, Vault, connect_database, now_millis,
+    Config, GitHubClient, JitRequest, RunnerTarget, Vault, WorkflowJobPage, WorkflowRunPage,
+    associate_runner_with_job, connect_database, now_millis,
 };
 use reqwest::{Method, StatusCode};
 use secrecy::ExposeSecret as _;
@@ -45,6 +49,7 @@ struct Pool {
     ephemeral: bool,
     paused: bool,
     autoscaling_enabled: bool,
+    queue_scale_factor: i64,
     idle_timeout_minutes: i64,
     configuration_version: i64,
 }
@@ -60,6 +65,15 @@ struct Runner {
     last_job_id: Option<i64>,
     configuration_version: i64,
     updated_at: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct Repository {
+    id: i64,
+    installation_id: i64,
+    owner: String,
+    name: String,
+    full_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,6 +131,9 @@ async fn main() -> Result<()> {
 }
 
 async fn reconcile(app: &Reconciler) -> Result<()> {
+    if let Err(error) = maybe_sync_github(app).await {
+        tracing::warn!(error = ?error, "periodic GitHub workflow sync failed");
+    }
     let managed = match manager_request::<ManagerRunners>(app, Method::GET, "v1/runners", None)
         .await
     {
@@ -135,7 +152,7 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
         r#"SELECT p.id,p.installation_id,i.account_login,repo.owner AS repository_owner,
           repo.name AS repository_name,p.name,p.mode,p.labels,p.image,p.desired_count,p.min_count,
           p.max_count,p.cpu_limit,p.memory_limit_mb,p.runner_group_id,p.ephemeral,p.paused,
-          p.autoscaling_enabled,p.idle_timeout_minutes,p.configuration_version FROM runner_pools p
+          p.autoscaling_enabled,p.queue_scale_factor,p.idle_timeout_minutes,p.configuration_version FROM runner_pools p
           JOIN installations i ON i.id=p.installation_id
           LEFT JOIN repositories repo ON repo.id=p.repository_id
           WHERE p.state != 'deleting' ORDER BY p.created_at"#,
@@ -226,6 +243,7 @@ async fn reconcile_pool(
     }
 
     let current = runners(app, &pool.id).await?;
+    maybe_scale_up(app, pool, &current).await?;
     maybe_scale_down(app, pool, &current).await?;
     let desired = if pool.paused {
         0
@@ -295,6 +313,56 @@ async fn reconcile_pool(
         )
         .await?;
     }
+    Ok(())
+}
+
+async fn maybe_scale_up(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Result<()> {
+    if !pool.autoscaling_enabled || pool.paused {
+        return Ok(());
+    }
+    let queued = queued_jobs(&app.database, pool).await?;
+    if queued == 0 {
+        return Ok(());
+    }
+    let active = i64::try_from(
+        runners
+            .iter()
+            .filter(|runner| active_status(&runner.status))
+            .count(),
+    )
+    .unwrap_or(i64::MAX);
+    let requested = active.saturating_add(queued.saturating_mul(pool.queue_scale_factor));
+    let target = pool.max_count.min(pool.desired_count.max(requested));
+    if target <= pool.desired_count {
+        return Ok(());
+    }
+    let now = now_millis();
+    sqlx::query("UPDATE runner_pools SET desired_count=?,state='scaling',updated_at=? WHERE id=?")
+        .bind(target)
+        .bind(now)
+        .bind(&pool.id)
+        .execute(&app.database)
+        .await?;
+    system_event(
+        app,
+        Some(&pool.id),
+        "info",
+        "Autoscale requested",
+        &format!(
+            "{queued} queued jobs raised desired capacity from {} to {target}",
+            pool.desired_count
+        ),
+        json!({ "queuedJobs": queued, "desiredCount": target }),
+    )
+    .await?;
+    system_audit(
+        app,
+        "runner_pool.autoscaled",
+        "runner_pool",
+        &pool.id,
+        json!({ "queuedJobs": queued, "desiredCount": target, "source": "polling" }),
+    )
+    .await?;
     Ok(())
 }
 
@@ -376,6 +444,206 @@ async fn record_capacity_sample(app: &Reconciler, pool: &Pool, runners: &[Runner
     .execute(&app.database)
     .await?;
     Ok(())
+}
+
+async fn maybe_sync_github(app: &Reconciler) -> Result<()> {
+    let now = now_millis();
+    let interval_seconds = setting_i64(&app.database, "githubSyncIntervalSeconds", 60)
+        .await
+        .clamp(30, 3_600);
+    let last_sync = setting_i64(&app.database, "lastGithubSyncAt", 0).await;
+    if now.saturating_sub(last_sync) < interval_seconds * 1_000 {
+        return Ok(());
+    }
+    sqlx::query(
+        r#"INSERT INTO settings (key,value,updated_at) VALUES ('lastGithubSyncAt',?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at"#,
+    )
+    .bind(now.to_string())
+    .bind(now)
+    .execute(&app.database)
+    .await?;
+    let repositories = sqlx::query_as::<_, Repository>(
+        r#"SELECT repo.id,repo.installation_id,repo.owner,repo.name,repo.full_name
+           FROM repositories repo JOIN installations i ON i.id=repo.installation_id
+           WHERE repo.archived=0 AND i.suspended_at IS NULL ORDER BY repo.id"#,
+    )
+    .fetch_all(&app.database)
+    .await?;
+    let mut tokens = HashMap::<i64, Option<String>>::new();
+    for repository in repositories {
+        let token = if let Some(token) = tokens.get(&repository.installation_id) {
+            token.clone()
+        } else {
+            let token = installation_token(app, repository.installation_id).await?;
+            tokens.insert(repository.installation_id, token.clone());
+            token
+        };
+        let Some(token) = token else {
+            continue;
+        };
+        if let Err(error) = sync_repository_workflows(app, &repository, &token).await {
+            tracing::warn!(repository = %repository.full_name, error = ?error, "GitHub workflow polling failed for repository");
+        }
+    }
+    Ok(())
+}
+
+async fn sync_repository_workflows(
+    app: &Reconciler,
+    repository: &Repository,
+    token: &str,
+) -> Result<()> {
+    let response: WorkflowRunPage = app
+        .github
+        .get(
+            &format!(
+                "/repos/{}/{}/actions/runs?per_page=50",
+                repository.owner, repository.name
+            ),
+            token,
+        )
+        .await?;
+    let now = now_millis();
+    let mut job_run_ids = Vec::new();
+    let mut seen_run_ids = HashSet::new();
+    for run in response
+        .workflow_runs
+        .iter()
+        .filter(|run| matches!(run.status.as_str(), "queued" | "in_progress"))
+        .chain(response.workflow_runs.iter().take(5))
+    {
+        if seen_run_ids.insert(run.id) {
+            job_run_ids.push(run.id);
+        }
+    }
+    let mut transaction = app.database.begin().await?;
+    for run in response.workflow_runs {
+        let updated_at = parse_github_date(Some(&run.updated_at)).unwrap_or(now);
+        sqlx::query(
+            r#"INSERT INTO workflow_runs (
+              id,repository_id,workflow_id,workflow_name,run_number,run_attempt,event,status,
+              conclusion,head_branch,head_sha,actor_login,html_url,started_at,completed_at,
+              github_created_at,github_updated_at,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET repository_id=excluded.repository_id,
+              workflow_id=excluded.workflow_id,workflow_name=excluded.workflow_name,
+              run_number=excluded.run_number,run_attempt=excluded.run_attempt,event=excluded.event,
+              status=excluded.status,conclusion=excluded.conclusion,head_branch=excluded.head_branch,
+              head_sha=excluded.head_sha,actor_login=excluded.actor_login,html_url=excluded.html_url,
+              started_at=excluded.started_at,completed_at=excluded.completed_at,
+              github_created_at=excluded.github_created_at,
+              github_updated_at=excluded.github_updated_at,updated_at=excluded.updated_at"#,
+        )
+        .bind(run.id)
+        .bind(repository.id)
+        .bind(run.workflow_id)
+        .bind(
+            run.name
+                .or(run.display_title)
+                .unwrap_or_else(|| "Workflow".into()),
+        )
+        .bind(run.run_number)
+        .bind(run.run_attempt)
+        .bind(run.event)
+        .bind(&run.status)
+        .bind(run.conclusion)
+        .bind(run.head_branch)
+        .bind(run.head_sha)
+        .bind(run.actor.map(|actor| actor.login))
+        .bind(run.html_url)
+        .bind(parse_github_date(run.run_started_at.as_deref()))
+        .bind((run.status == "completed").then_some(updated_at))
+        .bind(parse_github_date(Some(&run.created_at)).unwrap_or(now))
+        .bind(updated_at)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    for run_id in job_run_ids {
+        if let Err(error) = sync_run_jobs(app, repository, run_id, token).await {
+            tracing::warn!(repository = %repository.full_name, run_id, error = ?error, "GitHub workflow job polling failed");
+        }
+    }
+    Ok(())
+}
+
+async fn sync_run_jobs(
+    app: &Reconciler,
+    repository: &Repository,
+    run_id: i64,
+    token: &str,
+) -> Result<()> {
+    for page in 1..=100 {
+        let response: WorkflowJobPage = app
+            .github
+            .get(
+                &format!(
+                    "/repos/{}/{}/actions/runs/{run_id}/jobs?filter=latest&per_page=100&page={page}",
+                    repository.owner, repository.name
+                ),
+                token,
+            )
+            .await?;
+        let final_page = response.jobs.len() < 100;
+        let now = now_millis();
+        let mut transaction = app.database.begin().await?;
+        for job in &response.jobs {
+            sqlx::query(
+                r#"INSERT INTO workflow_jobs (
+                  id,run_id,name,status,conclusion,runner_id,runner_name,runner_group_id,
+                  runner_group_name,labels,html_url,started_at,completed_at,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,name=excluded.name,
+                  status=excluded.status,conclusion=excluded.conclusion,runner_id=excluded.runner_id,
+                  runner_name=excluded.runner_name,runner_group_id=excluded.runner_group_id,
+                  runner_group_name=excluded.runner_group_name,labels=excluded.labels,
+                  html_url=excluded.html_url,started_at=excluded.started_at,
+                  completed_at=excluded.completed_at,updated_at=excluded.updated_at"#,
+            )
+            .bind(job.id)
+            .bind(job.run_id)
+            .bind(&job.name)
+            .bind(&job.status)
+            .bind(&job.conclusion)
+            .bind(job.runner_id)
+            .bind(&job.runner_name)
+            .bind(job.runner_group_id)
+            .bind(&job.runner_group_name)
+            .bind(serde_json::to_string(&job.labels)?)
+            .bind(&job.html_url)
+            .bind(parse_github_date(job.started_at.as_deref()))
+            .bind(parse_github_date(job.completed_at.as_deref()))
+            .bind(parse_github_date(job.started_at.as_deref()).unwrap_or(now))
+            .bind(now)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        for job in &response.jobs {
+            associate_runner_with_job(
+                &app.database,
+                job.id,
+                &job.status,
+                job.runner_id,
+                job.runner_name.as_deref(),
+                now,
+            )
+            .await?;
+        }
+        if final_page {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn parse_github_date(value: Option<&str>) -> Option<i64> {
+    value
+        .and_then(|date| chrono::DateTime::parse_from_rfc3339(date).ok())
+        .map(|date| date.timestamp_millis())
 }
 
 async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
@@ -939,6 +1207,7 @@ mod tests {
             ephemeral: true,
             paused: false,
             autoscaling_enabled: true,
+            queue_scale_factor: 1,
             idle_timeout_minutes: 5,
             configuration_version,
         }
