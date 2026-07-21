@@ -174,6 +174,16 @@ mod tests {
                 .iter()
                 .any(|row| row.get::<String, _>("name") == "last_job_id")
         );
+        assert!(
+            runner_columns
+                .iter()
+                .any(|row| row.get::<String, _>("name") == "configuration_version")
+        );
+        assert!(
+            columns
+                .iter()
+                .any(|row| row.get::<String, _>("name") == "configuration_version")
+        );
         pool.close().await;
         fs::remove_dir_all(directory)?;
         Ok(())
@@ -223,7 +233,7 @@ mod tests {
             sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'legacy'")
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(migration_count, 6);
+        assert_eq!(migration_count, 7);
         assert_eq!(preserved, "preserved");
         pool.close().await;
         fs::remove_dir_all(directory)?;

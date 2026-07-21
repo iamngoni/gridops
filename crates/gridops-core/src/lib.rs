@@ -11,4 +11,4 @@ pub use github::{
     GitHubClient, GitHubInstallation, GitHubRepository, GitHubUser, InstallationPage, JitRequest,
     JitResponse, RepositoryPage, RunnerTarget, WorkflowJobPage,
 };
-pub use models::{Alerts, ConfigurationState, CreateRunnerPool, Viewer};
+pub use models::{Alerts, ConfigurationState, CreateRunnerPool, UpdateRunnerPool, Viewer};

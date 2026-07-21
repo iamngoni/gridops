@@ -46,6 +46,7 @@ struct Pool {
     paused: bool,
     autoscaling_enabled: bool,
     idle_timeout_minutes: i64,
+    configuration_version: i64,
 }
 
 #[derive(Debug, FromRow)]
@@ -57,6 +58,7 @@ struct Runner {
     status: String,
     busy: bool,
     last_job_id: Option<i64>,
+    configuration_version: i64,
     updated_at: i64,
 }
 
@@ -133,7 +135,7 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
         r#"SELECT p.id,p.installation_id,i.account_login,repo.owner AS repository_owner,
           repo.name AS repository_name,p.name,p.mode,p.labels,p.image,p.desired_count,p.min_count,
           p.max_count,p.cpu_limit,p.memory_limit_mb,p.runner_group_id,p.ephemeral,p.paused,
-          p.autoscaling_enabled,p.idle_timeout_minutes FROM runner_pools p
+          p.autoscaling_enabled,p.idle_timeout_minutes,p.configuration_version FROM runner_pools p
           JOIN installations i ON i.id=p.installation_id
           LEFT JOIN repositories repo ON repo.id=p.repository_id
           WHERE p.state != 'deleting' ORDER BY p.created_at"#,
@@ -190,10 +192,14 @@ async fn reconcile_pool(
                 "exited" | "dead" | "missing" => "failed",
                 value => value,
             };
-            sqlx::query("UPDATE runners SET status=?,last_heartbeat_at=?,updated_at=? WHERE id=?")
+            let heartbeat = now_millis();
+            sqlx::query(
+                "UPDATE runners SET status=?,last_heartbeat_at=?,updated_at=CASE WHEN status<>? THEN ? ELSE updated_at END WHERE id=?",
+            )
                 .bind(status)
-                .bind(now_millis())
-                .bind(now_millis())
+                .bind(heartbeat)
+                .bind(status)
+                .bind(heartbeat)
                 .bind(&runner.id)
                 .execute(&app.database)
                 .await?;
@@ -209,7 +215,18 @@ async fn reconcile_pool(
         delete_runner(app, pool, runner).await?;
     }
 
-    maybe_scale_down(app, pool, &known_runners).await?;
+    let current = runners(app, &pool.id).await?;
+    let mut rotated = 0;
+    if let Some(stale) = current
+        .iter()
+        .find(|runner| !runner.busy && runner_needs_update(pool, runner))
+    {
+        delete_runner(app, pool, stale).await?;
+        rotated = 1;
+    }
+
+    let current = runners(app, &pool.id).await?;
+    maybe_scale_down(app, pool, &current).await?;
     let desired = if pool.paused {
         0
     } else {
@@ -243,14 +260,20 @@ async fn reconcile_pool(
             removed += 1;
         }
     }
-    let active_count = runners(app, &pool.id)
-        .await?
+    let final_runners = runners(app, &pool.id).await?;
+    let active_count = final_runners
         .iter()
         .filter(|runner| active_status(&runner.status))
+        .count();
+    let outdated_count = final_runners
+        .iter()
+        .filter(|runner| runner_needs_update(pool, runner))
         .count();
     sqlx::query("UPDATE runner_pools SET state=?,updated_at=? WHERE id=?")
         .bind(if pool.paused {
             "paused"
+        } else if outdated_count > 0 {
+            "updating"
         } else if active_count > desired as usize {
             "draining"
         } else {
@@ -260,14 +283,14 @@ async fn reconcile_pool(
         .bind(&pool.id)
         .execute(&app.database)
         .await?;
-    if provisioned > 0 || removed > 0 {
+    if provisioned > 0 || removed > 0 || rotated > 0 {
         system_event(
             app,
             Some(&pool.id),
             "info",
             "Pool reconciled",
-            &format!("Provisioned {provisioned}, removed {removed}, active {active_count}"),
-            json!({ "desired": desired, "active": active_count, "provisioned": provisioned, "removed": removed }),
+            &format!("Provisioned {provisioned}, removed {removed}, rotated {rotated}, active {active_count}"),
+            json!({ "desired": desired, "active": active_count, "provisioned": provisioned, "removed": removed, "rotated": rotated, "outdated": outdated_count }),
         )
         .await?;
     }
@@ -304,8 +327,7 @@ async fn maybe_scale_down(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> 
         .map(|runner| runner.updated_at)
         .max()
         .unwrap_or(0);
-    let idle_millis = pool.idle_timeout_minutes * 60 * 1_000;
-    if now_millis() - last_activity < idle_millis {
+    if !idle_period_elapsed(now_millis(), pool.idle_timeout_minutes, last_activity) {
         return Ok(());
     }
     sqlx::query("UPDATE runner_pools SET desired_count=?,state='scaling',updated_at=? WHERE id=?")
@@ -333,11 +355,12 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let runner_name = format!("{}-{suffix}", pool.name);
     let now = now_millis();
-    sqlx::query("INSERT INTO runners (id,pool_id,name,status,ephemeral,created_at,updated_at) VALUES (?,?,?,'starting',?,?,?)")
+    sqlx::query("INSERT INTO runners (id,pool_id,name,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,'starting',?,?,?,?)")
         .bind(&runner_id)
         .bind(&pool.id)
         .bind(&runner_name)
         .bind(pool.ephemeral)
+        .bind(pool.configuration_version)
         .bind(now)
         .bind(now)
         .execute(&app.database)
@@ -542,7 +565,7 @@ async fn remove_manager_container(app: &Reconciler, container_id: &str) -> Resul
 
 async fn runners(app: &Reconciler, pool_id: &str) -> Result<Vec<Runner>> {
     Ok(sqlx::query_as::<_, Runner>(
-        r#"SELECT id,name,container_id,github_runner_id,status,busy,last_job_id,updated_at
+        r#"SELECT id,name,container_id,github_runner_id,status,busy,last_job_id,configuration_version,updated_at
            FROM runners WHERE pool_id=? AND deleted_at IS NULL ORDER BY created_at DESC"#,
     )
     .bind(pool_id)
@@ -846,4 +869,70 @@ fn active_status(status: &str) -> bool {
         status,
         "starting" | "online" | "idle" | "busy" | "paused" | "stopped"
     )
+}
+
+fn runner_needs_update(pool: &Pool, runner: &Runner) -> bool {
+    runner.configuration_version < pool.configuration_version
+}
+
+fn idle_period_elapsed(now: i64, idle_timeout_minutes: i64, last_activity: i64) -> bool {
+    now.saturating_sub(last_activity) >= idle_timeout_minutes.saturating_mul(60_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pool(configuration_version: i64) -> Pool {
+        Pool {
+            id: "pool-1".into(),
+            installation_id: 1,
+            account_login: "octo-org".into(),
+            repository_owner: None,
+            repository_name: None,
+            name: "linux".into(),
+            mode: "ephemeral".into(),
+            labels: "[]".into(),
+            image: "runner:latest".into(),
+            desired_count: 1,
+            min_count: 0,
+            max_count: 10,
+            cpu_limit: 2.0,
+            memory_limit_mb: 4096,
+            runner_group_id: 1,
+            ephemeral: true,
+            paused: false,
+            autoscaling_enabled: true,
+            idle_timeout_minutes: 5,
+            configuration_version,
+        }
+    }
+
+    fn runner(configuration_version: i64) -> Runner {
+        Runner {
+            id: "runner-1".into(),
+            name: "linux-1234".into(),
+            container_id: None,
+            github_runner_id: None,
+            status: "online".into(),
+            busy: false,
+            last_job_id: None,
+            configuration_version,
+            updated_at: 1_000,
+        }
+    }
+
+    #[test]
+    fn detects_outdated_runner_generations() {
+        assert!(runner_needs_update(&pool(2), &runner(1)));
+        assert!(!runner_needs_update(&pool(2), &runner(2)));
+        assert!(!runner_needs_update(&pool(2), &runner(3)));
+    }
+
+    #[test]
+    fn applies_idle_timeout_to_activity_not_heartbeats() {
+        let five_minutes = 5 * 60_000;
+        assert!(!idle_period_elapsed(1_000 + five_minutes - 1, 5, 1_000));
+        assert!(idle_period_elapsed(1_000 + five_minutes, 5, 1_000));
+    }
 }

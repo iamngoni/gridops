@@ -13,7 +13,7 @@ use axum::{
     Router,
     extract::DefaultBodyLimit,
     http::{HeaderName, HeaderValue, Method, StatusCode, header},
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 use gridops_core::{Config, GitHubClient, Vault, connect_database};
 use tower_http::{
@@ -78,7 +78,9 @@ async fn main() -> Result<()> {
         )
         .route(
             "/api/v1/runner-pools/{pool_id}",
-            delete(resources::delete_runner_pool),
+            get(resources::runner_pool)
+                .put(resources::update_runner_pool)
+                .delete(resources::delete_runner_pool),
         )
         .route(
             "/api/v1/runner-pools/{pool_id}/action",

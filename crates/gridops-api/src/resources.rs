@@ -14,7 +14,9 @@ use axum::{
 };
 use chrono::{SecondsFormat, Utc};
 use futures_util::{StreamExt as _, TryStreamExt as _};
-use gridops_core::{ConfigurationState, CreateRunnerPool, JitRequest, RunnerTarget, now_millis};
+use gridops_core::{
+    ConfigurationState, CreateRunnerPool, JitRequest, RunnerTarget, UpdateRunnerPool, now_millis,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -35,9 +37,11 @@ const MAX_ARCHIVED_LOG_VIEW_BYTES: u64 = 1_000_000;
 struct PoolAccess {
     installation_id: i64,
     account_login: String,
+    repository_id: Option<i64>,
     repository_owner: Option<String>,
     repository_name: Option<String>,
     name: String,
+    scope: String,
     mode: String,
     labels: String,
     image: String,
@@ -49,6 +53,11 @@ struct PoolAccess {
     runner_group_id: i64,
     ephemeral: bool,
     paused: bool,
+    state: String,
+    autoscaling_enabled: bool,
+    queue_scale_factor: i64,
+    idle_timeout_minutes: i64,
+    configuration_version: i64,
 }
 
 #[derive(Debug, FromRow)]
@@ -60,6 +69,7 @@ struct RunnerAccess {
     runner_status: String,
     busy: bool,
     ephemeral: bool,
+    configuration_version: i64,
     last_job_id: Option<i64>,
     pool_id: String,
     pool_name: String,
@@ -352,6 +362,7 @@ pub async fn runner_pools(
           COUNT(CASE WHEN r.deleted_at IS NULL AND r.status IN ('online','idle','busy') THEN 1 END) AS online_runners,
           COUNT(CASE WHEN r.deleted_at IS NULL AND r.busy=1 THEN 1 END) AS busy_runners,
           COUNT(CASE WHEN r.deleted_at IS NULL AND r.status='failed' THEN 1 END) AS failed_runners,
+          COUNT(CASE WHEN r.deleted_at IS NULL AND r.configuration_version < p.configuration_version THEN 1 END) AS outdated_runners,
           p.created_at FROM runner_pools p
         JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
         JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=p.repository_id
@@ -368,9 +379,134 @@ pub async fn runner_pools(
         "paused": row.get::<bool,_>("paused"), "state": row.get::<String,_>("state"), "accountLogin": row.get::<String,_>("account_login"),
         "repository": row.try_get::<Option<String>,_>("repository").ok().flatten(), "totalRunners": row.get::<i64,_>("total_runners"),
         "onlineRunners": row.get::<i64,_>("online_runners"), "busyRunners": row.get::<i64,_>("busy_runners"),
-        "failedRunners": row.get::<i64,_>("failed_runners"), "createdAt": iso(row.get::<i64,_>("created_at")),
+        "failedRunners": row.get::<i64,_>("failed_runners"), "outdatedRunners": row.get::<i64,_>("outdated_runners"),
+        "createdAt": iso(row.get::<i64,_>("created_at")),
     })).collect::<Vec<_>>();
     Ok(Json(json!({ "authenticated": true, "items": items })))
+}
+
+pub async fn runner_pool(
+    State(state): State<AppState>,
+    Path(pool_id): Path<String>,
+    user: AuthUser,
+) -> ApiResult<Json<Value>> {
+    let pool = pool_access(&state, &user, &pool_id).await?;
+    let additional_labels = json_array(&pool.labels)
+        .into_iter()
+        .filter(|label| label != &pool.name)
+        .collect::<Vec<_>>();
+    let repository = pool
+        .repository_owner
+        .as_ref()
+        .zip(pool.repository_name.as_ref())
+        .map(|(owner, repository)| format!("{owner}/{repository}"));
+    Ok(Json(json!({
+        "id": pool_id,
+        "installationId": pool.installation_id,
+        "repositoryId": pool.repository_id,
+        "repository": repository,
+        "accountLogin": pool.account_login,
+        "name": pool.name,
+        "scope": pool.scope,
+        "mode": pool.mode,
+        "labels": additional_labels,
+        "image": pool.image,
+        "desiredCount": pool.desired_count,
+        "minCount": pool.min_count,
+        "maxCount": pool.max_count,
+        "cpuLimit": pool.cpu_limit,
+        "memoryLimitMb": pool.memory_limit_mb,
+        "runnerGroupId": pool.runner_group_id,
+        "paused": pool.paused,
+        "state": pool.state,
+        "autoscalingEnabled": pool.autoscaling_enabled,
+        "queueScaleFactor": pool.queue_scale_factor,
+        "idleTimeoutMinutes": pool.idle_timeout_minutes,
+        "configurationVersion": pool.configuration_version,
+    })))
+}
+
+pub async fn update_runner_pool(
+    State(state): State<AppState>,
+    Path(pool_id): Path<String>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(input): Json<UpdateRunnerPool>,
+) -> ApiResult<Json<Value>> {
+    assert_same_origin(&state, &headers)?;
+    input.validate().map_err(ApiError::BadRequest)?;
+    let pool = pool_access(&state, &user, &pool_id).await?;
+    let labels = normalized_pool_labels(&input.name, &input.labels)?;
+    let encoded_labels =
+        serde_json::to_string(&labels).map_err(|error| ApiError::Internal(error.into()))?;
+    let runner_group_id = if pool.scope == "repository" {
+        1
+    } else {
+        input.runner_group_id
+    };
+    let runtime_changed = pool.name != input.name
+        || pool.mode != input.mode
+        || pool.labels != encoded_labels
+        || pool.image != input.image
+        || (pool.cpu_limit - input.cpu_limit).abs() > f64::EPSILON
+        || pool.memory_limit_mb != input.memory_limit_mb
+        || pool.runner_group_id != runner_group_id;
+    let version_increment = i64::from(runtime_changed);
+    let now = now_millis();
+    let result = sqlx::query(
+        r#"UPDATE runner_pools SET name=?,mode=?,labels=?,image=?,desired_count=?,min_count=?,
+          max_count=?,cpu_limit=?,memory_limit_mb=?,ephemeral=?,runner_group_id=?,
+          autoscaling_enabled=?,queue_scale_factor=?,idle_timeout_minutes=?,
+          configuration_version=configuration_version+?,
+          state=CASE WHEN ?=1 AND paused=0 THEN 'updating' ELSE state END,updated_at=? WHERE id=?"#,
+    )
+    .bind(&input.name)
+    .bind(&input.mode)
+    .bind(&encoded_labels)
+    .bind(&input.image)
+    .bind(input.desired_count)
+    .bind(input.min_count)
+    .bind(input.max_count)
+    .bind(input.cpu_limit)
+    .bind(input.memory_limit_mb)
+    .bind(input.mode == "ephemeral")
+    .bind(runner_group_id)
+    .bind(input.autoscaling_enabled)
+    .bind(input.queue_scale_factor)
+    .bind(input.idle_timeout_minutes)
+    .bind(version_increment)
+    .bind(runtime_changed)
+    .bind(now)
+    .bind(&pool_id)
+    .execute(&state.database)
+    .await;
+    if let Err(sqlx::Error::Database(error)) = &result
+        && error.is_unique_violation()
+    {
+        return Err(ApiError::Conflict(
+            "A runner pool with this name already exists for the installation.".into(),
+        ));
+    }
+    result?;
+    audit(
+        &state,
+        &user,
+        "runner_pool.updated",
+        "runner_pool",
+        Some(&pool_id),
+        json!({
+            "name": input.name,
+            "desiredCount": input.desired_count,
+            "runtimeConfigurationChanged": runtime_changed,
+            "configurationVersion": pool.configuration_version + version_increment,
+        }),
+    )
+    .await?;
+    Ok(Json(json!({
+        "ok": true,
+        "configurationVersion": pool.configuration_version + version_increment,
+        "rollingReplacement": runtime_changed,
+    })))
 }
 
 pub async fn runners(
@@ -687,10 +823,12 @@ pub async fn create_runner_pool(
         }
     }
     let pool_id = uuid::Uuid::new_v4().to_string();
-    let mut labels = input.labels.clone();
-    labels.insert(0, input.name.clone());
-    labels.sort();
-    labels.dedup();
+    let labels = normalized_pool_labels(&input.name, &input.labels)?;
+    let runner_group_id = if input.scope == "repository" {
+        1
+    } else {
+        input.runner_group_id
+    };
     let now = now_millis();
     let result = sqlx::query(
         r#"INSERT INTO runner_pools (
@@ -703,7 +841,7 @@ pub async fn create_runner_pool(
     .bind(&input.scope).bind(&input.mode).bind(serde_json::to_string(&labels).map_err(|error| ApiError::Internal(error.into()))?)
     .bind(&input.image).bind(input.desired_count).bind(input.min_count).bind(input.max_count).bind(input.cpu_limit)
     .bind(input.memory_limit_mb).bind(input.mode == "ephemeral").bind(&user.id).bind(now).bind(now)
-    .bind(input.runner_group_id).bind(input.autoscaling_enabled).bind(input.queue_scale_factor).bind(input.idle_timeout_minutes)
+    .bind(runner_group_id).bind(input.autoscaling_enabled).bind(input.queue_scale_factor).bind(input.idle_timeout_minutes)
     .execute(&state.database).await;
     if let Err(sqlx::Error::Database(error)) = &result
         && error.is_unique_violation()
@@ -1205,8 +1343,9 @@ async fn provision(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResul
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let runner_name = format!("{}-{suffix}", pool.name);
     let now = now_millis();
-    sqlx::query("INSERT INTO runners (id,pool_id,name,status,ephemeral,created_at,updated_at) VALUES (?,?,?,'starting',?,?,?)")
-        .bind(&runner_id).bind(pool_id).bind(&runner_name).bind(pool.ephemeral).bind(now).bind(now).execute(&state.database).await?;
+    sqlx::query("INSERT INTO runners (id,pool_id,name,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,'starting',?,?,?,?)")
+        .bind(&runner_id).bind(pool_id).bind(&runner_name).bind(pool.ephemeral)
+        .bind(pool.configuration_version).bind(now).bind(now).execute(&state.database).await?;
     let result = async {
         let token = control_token(state, &user.id, pool.installation_id).await?;
         let labels = json_array(&pool.labels);
@@ -1345,19 +1484,18 @@ async fn reconcile_pool(state: &AppState, user: &AuthUser, pool_id: &str) -> Api
                 "exited" | "dead" | "missing" => "failed",
                 other => other,
             };
-            sqlx::query("UPDATE runners SET status=?,last_heartbeat_at=?,updated_at=? WHERE id=?")
+            let heartbeat = now_millis();
+            sqlx::query(
+                "UPDATE runners SET status=?,last_heartbeat_at=?,updated_at=CASE WHEN status<>? THEN ? ELSE updated_at END WHERE id=?",
+            )
                 .bind(status)
-                .bind(now_millis())
-                .bind(now_millis())
+                .bind(heartbeat)
+                .bind(status)
+                .bind(heartbeat)
                 .bind(&runner.runner_id)
                 .execute(&state.database)
                 .await?;
         }
-    }
-    if pool.paused {
-        return Ok(
-            json!({ "ok": true, "desired": pool.desired_count, "active": 0, "provisioned": 0, "removed": 0 }),
-        );
     }
     let failed = runners_for_pool(state, pool_id)
         .await?
@@ -1366,6 +1504,41 @@ async fn reconcile_pool(state: &AppState, user: &AuthUser, pool_id: &str) -> Api
         .collect::<Vec<_>>();
     for runner in &failed {
         delete_runner_resources(state, user, runner).await?;
+    }
+    let mut rotated = 0;
+    if let Some(stale) = runners_for_pool(state, pool_id)
+        .await?
+        .into_iter()
+        .find(|runner| !runner.busy && runner.configuration_version < pool.configuration_version)
+    {
+        delete_runner_resources(state, user, &stale).await?;
+        rotated = 1;
+    }
+    if pool.paused {
+        let idle = runners_for_pool(state, pool_id)
+            .await?
+            .into_iter()
+            .filter(|runner| !runner.busy && active_status(&runner.runner_status))
+            .collect::<Vec<_>>();
+        let removed = idle.len();
+        for runner in &idle {
+            delete_runner_resources(state, user, runner).await?;
+        }
+        let active = runners_for_pool(state, pool_id)
+            .await?
+            .into_iter()
+            .filter(|runner| active_status(&runner.runner_status))
+            .count();
+        sqlx::query("UPDATE runner_pools SET state=?,updated_at=? WHERE id=?")
+            .bind(if active == 0 { "paused" } else { "draining" })
+            .bind(now_millis())
+            .bind(pool_id)
+            .execute(&state.database)
+            .await?;
+        return Ok(json!({
+            "ok": true, "desired": pool.desired_count, "active": active,
+            "provisioned": 0, "removed": removed,
+        }));
     }
     let refreshed = runners_for_pool(state, pool_id).await?;
     let active = refreshed
@@ -1386,13 +1559,19 @@ async fn reconcile_pool(state: &AppState, user: &AuthUser, pool_id: &str) -> Api
             removed += 1;
         }
     }
-    let final_active = runners_for_pool(state, pool_id)
-        .await?
+    let final_runners = runners_for_pool(state, pool_id).await?;
+    let final_active = final_runners
         .iter()
         .filter(|runner| active_status(&runner.runner_status))
         .count();
+    let outdated = final_runners
+        .iter()
+        .filter(|runner| runner.configuration_version < pool.configuration_version)
+        .count();
     sqlx::query("UPDATE runner_pools SET state=?,updated_at=? WHERE id=?")
-        .bind(if final_active > pool.desired_count as usize {
+        .bind(if outdated > 0 {
+            "updating"
+        } else if final_active > pool.desired_count as usize {
             "draining"
         } else {
             "active"
@@ -1402,7 +1581,7 @@ async fn reconcile_pool(state: &AppState, user: &AuthUser, pool_id: &str) -> Api
         .execute(&state.database)
         .await?;
     Ok(
-        json!({ "ok": true, "desired": pool.desired_count, "active": final_active, "provisioned": provisioned, "removed": removed }),
+        json!({ "ok": true, "desired": pool.desired_count, "active": final_active, "provisioned": provisioned, "removed": removed, "rotated": rotated, "outdated": outdated }),
     )
 }
 
@@ -1477,8 +1656,10 @@ async fn delete_runner_resources(
 
 async fn pool_access(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResult<PoolAccess> {
     sqlx::query_as::<_, PoolAccess>(r#"SELECT p.installation_id,i.account_login,
-      repo.owner AS repository_owner,repo.name AS repository_name,p.name,p.mode,p.labels,p.image,p.desired_count,
-      p.min_count,p.max_count,p.cpu_limit,p.memory_limit_mb,p.runner_group_id,p.ephemeral,p.paused
+      p.repository_id,repo.owner AS repository_owner,repo.name AS repository_name,p.name,p.scope,
+      p.mode,p.labels,p.image,p.desired_count,p.min_count,p.max_count,p.cpu_limit,p.memory_limit_mb,
+      p.runner_group_id,p.ephemeral,p.paused,p.state,p.autoscaling_enabled,p.queue_scale_factor,
+      p.idle_timeout_minutes,p.configuration_version
       FROM runner_pools p JOIN user_installations ui ON ui.installation_id=p.installation_id
       JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=p.repository_id
       WHERE p.id=? AND ui.user_id=?"#)
@@ -1492,7 +1673,8 @@ async fn runner_access(
     runner_id: &str,
 ) -> ApiResult<RunnerAccess> {
     sqlx::query_as::<_, RunnerAccess>(r#"SELECT r.id AS runner_id,r.name AS runner_name,r.container_id,
-      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,r.last_job_id,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
+      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,r.configuration_version,
+      r.last_job_id,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
       repo.owner AS repository_owner,repo.name AS repository_name FROM runners r
       JOIN runner_pools p ON p.id=r.pool_id JOIN user_installations ui ON ui.installation_id=p.installation_id
       JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=p.repository_id
@@ -1503,7 +1685,8 @@ async fn runner_access(
 
 async fn runners_for_pool(state: &AppState, pool_id: &str) -> ApiResult<Vec<RunnerAccess>> {
     Ok(sqlx::query_as::<_, RunnerAccess>(r#"SELECT r.id AS runner_id,r.name AS runner_name,r.container_id,
-      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,r.last_job_id,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
+      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,r.configuration_version,
+      r.last_job_id,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
       repo.owner AS repository_owner,repo.name AS repository_name FROM runners r
       JOIN runner_pools p ON p.id=r.pool_id JOIN installations i ON i.id=p.installation_id
       LEFT JOIN repositories repo ON repo.id=p.repository_id WHERE p.id=? AND r.deleted_at IS NULL ORDER BY r.created_at DESC"#)
@@ -1741,6 +1924,19 @@ fn empty_page() -> Json<Value> {
 
 fn json_array(value: &str) -> Vec<String> {
     serde_json::from_str(value).unwrap_or_default()
+}
+
+fn normalized_pool_labels(name: &str, additional: &[String]) -> ApiResult<Vec<String>> {
+    let mut labels = additional.to_vec();
+    labels.push(name.to_owned());
+    labels.sort();
+    labels.dedup();
+    if labels.len() > 20 {
+        return Err(ApiError::BadRequest(
+            "A runner pool can have at most 20 labels including its pool-name label.".into(),
+        ));
+    }
+    Ok(labels)
 }
 
 fn iso(value: i64) -> String {
