@@ -20,7 +20,8 @@ COPY crates ./crates
 COPY migrations ./migrations
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --workspace --release --locked \
+    find crates migrations -type f -exec touch {} + \
+    && cargo build --workspace --release --locked \
     && mkdir -p /app/bin \
     && cp /app/target/release/gridops-api /app/bin/gridops-api \
     && cp /app/target/release/gridops-manager /app/bin/gridops-manager \
