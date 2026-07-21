@@ -22,7 +22,7 @@ export type Repository = {
 export type RunnerPool = {
   id: string; name: string; scope: string; mode: string; labels: string[]; image: string;
   desiredCount: number; minCount: number; maxCount: number; cpuLimit: number; memoryLimitMb: number;
-  paused: boolean; state: string; accountLogin: string; repository: string | null;
+  paused: boolean; state: string; accountLogin: string; repository: string | null; repositoryCount: number;
   totalRunners: number; onlineRunners: number; busyRunners: number; failedRunners: number;
   outdatedRunners: number; createdAt: string; canManage: boolean;
 };

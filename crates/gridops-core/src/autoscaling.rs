@@ -1,4 +1,15 @@
+use sqlx::Row as _;
 use sqlx::SqlitePool;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepositoryCapacity {
+    pub repository_id: i64,
+    pub owner: String,
+    pub name: String,
+    pub queued: i64,
+    pub active: i64,
+    pub busy: i64,
+}
 
 pub fn runner_arch_label() -> &'static str {
     match std::env::consts::ARCH {
@@ -51,6 +62,8 @@ pub async fn assigned_queued_jobs(
           WHERE wj.status='queued' AND ?=(
             SELECT candidate.id FROM runner_pools candidate
             WHERE candidate.autoscaling_enabled=1 AND candidate.paused=0 AND (
+              EXISTS (SELECT 1 FROM runner_pool_repositories candidate_repo
+                WHERE candidate_repo.pool_id=candidate.id AND candidate_repo.repository_id=repo.id) OR
               candidate.repository_id=repo.id OR
               (candidate.scope='organization' AND candidate.installation_id=repo.installation_id)
             ) AND NOT EXISTS (
@@ -61,7 +74,7 @@ pub async fn assigned_queued_jobs(
                   WHERE lower(CAST(assigned.value AS TEXT))=lower(CAST(requested.value AS TEXT))
                 )
             )
-            ORDER BY CASE WHEN candidate.repository_id IS NOT NULL THEN 0 ELSE 1 END,
+            ORDER BY CASE WHEN candidate.scope='repository' THEN 0 ELSE 1 END,
               candidate.created_at,candidate.id
             LIMIT 1
           )"#,
@@ -70,6 +83,89 @@ pub async fn assigned_queued_jobs(
     .bind(runner_arch_label())
     .fetch_one(database)
     .await
+}
+
+pub async fn repository_capacities(
+    database: &SqlitePool,
+    pool_id: &str,
+) -> Result<Vec<RepositoryCapacity>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"SELECT repo.id,repo.owner,repo.name,
+          (SELECT COUNT(*) FROM workflow_jobs wj
+            JOIN workflow_runs wr ON wr.id=wj.run_id
+            WHERE wr.repository_id=repo.id AND wj.status='queued' AND ?=(
+              SELECT candidate.id FROM runner_pools candidate
+              WHERE candidate.autoscaling_enabled=1 AND candidate.paused=0 AND (
+                EXISTS (SELECT 1 FROM runner_pool_repositories candidate_repo
+                  WHERE candidate_repo.pool_id=candidate.id AND candidate_repo.repository_id=repo.id) OR
+                candidate.repository_id=repo.id OR
+                (candidate.scope='organization' AND candidate.installation_id=repo.installation_id)
+              ) AND NOT EXISTS (
+                SELECT 1 FROM json_each(wj.labels) requested
+                WHERE lower(CAST(requested.value AS TEXT)) NOT IN ('self-hosted','linux',?)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM json_each(candidate.labels) assigned
+                    WHERE lower(CAST(assigned.value AS TEXT))=lower(CAST(requested.value AS TEXT))
+                  )
+              )
+              ORDER BY CASE WHEN candidate.scope='repository' THEN 0 ELSE 1 END,
+                candidate.created_at,candidate.id
+              LIMIT 1
+            )) AS queued,
+          (SELECT COUNT(*) FROM runners runner
+            WHERE runner.pool_id=? AND runner.target_repository_id=repo.id
+              AND runner.deleted_at IS NULL
+              AND runner.status IN ('starting','online','idle','busy','paused','stopped')) AS active,
+          (SELECT COUNT(*) FROM runners runner
+            WHERE runner.pool_id=? AND runner.target_repository_id=repo.id
+              AND runner.deleted_at IS NULL AND runner.busy=1
+              AND runner.status IN ('starting','online','idle','busy','paused','stopped')) AS busy
+          FROM runner_pool_repositories membership
+          JOIN repositories repo ON repo.id=membership.repository_id
+          WHERE membership.pool_id=? AND repo.archived=0
+          ORDER BY membership.created_at,repo.id"#,
+    )
+    .bind(pool_id)
+    .bind(runner_arch_label())
+    .bind(pool_id)
+    .bind(pool_id)
+    .bind(pool_id)
+    .fetch_all(database)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| RepositoryCapacity {
+            repository_id: row.get("id"),
+            owner: row.get("owner"),
+            name: row.get("name"),
+            queued: row.get("queued"),
+            active: row.get("active"),
+            busy: row.get("busy"),
+        })
+        .collect())
+}
+
+pub fn repository_capacity_deficit(capacity: &RepositoryCapacity, factor: i64) -> i64 {
+    capacity
+        .busy
+        .saturating_add(capacity.queued.saturating_mul(factor))
+        .saturating_sub(capacity.active)
+}
+
+pub async fn next_runner_repository(
+    database: &SqlitePool,
+    pool_id: &str,
+    factor: i64,
+) -> Result<Option<RepositoryCapacity>, sqlx::Error> {
+    let mut capacities = repository_capacities(database, pool_id).await?;
+    capacities.sort_by(|left, right| {
+        repository_capacity_deficit(right, factor)
+            .cmp(&repository_capacity_deficit(left, factor))
+            .then_with(|| right.queued.cmp(&left.queued))
+            .then_with(|| left.active.cmp(&right.active))
+            .then_with(|| left.repository_id.cmp(&right.repository_id))
+    });
+    Ok(capacities.into_iter().next())
 }
 
 #[cfg(test)]

@@ -42,6 +42,8 @@ pub struct ConfigurationState {
 pub struct CreateRunnerPool {
     pub installation_id: i64,
     pub repository_id: Option<i64>,
+    #[serde(default)]
+    pub repository_ids: Vec<i64>,
     pub name: String,
     pub scope: String,
     pub mode: String,
@@ -59,12 +61,36 @@ pub struct CreateRunnerPool {
 }
 
 impl CreateRunnerPool {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.scope == "repository" && self.repository_id.is_none() {
-            return Err("Repository scope requires a repository.".into());
+    pub fn selected_repository_ids(&self) -> Vec<i64> {
+        let mut repositories = self.repository_ids.clone();
+        if let Some(repository_id) = self.repository_id {
+            repositories.push(repository_id);
         }
-        if self.scope == "organization" && self.repository_id.is_some() {
-            return Err("Organization pools cannot target one repository.".into());
+        repositories.sort_unstable();
+        repositories.dedup();
+        repositories
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let repositories = self.selected_repository_ids();
+        if self.scope == "repository" && repositories.is_empty() {
+            return Err("Repository scope requires at least one repository.".into());
+        }
+        if self.scope == "organization" && !repositories.is_empty() {
+            return Err(
+                "Organization pools use runner-group access instead of repository assignments."
+                    .into(),
+            );
+        }
+        if repositories.len() > 1_000
+            || repositories.iter().any(|repository_id| *repository_id <= 0)
+        {
+            return Err("Repository assignments are invalid.".into());
+        }
+        if self.scope == "repository"
+            && i64::try_from(repositories.len()).unwrap_or(i64::MAX) > self.max_count
+        {
+            return Err("Repository count cannot exceed maximum runner capacity.".into());
         }
         if !matches!(self.scope.as_str(), "repository" | "organization") {
             return Err("Runner pool scope is invalid.".into());
@@ -89,6 +115,8 @@ impl CreateRunnerPool {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateRunnerPool {
+    #[serde(default)]
+    pub repository_ids: Option<Vec<i64>>,
     pub name: String,
     pub mode: String,
     pub labels: Vec<String>,
@@ -106,6 +134,24 @@ pub struct UpdateRunnerPool {
 
 impl UpdateRunnerPool {
     pub fn validate(&self) -> Result<(), String> {
+        if self.repository_ids.as_ref().is_some_and(|repositories| {
+            repositories.is_empty()
+                || repositories.len() > 1_000
+                || repositories.iter().any(|repository_id| *repository_id <= 0)
+                || {
+                    let mut unique = repositories.clone();
+                    unique.sort_unstable();
+                    unique.dedup();
+                    unique.len() != repositories.len()
+                }
+        }) {
+            return Err("Choose between 1 and 1,000 unique repositories for the pool.".into());
+        }
+        if self.repository_ids.as_ref().is_some_and(|repositories| {
+            i64::try_from(repositories.len()).unwrap_or(i64::MAX) > self.max_count
+        }) {
+            return Err("Repository count cannot exceed maximum runner capacity.".into());
+        }
         validate_pool_configuration(
             &self.name,
             &self.mode,
@@ -188,6 +234,7 @@ mod tests {
         CreateRunnerPool {
             installation_id: 1,
             repository_id: Some(2),
+            repository_ids: Vec::new(),
             name: "linux-general".into(),
             scope: "repository".into(),
             mode: "ephemeral".into(),
@@ -223,12 +270,21 @@ mod tests {
         let mut invalid = pool();
         invalid.image = " runner:latest".into();
         assert!(invalid.validate().is_err());
+
+        let mut multi_repository = pool();
+        multi_repository.repository_id = None;
+        multi_repository.repository_ids = vec![2, 3];
+        multi_repository.max_count = 1;
+        assert!(multi_repository.validate().is_err());
+        multi_repository.max_count = 2;
+        assert!(multi_repository.validate().is_ok());
     }
 
     #[test]
     fn validates_runner_pool_updates() {
         let original = pool();
         let update = UpdateRunnerPool {
+            repository_ids: None,
             name: original.name,
             mode: original.mode,
             labels: original.labels,
@@ -244,5 +300,10 @@ mod tests {
             runner_group_id: original.runner_group_id,
         };
         assert!(update.validate().is_ok());
+
+        let mut undersized = update;
+        undersized.repository_ids = Some(vec![2, 3]);
+        undersized.max_count = 1;
+        assert!(undersized.validate().is_err());
     }
 }

@@ -8,7 +8,8 @@ use futures_util::StreamExt as _;
 use gridops_core::{
     Config, GitHubClient, JitRequest, RunnerTarget, Vault, WorkflowJobPage, WorkflowRunPage,
     assigned_queued_jobs, associate_runner_with_job, connect_database, effective_runner_labels,
-    now_millis, scale_up_target,
+    next_runner_repository, now_millis, repository_capacities, repository_capacity_deficit,
+    scale_up_target,
 };
 use reqwest::{Method, StatusCode};
 use secrecy::ExposeSecret as _;
@@ -35,8 +36,7 @@ struct Pool {
     id: String,
     installation_id: i64,
     account_login: String,
-    repository_owner: Option<String>,
-    repository_name: Option<String>,
+    scope: String,
     name: String,
     mode: String,
     labels: String,
@@ -61,6 +61,9 @@ struct Runner {
     name: String,
     container_id: Option<String>,
     github_runner_id: Option<i64>,
+    target_repository_id: Option<i64>,
+    repository_owner: Option<String>,
+    repository_name: Option<String>,
     status: String,
     busy: bool,
     last_job_id: Option<i64>,
@@ -196,13 +199,11 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
 
 async fn load_pools(database: &SqlitePool) -> Result<Vec<Pool>> {
     Ok(sqlx::query_as::<_, Pool>(
-        r#"SELECT p.id,p.installation_id,i.account_login,repo.owner AS repository_owner,
-          repo.name AS repository_name,p.name,p.mode,p.labels,p.image,p.desired_count,p.min_count,
+        r#"SELECT p.id,p.installation_id,i.account_login,p.scope,p.name,p.mode,p.labels,p.image,p.desired_count,p.min_count,
           p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,
           p.runner_group_id,p.ephemeral,p.paused,
           p.autoscaling_enabled,p.queue_scale_factor,p.idle_timeout_minutes,p.configuration_version FROM runner_pools p
           JOIN installations i ON i.id=p.installation_id
-          LEFT JOIN repositories repo ON repo.id=p.repository_id
           WHERE p.state != 'deleting' ORDER BY p.created_at"#,
     )
     .fetch_all(database)
@@ -275,6 +276,7 @@ async fn reconcile_pool(
             .get::<i64, _>("desired_count")
             .clamp(pool.min_count, pool.max_count)
     };
+    let rebalanced = rebalance_repository_capacity(app, pool, desired).await?;
     let refreshed = runners(app, &pool.id).await?;
     let active = refreshed
         .iter()
@@ -322,14 +324,14 @@ async fn reconcile_pool(
         .execute(&app.database)
         .await?;
     record_capacity_sample(app, pool, &final_runners).await?;
-    if provisioned > 0 || removed > 0 || rotated > 0 {
+    if provisioned > 0 || removed > 0 || rotated > 0 || rebalanced > 0 {
         system_event(
             app,
             Some(&pool.id),
             "info",
             "Pool reconciled",
-            &format!("Provisioned {provisioned}, removed {removed}, rotated {rotated}, active {active_count}"),
-            json!({ "desired": desired, "active": active_count, "provisioned": provisioned, "removed": removed, "rotated": rotated, "outdated": outdated_count }),
+            &format!("Provisioned {provisioned}, removed {removed}, rotated {rotated}, rebalanced {rebalanced}, active {active_count}"),
+            json!({ "desired": desired, "active": active_count, "provisioned": provisioned, "removed": removed, "rotated": rotated, "rebalanced": rebalanced, "outdated": outdated_count }),
         )
         .await?;
     }
@@ -351,13 +353,32 @@ async fn maybe_scale_up(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Re
             .count(),
     )
     .unwrap_or(i64::MAX);
-    let target = scale_up_target(
+    let aggregate_target = scale_up_target(
         pool.desired_count,
         busy,
         queued,
         pool.queue_scale_factor,
         pool.max_count,
     );
+    let placement_needed = if pool.scope == "repository" {
+        repository_capacities(&app.database, &pool.id)
+            .await?
+            .iter()
+            .map(|capacity| repository_capacity_deficit(capacity, pool.queue_scale_factor).max(0))
+            .sum::<i64>()
+    } else {
+        0
+    };
+    let active = i64::try_from(
+        runners
+            .iter()
+            .filter(|runner| active_status(&runner.status))
+            .count(),
+    )
+    .unwrap_or(i64::MAX);
+    let target = aggregate_target
+        .max(active.saturating_add(placement_needed))
+        .min(pool.max_count);
     if target <= pool.desired_count {
         return Ok(());
     }
@@ -389,6 +410,52 @@ async fn maybe_scale_up(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Re
     )
     .await?;
     Ok(())
+}
+
+async fn rebalance_repository_capacity(app: &Reconciler, pool: &Pool, desired: i64) -> Result<i64> {
+    if pool.scope != "repository" || pool.paused {
+        return Ok(0);
+    }
+    let current = runners(app, &pool.id).await?;
+    let active = current
+        .iter()
+        .filter(|runner| active_status(&runner.status))
+        .count();
+    if active < usize::try_from(desired).unwrap_or(usize::MAX) {
+        return Ok(0);
+    }
+    let capacities = repository_capacities(&app.database, &pool.id).await?;
+    if !capacities
+        .iter()
+        .any(|capacity| repository_capacity_deficit(capacity, pool.queue_scale_factor) > 0)
+    {
+        return Ok(0);
+    }
+    let surplus = capacities
+        .iter()
+        .filter(|capacity| {
+            capacity.active
+                > capacity
+                    .busy
+                    .saturating_add(capacity.queued.saturating_mul(pool.queue_scale_factor))
+        })
+        .map(|capacity| capacity.repository_id)
+        .collect::<HashSet<_>>();
+    let membership = capacities
+        .iter()
+        .map(|capacity| capacity.repository_id)
+        .collect::<HashSet<_>>();
+    let Some(runner) = current.iter().find(|runner| {
+        !runner.busy
+            && active_status(&runner.status)
+            && runner.target_repository_id.is_some_and(|repository_id| {
+                surplus.contains(&repository_id) || !membership.contains(&repository_id)
+            })
+    }) else {
+        return Ok(0);
+    };
+    delete_runner(app, pool, runner).await?;
+    Ok(1)
 }
 
 async fn maybe_scale_down(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Result<()> {
@@ -563,7 +630,9 @@ async fn maybe_sync_github(app: &Reconciler) -> Result<()> {
         r#"SELECT repo.id,repo.installation_id,repo.owner,repo.name,repo.full_name
            FROM repositories repo JOIN installations i ON i.id=repo.installation_id
            WHERE repo.archived=0 AND i.suspended_at IS NULL
-             AND (EXISTS (SELECT 1 FROM runner_pools p WHERE p.repository_id=repo.id)
+             AND (EXISTS (SELECT 1 FROM runner_pool_repositories membership
+                    WHERE membership.repository_id=repo.id)
+               OR EXISTS (SELECT 1 FROM runner_pools p WHERE p.repository_id=repo.id)
                OR EXISTS (SELECT 1 FROM workflow_runs wr WHERE wr.repository_id=repo.id))
            ORDER BY repo.id"#,
     )
@@ -752,10 +821,20 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
     let runner_id = uuid::Uuid::new_v4().to_string();
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let runner_name = format!("{}-{suffix}", pool.name);
+    let target_repository = if pool.scope == "repository" {
+        Some(
+            next_runner_repository(&app.database, &pool.id, pool.queue_scale_factor)
+                .await?
+                .context("runner pool has no available repositories")?,
+        )
+    } else {
+        None
+    };
     let now = now_millis();
-    sqlx::query("INSERT INTO runners (id,pool_id,name,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,'starting',?,?,?,?)")
+    sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,'starting',?,?,?,?)")
         .bind(&runner_id)
         .bind(&pool.id)
+        .bind(target_repository.as_ref().map(|repository| repository.repository_id))
         .bind(&runner_name)
         .bind(pool.ephemeral)
         .bind(pool.configuration_version)
@@ -766,9 +845,12 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
 
     let result = async {
         let labels = serde_json::from_str::<Vec<String>>(&pool.labels).unwrap_or_default();
-        let target = match (&pool.repository_owner, &pool.repository_name) {
-            (Some(owner), Some(repository)) => RunnerTarget::Repository { owner, repository },
-            _ => RunnerTarget::Organization {
+        let target = match &target_repository {
+            Some(repository) => RunnerTarget::Repository {
+                owner: &repository.owner,
+                repository: &repository.name,
+            },
+            None => RunnerTarget::Organization {
                 organization: &pool.account_login,
             },
         };
@@ -806,8 +888,11 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
                 .generate_registration_token(target, &token)
                 .await?;
             request["registrationToken"] = Value::String(registration.token);
-            request["registrationUrl"] = Value::String(runner_registration_url(pool));
-            if pool.repository_owner.is_none() && pool.runner_group_id != 1 {
+            request["registrationUrl"] = Value::String(runner_registration_url(
+                &pool.account_login,
+                target_repository.as_ref(),
+            ));
+            if pool.scope == "organization" && pool.runner_group_id != 1 {
                 let group = app
                     .github
                     .runner_group_name(&pool.account_login, pool.runner_group_id, &token)
@@ -862,7 +947,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
         "runner.provisioned",
         "runner",
         &runner_id,
-        json!({ "poolId": pool.id }),
+        json!({ "poolId": pool.id, "repositoryId": target_repository.as_ref().map(|repository| repository.repository_id) }),
     )
     .await?;
     Ok(())
@@ -874,7 +959,7 @@ async fn delete_runner(app: &Reconciler, pool: &Pool, runner: &Runner) -> Result
     {
         tracing::warn!(runner_id = %runner.id, error = ?error, "could not archive runner logs");
     }
-    let target = match (&pool.repository_owner, &pool.repository_name) {
+    let target = match (&runner.repository_owner, &runner.repository_name) {
         (Some(owner), Some(repository)) => RunnerTarget::Repository { owner, repository },
         _ => RunnerTarget::Organization {
             organization: &pool.account_login,
@@ -892,7 +977,7 @@ async fn delete_runner(app: &Reconciler, pool: &Pool, runner: &Runner) -> Result
                         .map(|runner| runner.id),
                 };
                 if let Some(github_runner_id) = github_runner_id {
-                    let path = match (&pool.repository_owner, &pool.repository_name) {
+                    let path = match (&runner.repository_owner, &runner.repository_name) {
                         (Some(owner), Some(repository)) => format!(
                             "/repos/{owner}/{repository}/actions/runners/{github_runner_id}"
                         ),
@@ -962,8 +1047,11 @@ async fn remove_manager_container(app: &Reconciler, container_id: &str) -> Resul
 
 async fn runners(app: &Reconciler, pool_id: &str) -> Result<Vec<Runner>> {
     Ok(sqlx::query_as::<_, Runner>(
-        r#"SELECT id,name,container_id,github_runner_id,status,busy,last_job_id,configuration_version,updated_at
-           FROM runners WHERE pool_id=? AND deleted_at IS NULL ORDER BY created_at DESC"#,
+        r#"SELECT runner.id,runner.name,runner.container_id,runner.github_runner_id,
+           runner.target_repository_id,repo.owner AS repository_owner,repo.name AS repository_name,
+           runner.status,runner.busy,runner.last_job_id,runner.configuration_version,runner.updated_at
+           FROM runners runner LEFT JOIN repositories repo ON repo.id=runner.target_repository_id
+           WHERE runner.pool_id=? AND runner.deleted_at IS NULL ORDER BY runner.created_at DESC"#,
     )
     .bind(pool_id)
     .fetch_all(&app.database)
@@ -1080,10 +1168,10 @@ async fn archive_runner_logs(app: &Reconciler, pool: &Pool, runner: &Runner) -> 
     };
     let now = now_millis();
     let retention_days = setting_i64(&app.database, "logRetentionDays", 30).await;
-    let repository = pool
+    let repository = runner
         .repository_owner
         .as_ref()
-        .zip(pool.repository_name.as_ref())
+        .zip(runner.repository_name.as_ref())
         .map(|(owner, repository)| format!("{owner}/{repository}"));
     let inserted = sqlx::query(
         r#"INSERT INTO log_streams (
@@ -1184,10 +1272,16 @@ async fn setting_bool(database: &SqlitePool, key: &str, fallback: bool) -> bool 
         .unwrap_or(fallback)
 }
 
-fn runner_registration_url(pool: &Pool) -> String {
-    match (&pool.repository_owner, &pool.repository_name) {
-        (Some(owner), Some(repository)) => format!("https://github.com/{owner}/{repository}"),
-        _ => format!("https://github.com/{}", pool.account_login),
+fn runner_registration_url(
+    account_login: &str,
+    repository: Option<&gridops_core::RepositoryCapacity>,
+) -> String {
+    match repository {
+        Some(repository) => format!(
+            "https://github.com/{}/{}",
+            repository.owner, repository.name
+        ),
+        None => format!("https://github.com/{account_login}"),
     }
 }
 
@@ -1292,8 +1386,7 @@ mod tests {
             id: "pool-1".into(),
             installation_id: 1,
             account_login: "octo-org".into(),
-            repository_owner: None,
-            repository_name: None,
+            scope: "organization".into(),
             name: "linux".into(),
             mode: "ephemeral".into(),
             labels: "[]".into(),
@@ -1319,6 +1412,9 @@ mod tests {
             name: "linux-1234".into(),
             container_id: None,
             github_runner_id: None,
+            target_repository_id: None,
+            repository_owner: None,
+            repository_name: None,
             status: "online".into(),
             busy: false,
             last_job_id: None,
@@ -1389,14 +1485,20 @@ mod tests {
             INSERT INTO installations (id,account_id,account_login,account_type,target_type,repository_selection,created_at,updated_at)
               VALUES (1,1,'octo-org','Organization','Organization','all',1,1);
             INSERT INTO repositories (id,installation_id,owner,name,full_name,private,default_branch,html_url,last_synced_at,created_at,updated_at)
-              VALUES (10,1,'octo-org','gridops','octo-org/gridops',0,'master','https://github.com/octo-org/gridops',1,1,1);
+              VALUES
+              (10,1,'octo-org','gridops','octo-org/gridops',0,'master','https://github.com/octo-org/gridops',1,1,1),
+              (11,1,'octo-org','other','octo-org/other',0,'master','https://github.com/octo-org/other',1,1,1);
             INSERT INTO runner_pools (id,installation_id,repository_id,name,scope,labels,image,autoscaling_enabled,created_at,updated_at)
               VALUES
               ('pool-a',1,10,'pool-a','repository','["docker","pool-a"]','runner:latest',1,1,1),
               ('pool-b',1,10,'pool-b','repository','["gpu","pool-b"]','runner:latest',1,2,2),
               ('pool-org',1,NULL,'pool-org','organization','["org-only","pool-org"]','runner:latest',1,0,0);
+            INSERT INTO runner_pool_repositories (pool_id,repository_id,created_at)
+              VALUES ('pool-a',10,1),('pool-a',11,2),('pool-b',10,1);
             INSERT INTO workflow_runs (id,repository_id,workflow_name,run_number,event,status,head_sha,html_url,github_created_at,github_updated_at,created_at,updated_at)
-              VALUES (20,10,'CI',1,'push','queued','abc123','https://github.com/octo-org/gridops/actions/runs/20',1,1,1,1);
+              VALUES
+              (20,10,'CI',1,'push','queued','abc123','https://github.com/octo-org/gridops/actions/runs/20',1,1,1,1),
+              (21,11,'CI',2,'push','queued','def456','https://github.com/octo-org/other/actions/runs/21',1,1,1,1);
             INSERT INTO workflow_jobs (id,run_id,name,status,labels,html_url,created_at,updated_at)
               VALUES
               (30,20,'generic','queued','["self-hosted","linux"]','https://github.com/octo-org/gridops/actions/runs/20/job/30',1,1),
@@ -1405,6 +1507,12 @@ mod tests {
               (33,20,'org','queued','["self-hosted","org-only"]','https://github.com/octo-org/gridops/actions/runs/20/job/33',1,1),
               (34,20,'unmatched','queued','["self-hosted","unmatched"]','https://github.com/octo-org/gridops/actions/runs/20/job/34',1,1),
               (35,20,'wrong-os','queued','["self-hosted","windows"]','https://github.com/octo-org/gridops/actions/runs/20/job/35',1,1);
+            INSERT INTO workflow_jobs (id,run_id,name,status,labels,html_url,created_at,updated_at)
+              VALUES (36,21,'other','queued','["self-hosted","pool-a"]','https://github.com/octo-org/other/actions/runs/21/job/36',1,1);
+            INSERT INTO runners (id,pool_id,target_repository_id,name,status,created_at,updated_at)
+              VALUES
+              ('runner-a','pool-a',10,'pool-a-one','online',1,1),
+              ('runner-b','pool-a',10,'pool-a-two','online',1,1);
             "#,
         )
         .execute(&database)
@@ -1417,9 +1525,13 @@ mod tests {
         let mut pool_org = pool(1);
         pool_org.id = "pool-org".into();
 
-        assert_eq!(assigned_queued_jobs(&database, &pool_a.id).await?, 2);
+        assert_eq!(assigned_queued_jobs(&database, &pool_a.id).await?, 3);
         assert_eq!(assigned_queued_jobs(&database, &pool_b.id).await?, 1);
         assert_eq!(assigned_queued_jobs(&database, &pool_org.id).await?, 1);
+        let target = next_runner_repository(&database, &pool_a.id, 1)
+            .await?
+            .context("multi-repository pool should have a target")?;
+        assert_eq!(target.repository_id, 11);
 
         database.close().await;
         fs::remove_dir_all(directory)?;

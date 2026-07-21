@@ -8,10 +8,13 @@ import { Badge } from "~/components/ui/badge";
 import { Button, buttonVariants } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
+import { SearchableMultiSelect } from "~/components/ui/searchable-multi-select";
 import { SearchableSelect } from "~/components/ui/searchable-select";
 import {
+  type RepositoryOption,
   type RunnerGroupOption,
   type RunnerPoolDetail,
+  getInstallationRepositories,
   getInstallationRunnerGroups,
   getRunnerPoolAction,
   updateRunnerPoolAction,
@@ -33,12 +36,25 @@ type RunnerGroupLoadState =
   | { status: "ready"; items: RunnerGroupOption[]; error: null }
   | { status: "error"; items: RunnerGroupOption[]; error: string };
 
+type RepositoryLoadState =
+  | { status: "idle" | "loading"; items: RepositoryOption[]; error: null }
+  | { status: "ready"; items: RepositoryOption[]; error: null }
+  | { status: "error"; items: RepositoryOption[]; error: string };
+
 function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"ephemeral" | "persistent">(pool.mode);
+  const [repositoryIds, setRepositoryIds] = useState(pool.repositoryIds);
+  const [maxCount, setMaxCount] = useState(pool.maxCount);
   const [runnerGroupId, setRunnerGroupId] = useState(pool.runnerGroupId);
+  const shouldLoadRepositories = pool.canManage && pool.scope === "repository";
+  const [repositoryLoad, setRepositoryLoad] = useState<RepositoryLoadState>(
+    shouldLoadRepositories
+      ? { status: "loading", items: pool.repositories, error: null }
+      : { status: "idle", items: [], error: null },
+  );
   const shouldLoadRunnerGroups = pool.canManage && pool.scope === "organization";
   const [runnerGroupLoad, setRunnerGroupLoad] = useState<RunnerGroupLoadState>(
     shouldLoadRunnerGroups
@@ -62,6 +78,22 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
     return () => controller.abort();
   }, [pool.installationId, shouldLoadRunnerGroups]);
 
+  useEffect(() => {
+    if (!shouldLoadRepositories) return;
+    const controller = new AbortController();
+    void getInstallationRepositories(pool.installationId, controller.signal)
+      .then(({ items }) => setRepositoryLoad({ status: "ready", items, error: null }))
+      .catch((cause: unknown) => {
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setRepositoryLoad({
+          status: "error",
+          items: pool.repositories,
+          error: cause instanceof Error ? cause.message : "Repositories could not be loaded.",
+        });
+      });
+    return () => controller.abort();
+  }, [pool.installationId, pool.repositories, shouldLoadRepositories]);
+
   const runnerGroups = runnerGroupLoad.items;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -73,6 +105,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
       await updateRunnerPoolAction({
         data: {
           poolId: pool.id,
+          repositoryIds: pool.scope === "repository" ? repositoryIds : undefined,
           name: String(form.get("name") ?? ""),
           mode,
           labels: String(form.get("labels") ?? "")
@@ -126,10 +159,31 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
             <CardHeader><CardTitle>GitHub destination</CardTitle></CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2">
               <ReadOnly label="Installation" value={pool.accountLogin} />
-              <ReadOnly label="Scope" value={pool.scope === "repository" ? pool.repository ?? "Repository" : "Organization"} />
-              <p className="text-[11px] leading-5 text-muted-foreground sm:col-span-2">
-                A pool destination is immutable because GitHub registrations belong to that target. Create a new pool to move workloads to another repository or organization.
-              </p>
+              <ReadOnly label="Scope" value={pool.scope === "repository" ? `${repositoryIds.length} repositories` : "Organization"} />
+              {pool.scope === "repository" ? (
+                <Field className="sm:col-span-2" label="Repositories" hint={`${repositoryIds.length} selected · maximum ${maxCount}`}>
+                  <SearchableMultiSelect
+                    ariaLabel="Pool repositories"
+                    emptyMessage="No repositories match this search"
+                    loading={repositoryLoad.status === "loading"}
+                    maxSelected={maxCount}
+                    onValueChange={setRepositoryIds}
+                    options={repositoryLoad.items.map((repository) => ({
+                      value: repository.id,
+                      label: repository.fullName,
+                      description: repository.private ? "Private repository" : "Public repository",
+                    }))}
+                    placeholder="Choose one or more repositories…"
+                    searchPlaceholder="Search by owner or repository name…"
+                    values={repositoryIds}
+                  />
+                  {repositoryLoad.status === "error" ? <span className="block text-[11px] text-destructive">{repositoryLoad.error}</span> : null}
+                </Field>
+              ) : (
+                <p className="text-[11px] leading-5 text-muted-foreground sm:col-span-2">
+                  Repository access is controlled by the selected GitHub runner group.
+                </p>
+              )}
             </CardContent>
           </Card>
 
@@ -214,7 +268,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
             <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
               <Field label="Desired"><Input defaultValue={pool.desiredCount} max="100" min="0" name="desiredCount" required type="number" /></Field>
               <Field label="Minimum"><Input defaultValue={pool.minCount} max="100" min="0" name="minCount" required type="number" /></Field>
-              <Field label="Maximum"><Input defaultValue={pool.maxCount} max="100" min="1" name="maxCount" required type="number" /></Field>
+              <Field label="Maximum" hint="Must cover every selected repository."><Input max="100" min={Math.max(1, repositoryIds.length)} name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} required type="number" value={maxCount} /></Field>
               <Field label="CPU cores"><Input defaultValue={pool.cpuLimit} max="64" min="0.25" name="cpuLimit" required step="0.25" type="number" /></Field>
               <Field label="Memory MB"><Input defaultValue={pool.memoryLimitMb} max="262144" min="256" name="memoryLimitMb" required step="256" type="number" /></Field>
               <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 lg:col-span-5">
@@ -234,7 +288,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               {submitting ? "Saving changes…" : "Save changes"}
             </Button>
           </div>
-        </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.repository ?? pool.accountLogin} /><ReadOnly label="Capacity" value={`${pool.desiredCount} desired · ${pool.minCount}-${pool.maxCount}`} /><ReadOnly label="Runner image" value={pool.image} /><ReadOnly label="Resources" value={`${pool.cpuLimit} CPU · ${pool.memoryLimitMb} MB`} /></CardContent></Card>}
+        </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.scope === "repository" ? `${pool.repositoryIds.length} repositories` : pool.accountLogin} /><ReadOnly label="Capacity" value={`${pool.desiredCount} desired · ${pool.minCount}-${pool.maxCount}`} /><ReadOnly label="Runner image" value={pool.image} /><ReadOnly label="Resources" value={`${pool.cpuLimit} CPU · ${pool.memoryLimitMb} MB`} /></CardContent></Card>}
       </div>
     </AppShell>
   );

@@ -1,14 +1,22 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Github, LoaderCircle, Server } from "lucide-react";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { AppShell } from "~/components/app-shell";
 import { Button, buttonVariants } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
+import { SearchableMultiSelect } from "~/components/ui/searchable-multi-select";
 import { SearchableSelect } from "~/components/ui/searchable-select";
-import { createRunnerPoolAction, getCreateRunnerPoolOptions } from "~/features/runner-pools/runner-pools.functions";
+import {
+  type RepositoryOption,
+  type RunnerGroupOption,
+  createRunnerPoolAction,
+  getCreateRunnerPoolOptions,
+  getInstallationRepositories,
+  getInstallationRunnerGroups,
+} from "~/features/runner-pools/runner-pools.functions";
 import { cn } from "~/lib/utils";
 
 export const Route = createFileRoute("/runner-pools_/new")({
@@ -106,6 +114,11 @@ type RunnerPoolFormOptions = {
   installUrl: string;
 };
 
+type AsyncOptions<T> =
+  | { status: "loading"; items: T[]; error: null }
+  | { status: "ready"; items: T[]; error: null }
+  | { status: "error"; items: T[]; error: string };
+
 function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
   const createPool = createRunnerPoolAction;
   const navigate = useNavigate();
@@ -113,22 +126,54 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
   const [error, setError] = useState<string | null>(null);
   const [scope, setScope] = useState<"repository" | "organization">("repository");
   const [installationId, setInstallationId] = useState(options.installations[0]?.id ?? 0);
-  const [repositoryId, setRepositoryId] = useState(0);
+  const [repositoryIds, setRepositoryIds] = useState<number[]>([]);
   const [mode, setMode] = useState<"ephemeral" | "persistent">("ephemeral");
-  const repositories = useMemo(
-    () => options.repositories.filter((repository) => repository.installationId === installationId),
-    [installationId, options.repositories],
+  const [maxCount, setMaxCount] = useState(options.defaults.maxCount);
+  const initialInstallation = options.installations.find((installation) => installation.id === installationId);
+  const [repositoryLoad, setRepositoryLoad] = useState<AsyncOptions<RepositoryOption>>(
+    { status: "loading", items: [], error: null },
   );
-  const runnerGroups = useMemo(
-    () => options.runnerGroups.filter((group) => group.installationId === installationId),
-    [installationId, options.runnerGroups],
+  const [runnerGroupLoad, setRunnerGroupLoad] = useState<AsyncOptions<RunnerGroupOption>>(
+    initialInstallation?.accountType === "Organization"
+      ? { status: "loading", items: [], error: null }
+      : { status: "ready", items: [], error: null },
   );
+  const repositories = repositoryLoad.items;
+  const runnerGroups = runnerGroupLoad.items;
   const defaultRunnerGroup = runnerGroups.find((group) => group.isDefault) ?? runnerGroups[0];
-  const [runnerGroupId, setRunnerGroupId] = useState(
-    options.runnerGroups.find((group) => group.installationId === installationId && group.isDefault)?.id
-      ?? options.runnerGroups.find((group) => group.installationId === installationId)?.id
-      ?? options.defaults.runnerGroupId,
-  );
+  const [runnerGroupId, setRunnerGroupId] = useState(options.defaults.runnerGroupId);
+
+  useEffect(() => {
+    if (!installationId) return;
+    const controller = new AbortController();
+    void getInstallationRepositories(installationId, controller.signal)
+      .then(({ items }) => setRepositoryLoad({ status: "ready", items, error: null }))
+      .catch((cause: unknown) => {
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setRepositoryLoad({
+          status: "error",
+          items: [],
+          error: cause instanceof Error ? cause.message : "Repositories could not be loaded.",
+        });
+      });
+    const installation = options.installations.find((candidate) => candidate.id === installationId);
+    if (installation?.accountType === "Organization") {
+      void getInstallationRunnerGroups(installationId, controller.signal)
+        .then(({ items }) => {
+          setRunnerGroupLoad({ status: "ready", items, error: null });
+          setRunnerGroupId(items.find((group) => group.isDefault)?.id ?? items[0]?.id ?? options.defaults.runnerGroupId);
+        })
+        .catch((cause: unknown) => {
+          if (cause instanceof DOMException && cause.name === "AbortError") return;
+          setRunnerGroupLoad({
+            status: "error",
+            items: [],
+            error: cause instanceof Error ? cause.message : "Runner groups could not be loaded.",
+          });
+        });
+    }
+    return () => controller.abort();
+  }, [installationId, options.defaults.runnerGroupId, options.installations]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -140,8 +185,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
       await createPool({
         data: {
           installationId,
-          repositoryId:
-            scope === "repository" ? repositoryId || null : null,
+          repositoryIds: scope === "repository" ? repositoryIds : [],
           name: String(form.get("name") ?? ""),
           scope,
           mode,
@@ -194,14 +238,16 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                   ariaLabel="GitHub installation"
                   onValueChange={(nextInstallationId) => {
                     const nextId = nextInstallationId ?? 0;
-                    const nextRunnerGroups = options.runnerGroups.filter((group) => group.installationId === nextId);
+                    const nextInstallation = options.installations.find((installation) => installation.id === nextId);
                     setInstallationId(nextId);
-                    setRepositoryId(0);
-                    setRunnerGroupId(
-                      nextRunnerGroups.find((group) => group.isDefault)?.id
-                        ?? nextRunnerGroups[0]?.id
-                        ?? options.defaults.runnerGroupId,
+                    setRepositoryIds([]);
+                    setRepositoryLoad({ status: "loading", items: [], error: null });
+                    setRunnerGroupLoad(
+                      nextInstallation?.accountType === "Organization"
+                        ? { status: "loading", items: [], error: null }
+                        : { status: "ready", items: [], error: null },
                     );
+                    setRunnerGroupId(options.defaults.runnerGroupId);
                   }}
                   options={options.installations.map((installation) => ({
                     value: installation.id,
@@ -216,9 +262,13 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
               <Field label="Scope">
                 <SearchableSelect
                   ariaLabel="Runner pool scope"
-                  onValueChange={(nextScope) => setScope(nextScope ?? "repository")}
+                  onValueChange={(nextScope) => {
+                    const value = nextScope ?? "repository";
+                    setScope(value);
+                    if (value === "organization") setRepositoryIds([]);
+                  }}
                   options={[
-                    { value: "repository", label: "Repository", description: "Runners dedicated to one repository" },
+                    { value: "repository", label: "Repositories", description: "Shared capacity across selected repositories" },
                     { value: "organization", label: "Organization", description: "Shared runners across an organization" },
                   ]}
                   searchable={false}
@@ -226,21 +276,24 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                 />
               </Field>
               {scope === "repository" && (
-                <Field className="md:col-span-2" label="Repository" hint={`${repositories.length} repositories available to this installation`}>
-                  <SearchableSelect
-                    ariaLabel="Repository"
+                <Field className="md:col-span-2" label="Repositories" hint={`${repositoryIds.length} selected · maximum ${maxCount} · ${repositories.length} available`}>
+                  <SearchableMultiSelect
+                    ariaLabel="Repositories"
                     emptyMessage="No repositories match this search"
-                    onValueChange={(nextRepositoryId) => setRepositoryId(nextRepositoryId ?? 0)}
+                    loading={repositoryLoad.status === "loading"}
+                    maxSelected={maxCount}
+                    onValueChange={setRepositoryIds}
                     options={repositories.map((repository) => ({
                       value: repository.id,
                       label: repository.fullName,
                       description: repository.private ? "Private repository" : "Public repository",
                       keywords: [repository.private ? "private" : "public"],
                     }))}
-                    placeholder="Choose repository…"
+                    placeholder="Choose one or more repositories…"
                     searchPlaceholder="Search by owner or repository name…"
-                    value={repositoryId || null}
+                    values={repositoryIds}
                   />
+                  {repositoryLoad.status === "error" ? <span className="block text-[11px] text-destructive">{repositoryLoad.error}</span> : null}
                 </Field>
               )}
             </CardContent>
@@ -271,8 +324,10 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                 <Input defaultValue={options.defaults.labels.join(", ")} name="labels" placeholder="docker, x64" />
               </Field>
               {scope === "organization" ? (
-                <Field label="Runner group" hint={runnerGroups.length ? "Groups available to this GitHub App installation." : "GridOps could not discover groups; enter the GitHub runner group ID."}>
-                  {runnerGroups.length ? (
+                <Field label="Runner group" hint={runnerGroupLoad.status === "loading" ? "Loading runner groups from GitHub…" : runnerGroups.length ? "Groups available to this GitHub App installation." : "Enter the GitHub runner group ID."}>
+                  {runnerGroupLoad.status === "loading" ? (
+                    <div className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm text-muted-foreground" role="status"><LoaderCircle className="size-4 animate-spin" />Loading runner groups…</div>
+                  ) : runnerGroups.length ? (
                     <SearchableSelect
                       ariaLabel="GitHub runner group"
                       onValueChange={(nextRunnerGroupId) => setRunnerGroupId(nextRunnerGroupId ?? defaultRunnerGroup?.id ?? 1)}
@@ -286,8 +341,9 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                       value={runnerGroupId}
                     />
                   ) : (
-                    <Input defaultValue={options.defaults.runnerGroupId} min="1" name="runnerGroupId" type="number" required />
+                    <Input min="1" name="runnerGroupId" onChange={(event) => setRunnerGroupId(Number(event.target.value))} type="number" required value={runnerGroupId} />
                   )}
+                  {runnerGroupLoad.status === "error" ? <span className="block text-[11px] text-destructive">{runnerGroupLoad.error}</span> : null}
                 </Field>
               ) : null}
             </CardContent>
@@ -298,7 +354,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
             <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
               <Field label="Desired" hint="Starts at one runner by default; idle autoscaling may return it to the minimum."><Input defaultValue={options.defaults.desiredCount} min="0" max="100" name="desiredCount" type="number" required /></Field>
               <Field label="Minimum"><Input defaultValue={options.defaults.minCount} min="0" max="100" name="minCount" type="number" required /></Field>
-              <Field label="Maximum"><Input defaultValue={options.defaults.maxCount} min="1" max="100" name="maxCount" type="number" required /></Field>
+              <Field label="Maximum" hint="Must cover every selected repository."><Input min={Math.max(1, repositoryIds.length)} max="100" name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} type="number" required value={maxCount} /></Field>
               <Field label="CPU cores"><Input defaultValue={options.defaults.cpuLimit} min="0.25" max="64" step="0.25" name="cpuLimit" type="number" required /></Field>
               <Field label="Memory MB"><Input defaultValue={options.defaults.memoryLimitMb} min="256" step="256" name="memoryLimitMb" type="number" required /></Field>
               <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 lg:col-span-5">

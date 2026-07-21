@@ -63,7 +63,11 @@ function RunnerPoolsPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <div className="text-xs">{pool.repository ?? pool.accountLogin}</div>
+                      <div className="text-xs">
+                        {pool.scope === "repository" && pool.repositoryCount > 1
+                          ? `${pool.repositoryCount} repositories`
+                          : pool.repository ?? pool.accountLogin}
+                      </div>
                       <div className="mt-1 text-[11px] capitalize text-muted-foreground">{pool.scope} · {pool.mode}</div>
                     </TableCell>
                     <TableCell>

@@ -4,7 +4,7 @@ import { createRunnerPoolSchema, updateRunnerPoolSchema } from "~/features/runne
 
 const validPool = {
   installationId: 123,
-  repositoryId: 456,
+  repositoryIds: [456],
   name: "linux-general",
   scope: "repository" as const,
   mode: "ephemeral" as const,
@@ -27,12 +27,21 @@ describe("runner pool validation", () => {
   });
 
   it("requires a repository for repository scope", () => {
-    const result = createRunnerPoolSchema.safeParse({ ...validPool, repositoryId: null });
+    const result = createRunnerPoolSchema.safeParse({ ...validPool, repositoryIds: [] });
     expect(result.success).toBe(false);
   });
 
   it("rejects a repository on organization scope", () => {
     const result = createRunnerPoolSchema.safeParse({ ...validPool, scope: "organization" });
+    expect(result.success).toBe(false);
+  });
+
+  it("limits repository assignments to maximum runner capacity", () => {
+    const result = createRunnerPoolSchema.safeParse({
+      ...validPool,
+      repositoryIds: [1, 2, 3],
+      maxCount: 2,
+    });
     expect(result.success).toBe(false);
   });
 
@@ -47,7 +56,7 @@ describe("runner pool validation", () => {
   });
 
   it("validates editable configuration without allowing a destination change", () => {
-    const { installationId: _installationId, repositoryId: _repositoryId, scope: _scope, ...configuration } = validPool;
+    const { installationId: _installationId, scope: _scope, ...configuration } = validPool;
     expect(updateRunnerPoolSchema.parse(configuration)).toEqual(configuration);
     expect(updateRunnerPoolSchema.safeParse({ ...configuration, desiredCount: 11, maxCount: 10 }).success).toBe(false);
     expect(updateRunnerPoolSchema.safeParse({ ...configuration, installationId: 999 }).success).toBe(true);

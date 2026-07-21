@@ -21,6 +21,8 @@ const configurationShape = {
   runnerGroupId: z.number().int().positive().default(1),
 } as const;
 
+const repositoryIds = z.array(z.number().int().positive()).max(1_000);
+
 function validateCapacity(
   value: { desiredCount: number; minCount: number; maxCount: number },
   context: z.RefinementCtx,
@@ -48,28 +50,53 @@ function validateCapacity(
   }
 }
 
-export const updateRunnerPoolSchema = z.object(configurationShape).superRefine(validateCapacity);
+export const updateRunnerPoolSchema = z
+  .object({ repositoryIds: repositoryIds.optional(), ...configurationShape })
+  .superRefine((value, context) => {
+    if (value.repositoryIds?.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["repositoryIds"],
+        message: "Choose at least one repository for the pool.",
+      });
+    }
+    if (value.repositoryIds && value.repositoryIds.length > value.maxCount) {
+      context.addIssue({
+        code: "custom",
+        path: ["repositoryIds"],
+        message: "Repository count cannot exceed maximum runner capacity.",
+      });
+    }
+    validateCapacity(value, context);
+  });
 
 export const createRunnerPoolSchema = z
   .object({
     installationId: z.number().int().positive(),
-    repositoryId: z.number().int().positive().nullable(),
+    repositoryIds: repositoryIds.default([]),
     scope: z.enum(["repository", "organization"]),
     ...configurationShape,
   })
   .superRefine((value, context) => {
-    if (value.scope === "repository" && !value.repositoryId) {
+    if (value.scope === "repository" && value.repositoryIds.length === 0) {
       context.addIssue({
         code: "custom",
-        path: ["repositoryId"],
-        message: "Choose a repository for a repository-scoped pool.",
+        path: ["repositoryIds"],
+        message: "Choose at least one repository for a repository-scoped pool.",
       });
     }
-    if (value.scope === "organization" && value.repositoryId) {
+    if (value.scope === "organization" && value.repositoryIds.length > 0) {
       context.addIssue({
         code: "custom",
-        path: ["repositoryId"],
-        message: "Organization pools cannot target one repository.",
+        path: ["repositoryIds"],
+        message: "Organization pools use runner-group repository access.",
+      });
+    }
+    if (value.repositoryIds.length > value.maxCount) {
+      context.addIssue({
+        code: "custom",
+        path: ["repositoryIds"],
+        message: "Repository count cannot exceed maximum runner capacity.",
       });
     }
     validateCapacity(value, context);

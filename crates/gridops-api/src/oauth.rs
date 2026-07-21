@@ -596,10 +596,25 @@ pub(crate) async fn upsert_repository(
     .execute(&state.database)
     .await?;
     if repository.archived {
+        sqlx::query("DELETE FROM runner_pool_repositories WHERE repository_id=?")
+            .bind(repository.id)
+            .execute(&state.database)
+            .await?;
         sqlx::query(
-            "UPDATE runner_pools SET paused=1,state='draining',updated_at=? WHERE repository_id=?",
+            r#"UPDATE runner_pools SET
+               repository_id=(SELECT repository_id FROM runner_pool_repositories membership
+                 WHERE membership.pool_id=runner_pools.id ORDER BY created_at,repository_id LIMIT 1),
+               paused=CASE WHEN NOT EXISTS (SELECT 1 FROM runner_pool_repositories membership
+                 WHERE membership.pool_id=runner_pools.id) THEN 1 ELSE paused END,
+               state=CASE WHEN NOT EXISTS (SELECT 1 FROM runner_pool_repositories membership
+                 WHERE membership.pool_id=runner_pools.id) THEN 'draining' ELSE 'updating' END,
+               configuration_version=configuration_version+1,updated_at=?
+               WHERE scope='repository' AND (repository_id=? OR EXISTS (
+                 SELECT 1 FROM runners runner WHERE runner.pool_id=runner_pools.id
+                   AND runner.target_repository_id=? AND runner.deleted_at IS NULL))"#,
         )
         .bind(now)
+        .bind(repository.id)
         .bind(repository.id)
         .execute(&state.database)
         .await?;

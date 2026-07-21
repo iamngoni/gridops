@@ -339,8 +339,25 @@ async fn process_installation_repositories(
                 .bind(id)
                 .execute(&state.database)
                 .await?;
-            sqlx::query("UPDATE runner_pools SET paused=1,state='draining',updated_at=? WHERE repository_id=?")
+            sqlx::query("DELETE FROM runner_pool_repositories WHERE repository_id=?")
+                .bind(id)
+                .execute(&state.database)
+                .await?;
+            sqlx::query(
+                r#"UPDATE runner_pools SET
+                   repository_id=(SELECT repository_id FROM runner_pool_repositories membership
+                     WHERE membership.pool_id=runner_pools.id ORDER BY created_at,repository_id LIMIT 1),
+                   paused=CASE WHEN NOT EXISTS (SELECT 1 FROM runner_pool_repositories membership
+                     WHERE membership.pool_id=runner_pools.id) THEN 1 ELSE paused END,
+                   state=CASE WHEN NOT EXISTS (SELECT 1 FROM runner_pool_repositories membership
+                     WHERE membership.pool_id=runner_pools.id) THEN 'draining' ELSE 'updating' END,
+                   configuration_version=configuration_version+1,updated_at=?
+                   WHERE scope='repository' AND (repository_id=? OR EXISTS (
+                     SELECT 1 FROM runners runner WHERE runner.pool_id=runner_pools.id
+                       AND runner.target_repository_id=? AND runner.deleted_at IS NULL))"#,
+            )
                 .bind(now)
+                .bind(id)
                 .bind(id)
                 .execute(&state.database)
                 .await?;
@@ -576,10 +593,12 @@ async fn scale_for_queued_job(
         FROM runner_pools p JOIN repositories event_repo ON event_repo.id=?
         LEFT JOIN runners r ON r.pool_id=p.id
         WHERE p.autoscaling_enabled=1 AND p.paused=0 AND (
+          EXISTS (SELECT 1 FROM runner_pool_repositories membership
+            WHERE membership.pool_id=p.id AND membership.repository_id=event_repo.id) OR
           p.repository_id=event_repo.id OR
           (p.scope='organization' AND p.installation_id=event_repo.installation_id)
         ) GROUP BY p.id
-        ORDER BY CASE WHEN p.repository_id=event_repo.id THEN 0 ELSE 1 END,p.created_at,p.id"#,
+        ORDER BY CASE WHEN p.scope='repository' THEN 0 ELSE 1 END,p.created_at,p.id"#,
     )
     .bind(repository_id)
     .fetch_all(database)
