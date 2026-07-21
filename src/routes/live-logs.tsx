@@ -29,7 +29,7 @@ import {
   getLiveLogsPage,
   getWorkflowJobLogAction,
 } from "~/features/operations/operations.functions";
-import { isNearLogEnd } from "~/lib/log-follow";
+import { advanceFollowedSteps, isNearLogEnd } from "~/lib/log-follow";
 import { parsePage } from "~/lib/pagination";
 import { cn, formatDuration } from "~/lib/utils";
 
@@ -69,6 +69,11 @@ function LiveLogsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [following, setFollowing] = useState(true);
+  const followingRef = useRef(true);
+  const updateFollowing = useCallback((value: boolean) => {
+    followingRef.current = value;
+    setFollowing(value);
+  }, []);
   const selectedJob = useRef<number | null>(null);
   const logViewport = useRef<HTMLDivElement>(null);
   const targets = targetPage.items;
@@ -113,11 +118,18 @@ function LiveLogsPage() {
       setError(null);
       if (selectedJob.current !== response.id) {
         selectedJob.current = response.id;
-        const recommended = response.steps
+        const failed = response.steps
           .filter((step) => step.conclusion === "failure" || step.status === "in_progress")
           .map((step) => step.number);
+        const recommended = advanceFollowedSteps(response.steps, new Set(failed));
         const firstStep = response.steps[0]?.number;
-        setExpandedSteps(new Set(recommended.length ? recommended : firstStep === undefined ? [] : [firstStep]));
+        setExpandedSteps(recommended.size ? recommended : new Set(firstStep === undefined ? [] : [firstStep]));
+      } else if (followingRef.current && (response.status === "queued" || response.status === "in_progress")) {
+        setExpandedSteps((current) => {
+          const next = advanceFollowedSteps(response.steps, current);
+          if (next.size === current.size && [...next].every((number) => current.has(number))) return current;
+          return next;
+        });
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load workflow job logs.");
@@ -134,11 +146,11 @@ function LiveLogsPage() {
       setJobLog(null);
       setError(null);
       setQuery("");
-      setFollowing(true);
+      updateFollowing(true);
       void refreshLog(jobId, true);
     }, 0);
     return () => window.clearTimeout(initial);
-  }, [refreshLog, selectedJobId]);
+  }, [refreshLog, selectedJobId, updateFollowing]);
 
   useEffect(() => {
     if (!selectedJobId || !active) return undefined;
@@ -157,7 +169,7 @@ function LiveLogsPage() {
     const viewport = logViewport.current;
     if (!viewport || !following || !active) return;
     viewport.scrollTop = viewport.scrollHeight;
-  }, [active, following, jobLog?.lineCount]);
+  }, [active, expandedSteps, following, jobLog?.lineCount]);
 
   const visibleSteps = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -176,6 +188,7 @@ function LiveLogsPage() {
   }
 
   function toggleStep(number: number) {
+    if (active) updateFollowing(false);
     setExpandedSteps((current) => {
       const next = new Set(current);
       if (next.has(number)) next.delete(number);
@@ -185,18 +198,20 @@ function LiveLogsPage() {
   }
 
   function revealStep(number: number) {
+    if (active) updateFollowing(false);
     setExpandedSteps((current) => new Set(current).add(number));
   }
 
   function handleLogScroll() {
     const viewport = logViewport.current;
     if (!viewport || !active) return;
-    setFollowing(isNearLogEnd(viewport));
+    updateFollowing(isNearLogEnd(viewport));
   }
 
   function jumpToLatest() {
     const viewport = logViewport.current;
-    setFollowing(true);
+    if (jobLog) setExpandedSteps((current) => advanceFollowedSteps(jobLog.steps, current));
+    updateFollowing(true);
     viewport?.scrollTo({ behavior: "smooth", top: viewport.scrollHeight });
   }
 
@@ -327,7 +342,7 @@ function LiveLogsPage() {
               <CardHeader>
                 <div>
                   <CardTitle>Steps</CardTitle>
-                  <p className="mt-1 text-xs text-muted-foreground">Failed and running steps open automatically.</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Running and failed steps open automatically while following.</p>
                 </div>
                 <div className="relative w-full sm:w-64">
                   <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
