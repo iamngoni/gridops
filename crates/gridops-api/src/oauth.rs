@@ -201,7 +201,7 @@ pub async fn callback(
         .map_err(ApiError::Internal)?
         .is_some()
     {
-        sync_user_installations(&state, &user_id, &access_token).await?;
+        sync_user_installations(&state, &user_id, &access_token, false).await?;
     } else {
         tracing::info!(
             user = %profile.login,
@@ -249,7 +249,7 @@ pub async fn sync(State(state): State<AppState>, user: AuthUser) -> ApiResult<Js
         ));
     }
     let token = user_access_token(&state, &user.id).await?;
-    sync_user_installations(&state, &user.id, &token).await?;
+    sync_user_installations(&state, &user.id, &token, true).await?;
     let count = sqlx::query(
         r#"SELECT COUNT(*) AS count FROM repositories r
            JOIN user_installations ui ON ui.installation_id=r.installation_id
@@ -397,6 +397,7 @@ async fn sync_user_installations(
     state: &AppState,
     user_id: &str,
     access_token: &str,
+    sync_workflows: bool,
 ) -> ApiResult<()> {
     let user_login = sqlx::query_scalar::<_, String>("SELECT login FROM users WHERE id=?")
         .bind(user_id)
@@ -458,7 +459,8 @@ async fn sync_user_installations(
         }
         for repository in &repositories {
             upsert_repository(state, installation.id, repository).await?;
-            if !repository.archived
+            if sync_workflows
+                && !repository.archived
                 && let Err(error) = sync_recent_runs(state, repository, access_token).await
             {
                 tracing::warn!(repository = %repository.full_name, error = ?error, "workflow sync failed");
