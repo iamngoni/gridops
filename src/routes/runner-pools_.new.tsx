@@ -358,19 +358,19 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>Capacity and limits</CardTitle></CardHeader>
-            <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-              <Field label="Desired" hint="Starts at one runner by default; idle autoscaling may return it to the minimum."><Input defaultValue={options.defaults.desiredCount} min="0" max="100" name="desiredCount" type="number" required /></Field>
-              <Field label="Minimum"><Input defaultValue={options.defaults.minCount} min="0" max="100" name="minCount" type="number" required /></Field>
-              <Field label="Maximum" hint="Must cover every selected repository."><Input min={Math.max(1, repositoryIds.length)} max="100" name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} type="number" required value={maxCount} /></Field>
-              <Field label="CPU cores"><Input defaultValue={options.defaults.cpuLimit} min="0.25" max="64" step="0.25" name="cpuLimit" type="number" required /></Field>
-              <Field label="Memory MB"><Input defaultValue={options.defaults.memoryLimitMb} min="256" step="256" name="memoryLimitMb" type="number" required /></Field>
-              <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 lg:col-span-5">
+            <CardHeader><CardTitle>Pool capacity and per-runner limits</CardTitle></CardHeader>
+            <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <Field label="Target runners" hint="Runners GridOps should keep active now. Autoscaling may change this between the minimum and maximum."><Input defaultValue={options.defaults.desiredCount} min="0" max="100" name="desiredCount" type="number" required /></Field>
+              <Field label="Minimum runners" hint="Lowest pool target after idle scale-down. Set 0 to scale all the way down."><Input defaultValue={options.defaults.minCount} min="0" max="100" name="minCount" type="number" required /></Field>
+              <Field label="Maximum runners" hint={scope === "repository" ? "Highest pool target during scale-up. Must be at least the number of selected repositories." : "Highest pool target autoscaling can request."}><Input min={Math.max(1, repositoryIds.length)} max="100" name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} type="number" required value={maxCount} /></Field>
+              <Field label="CPU cores per runner" hint="Docker CPU limit for each runner."><Input defaultValue={options.defaults.cpuLimit} min="0.25" max="64" step="0.25" name="cpuLimit" type="number" required /></Field>
+              <Field label="Memory per runner (MB)" hint="Docker memory limit for each runner, in megabytes."><Input defaultValue={options.defaults.memoryLimitMb} min="256" step="256" name="memoryLimitMb" type="number" required /></Field>
+              <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 xl:col-span-3">
                 <input className="mt-0.5 size-4 accent-emerald-500" defaultChecked={options.defaults.autoscalingEnabled} name="autoscalingEnabled" type="checkbox" />
-                <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Webhook demand raises desired capacity up to the maximum, then drains idle capacity back to the minimum.</span></span>
+                <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Queued workflow jobs raise the target up to Maximum runners. When every runner is idle, the target returns to Minimum runners after the delay below.</span></span>
               </label>
-              <Field label="Runners per queued job"><Input defaultValue={options.defaults.queueScaleFactor} min="1" max="20" name="queueScaleFactor" type="number" required /></Field>
-              <Field label="Idle scale-down delay"><Input defaultValue={options.defaults.idleTimeoutMinutes} min="1" max="1440" name="idleTimeoutMinutes" type="number" required /></Field>
+              <Field label="Extra runners per queued job" hint="Each queued job requests this many additional runner slots, capped by Maximum runners."><Input defaultValue={options.defaults.queueScaleFactor} min="1" max="20" name="queueScaleFactor" type="number" required /></Field>
+              <Field label="Idle scale-down delay (minutes)" hint="After all runners are idle and no jobs are queued for this long, the target returns to Minimum runners."><Input defaultValue={options.defaults.idleTimeoutMinutes} min="1" max="1440" name="idleTimeoutMinutes" type="number" required /></Field>
             </CardContent>
           </Card>
 

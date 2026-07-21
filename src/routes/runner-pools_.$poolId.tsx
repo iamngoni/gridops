@@ -272,19 +272,19 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>Capacity and limits</CardTitle></CardHeader>
-            <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-              <Field label="Desired"><Input defaultValue={pool.desiredCount} max="100" min="0" name="desiredCount" required type="number" /></Field>
-              <Field label="Minimum"><Input defaultValue={pool.minCount} max="100" min="0" name="minCount" required type="number" /></Field>
-              <Field label="Maximum" hint="Must cover every selected repository."><Input max="100" min={Math.max(1, repositoryIds.length)} name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} required type="number" value={maxCount} /></Field>
-              <Field label="CPU cores"><Input defaultValue={pool.cpuLimit} max="64" min="0.25" name="cpuLimit" required step="0.25" type="number" /></Field>
-              <Field label="Memory MB"><Input defaultValue={pool.memoryLimitMb} max="262144" min="256" name="memoryLimitMb" required step="256" type="number" /></Field>
-              <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 lg:col-span-5">
+            <CardHeader><CardTitle>Pool capacity and per-runner limits</CardTitle></CardHeader>
+            <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <Field label="Target runners" hint="Runners GridOps should keep active now. Autoscaling may change this between the minimum and maximum."><Input defaultValue={pool.desiredCount} max="100" min="0" name="desiredCount" required type="number" /></Field>
+              <Field label="Minimum runners" hint="Lowest pool target after idle scale-down. Set 0 to scale all the way down."><Input defaultValue={pool.minCount} max="100" min="0" name="minCount" required type="number" /></Field>
+              <Field label="Maximum runners" hint={pool.scope === "repository" ? "Highest pool target during scale-up. Must be at least the number of selected repositories." : "Highest pool target autoscaling can request."}><Input max="100" min={Math.max(1, repositoryIds.length)} name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} required type="number" value={maxCount} /></Field>
+              <Field label="CPU cores per runner" hint="Docker CPU limit for each runner."><Input defaultValue={pool.cpuLimit} max="64" min="0.25" name="cpuLimit" required step="0.25" type="number" /></Field>
+              <Field label="Memory per runner (MB)" hint="Docker memory limit for each runner, in megabytes."><Input defaultValue={pool.memoryLimitMb} max="262144" min="256" name="memoryLimitMb" required step="256" type="number" /></Field>
+              <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 xl:col-span-3">
                 <input className="mt-0.5 size-4 accent-emerald-500" defaultChecked={pool.autoscalingEnabled} name="autoscalingEnabled" type="checkbox" />
-                <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Increase desired capacity from workflow demand and return to minimum after the idle delay.</span></span>
+                <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Queued workflow jobs raise the target up to Maximum runners. When every runner is idle, the target returns to Minimum runners after the delay below.</span></span>
               </label>
-              <Field label="Runners per queued job"><Input defaultValue={pool.queueScaleFactor} max="20" min="1" name="queueScaleFactor" required type="number" /></Field>
-              <Field label="Idle scale-down delay"><Input defaultValue={pool.idleTimeoutMinutes} max="1440" min="1" name="idleTimeoutMinutes" required type="number" /></Field>
+              <Field label="Extra runners per queued job" hint="Each queued job requests this many additional runner slots, capped by Maximum runners."><Input defaultValue={pool.queueScaleFactor} max="20" min="1" name="queueScaleFactor" required type="number" /></Field>
+              <Field label="Idle scale-down delay (minutes)" hint="After all runners are idle and no jobs are queued for this long, the target returns to Minimum runners."><Input defaultValue={pool.idleTimeoutMinutes} max="1440" min="1" name="idleTimeoutMinutes" required type="number" /></Field>
             </CardContent>
           </Card>
 
@@ -296,7 +296,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               {submitting ? "Saving changes…" : "Save changes"}
             </Button>
           </div>
-        </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.scope === "repository" ? `${pool.repositoryIds.length} repositories` : pool.accountLogin} /><ReadOnly label="Capacity" value={`${pool.desiredCount} desired · ${pool.minCount}-${pool.maxCount}`} /><ReadOnly label="Runner image" value={pool.image} /><ReadOnly label="Resources" value={`${pool.cpuLimit} CPU · ${pool.memoryLimitMb} MB`} /></CardContent></Card>}
+        </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.scope === "repository" ? `${pool.repositoryIds.length} repositories` : pool.accountLogin} /><ReadOnly label="Runner capacity" value={`${pool.desiredCount} target · ${pool.minCount}-${pool.maxCount} runners`} /><ReadOnly label="Runner image" value={pool.image} /><ReadOnly label="Per-runner resources" value={`${pool.cpuLimit} CPU cores · ${pool.memoryLimitMb} MB memory`} /></CardContent></Card>}
       </div>
     </AppShell>
   );
