@@ -115,14 +115,15 @@ function OverviewPage() {
           />
         </section>
 
-        <section className="grid items-start gap-4 2xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.8fr)]">
-          <CapacityPanel data={data} />
-          <ActivityPanel data={data} />
-        </section>
-
-        <section className="grid gap-4 2xl:grid-cols-[minmax(0,1.1fr)_minmax(520px,1fr)]">
-          <RunnerPoolsPanel data={data} />
-          <WorkflowRunsPanel data={data} />
+        <section className="flex flex-col gap-4 2xl:grid 2xl:grid-cols-[minmax(0,1.3fr)_minmax(520px,1fr)] 2xl:items-start">
+          <div className="contents 2xl:block 2xl:min-w-0 2xl:space-y-4">
+            <div className="order-1"><CapacityPanel data={data} /></div>
+            <div className="order-3"><RunnerPoolsPanel data={data} /></div>
+          </div>
+          <div className="contents 2xl:block 2xl:min-w-0 2xl:space-y-4">
+            <div className="order-2"><ActivityPanel data={data} /></div>
+            <div className="order-4"><WorkflowRunsPanel data={data} /></div>
+          </div>
         </section>
       </div>
     </AppShell>
