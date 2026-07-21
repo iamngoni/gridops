@@ -76,6 +76,17 @@ struct Repository {
     full_name: String,
 }
 
+#[derive(Debug, FromRow)]
+struct PendingGitHubCleanup {
+    id: String,
+    installation_id: i64,
+    target_owner: String,
+    target_repository: Option<String>,
+    github_runner_id: Option<i64>,
+    runner_name: String,
+    attempts: i64,
+}
+
 #[derive(Debug, Deserialize)]
 struct ManagerRunners {
     runners: Vec<ManagedRunner>,
@@ -133,6 +144,9 @@ async fn main() -> Result<()> {
 async fn reconcile(app: &Reconciler) -> Result<()> {
     if let Err(error) = maybe_sync_github(app).await {
         tracing::warn!(error = ?error, "periodic GitHub workflow sync failed");
+    }
+    if let Err(error) = retry_github_runner_cleanup(app).await {
+        tracing::warn!(error = ?error, "deferred GitHub runner cleanup pass failed");
     }
     let managed = match manager_request::<ManagerRunners>(app, Method::GET, "v1/runners", None)
         .await
@@ -405,19 +419,120 @@ async fn maybe_scale_down(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> 
 async fn queued_jobs(database: &SqlitePool, pool: &Pool) -> Result<i64> {
     Ok(sqlx::query(
         r#"SELECT COUNT(*) AS count FROM workflow_jobs wj
-          JOIN workflow_runs wr ON wr.id=wj.run_id JOIN repositories repo ON repo.id=wr.repository_id
-          WHERE wj.status='queued' AND (
-            repo.id=(SELECT repository_id FROM runner_pools WHERE id=?) OR
-            ((SELECT scope FROM runner_pools WHERE id=?)='organization' AND
-             repo.installation_id=(SELECT installation_id FROM runner_pools WHERE id=?))
+          JOIN workflow_runs wr ON wr.id=wj.run_id
+          JOIN repositories repo ON repo.id=wr.repository_id
+          WHERE wj.status='queued' AND ?=(
+            SELECT candidate.id FROM runner_pools candidate
+            WHERE candidate.autoscaling_enabled=1 AND candidate.paused=0 AND (
+              candidate.repository_id=repo.id OR
+              (candidate.scope='organization' AND candidate.installation_id=repo.installation_id)
+            ) AND NOT EXISTS (
+              SELECT 1 FROM json_each(wj.labels) requested
+              WHERE lower(CAST(requested.value AS TEXT)) NOT IN (
+                'self-hosted','linux','windows','macos','x64','x86','arm','arm64'
+              ) AND NOT EXISTS (
+                SELECT 1 FROM json_each(candidate.labels) assigned
+                WHERE lower(CAST(assigned.value AS TEXT))=lower(CAST(requested.value AS TEXT))
+              )
+            )
+            ORDER BY CASE WHEN candidate.repository_id IS NOT NULL THEN 0 ELSE 1 END,
+              candidate.created_at,candidate.id
+            LIMIT 1
           )"#,
     )
-    .bind(&pool.id)
-    .bind(&pool.id)
     .bind(&pool.id)
     .fetch_one(database)
     .await?
     .get::<i64, _>("count"))
+}
+
+async fn retry_github_runner_cleanup(app: &Reconciler) -> Result<()> {
+    let now = now_millis();
+    let pending = sqlx::query_as::<_, PendingGitHubCleanup>(
+        r#"SELECT id,installation_id,target_owner,target_repository,github_runner_id,
+          runner_name,attempts FROM github_runner_cleanup
+          WHERE next_attempt_at<=? ORDER BY next_attempt_at LIMIT 25"#,
+    )
+    .bind(now)
+    .fetch_all(&app.database)
+    .await?;
+    for cleanup in pending {
+        let result = async {
+            let token = installation_token(app, cleanup.installation_id)
+                .await?
+                .context("GitHub App credentials are unavailable")?;
+            let target = match cleanup.target_repository.as_deref() {
+                Some(repository) => RunnerTarget::Repository {
+                    owner: &cleanup.target_owner,
+                    repository,
+                },
+                None => RunnerTarget::Organization {
+                    organization: &cleanup.target_owner,
+                },
+            };
+            let github_runner_id = match cleanup.github_runner_id {
+                Some(id) => Some(id),
+                None => app
+                    .github
+                    .runner_by_name(target, &token, &cleanup.runner_name)
+                    .await?
+                    .map(|runner| runner.id),
+            };
+            if let Some(github_runner_id) = github_runner_id {
+                let path = match cleanup.target_repository.as_deref() {
+                    Some(repository) => format!(
+                        "/repos/{}/{repository}/actions/runners/{github_runner_id}",
+                        cleanup.target_owner
+                    ),
+                    None => format!(
+                        "/orgs/{}/actions/runners/{github_runner_id}",
+                        cleanup.target_owner
+                    ),
+                };
+                app.github.delete(&path, &token).await?;
+            }
+            Result::<()>::Ok(())
+        }
+        .await;
+        match result {
+            Ok(()) => {
+                sqlx::query("DELETE FROM github_runner_cleanup WHERE id=?")
+                    .bind(&cleanup.id)
+                    .execute(&app.database)
+                    .await?;
+                system_audit(
+                    app,
+                    "runner.github_cleanup_completed",
+                    "runner",
+                    &cleanup.id,
+                    json!({ "attempts": cleanup.attempts + 1 }),
+                )
+                .await?;
+            }
+            Err(error) => {
+                let message = error.to_string().chars().take(2_000).collect::<String>();
+                let attempts = cleanup.attempts.saturating_add(1);
+                let next_attempt_at = now.saturating_add(github_cleanup_backoff_ms(attempts));
+                sqlx::query(
+                    "UPDATE github_runner_cleanup SET attempts=?,last_error=?,next_attempt_at=?,updated_at=? WHERE id=?",
+                )
+                .bind(attempts)
+                .bind(&message)
+                .bind(next_attempt_at)
+                .bind(now)
+                .bind(&cleanup.id)
+                .execute(&app.database)
+                .await?;
+                tracing::warn!(runner_id = %cleanup.id, attempts, error = %message, "GitHub runner cleanup remains deferred");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn github_cleanup_backoff_ms(attempts: i64) -> i64 {
+    let exponent = u32::try_from(attempts.saturating_sub(1).clamp(0, 7)).unwrap_or(7);
+    30_000_i64.saturating_mul(1_i64 << exponent).min(3_600_000)
 }
 
 async fn record_capacity_sample(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Result<()> {
@@ -1186,6 +1301,8 @@ fn idle_period_elapsed(now: i64, idle_timeout_minutes: i64, last_activity: i64) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gridops_core::connect_database_path;
+    use std::fs;
 
     fn pool(configuration_version: i64) -> Pool {
         Pool {
@@ -1239,5 +1356,59 @@ mod tests {
         let five_minutes = 5 * 60_000;
         assert!(!idle_period_elapsed(1_000 + five_minutes - 1, 5, 1_000));
         assert!(idle_period_elapsed(1_000 + five_minutes, 5, 1_000));
+    }
+
+    #[test]
+    fn deferred_github_cleanup_uses_bounded_backoff() {
+        assert_eq!(github_cleanup_backoff_ms(1), 30_000);
+        assert_eq!(github_cleanup_backoff_ms(2), 60_000);
+        assert_eq!(github_cleanup_backoff_ms(8), 3_600_000);
+        assert_eq!(github_cleanup_backoff_ms(i64::MAX), 3_600_000);
+    }
+
+    #[tokio::test]
+    async fn queued_jobs_are_assigned_to_one_label_compatible_pool() -> Result<()> {
+        let directory =
+            std::env::temp_dir().join(format!("gridops-reconciler-test-{}", uuid::Uuid::new_v4()));
+        let database = connect_database_path(&directory.join("gridops.sqlite")).await?;
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO installations (id,account_id,account_login,account_type,target_type,repository_selection,created_at,updated_at)
+              VALUES (1,1,'octo-org','Organization','Organization','all',1,1);
+            INSERT INTO repositories (id,installation_id,owner,name,full_name,private,default_branch,html_url,last_synced_at,created_at,updated_at)
+              VALUES (10,1,'octo-org','gridops','octo-org/gridops',0,'master','https://github.com/octo-org/gridops',1,1,1);
+            INSERT INTO runner_pools (id,installation_id,repository_id,name,scope,labels,image,autoscaling_enabled,created_at,updated_at)
+              VALUES
+              ('pool-a',1,10,'pool-a','repository','["docker","pool-a"]','runner:latest',1,1,1),
+              ('pool-b',1,10,'pool-b','repository','["gpu","pool-b"]','runner:latest',1,2,2),
+              ('pool-org',1,NULL,'pool-org','organization','["org-only","pool-org"]','runner:latest',1,0,0);
+            INSERT INTO workflow_runs (id,repository_id,workflow_name,run_number,event,status,head_sha,html_url,github_created_at,github_updated_at,created_at,updated_at)
+              VALUES (20,10,'CI',1,'push','queued','abc123','https://github.com/octo-org/gridops/actions/runs/20',1,1,1,1);
+            INSERT INTO workflow_jobs (id,run_id,name,status,labels,html_url,created_at,updated_at)
+              VALUES
+              (30,20,'generic','queued','["self-hosted","linux","x64"]','https://github.com/octo-org/gridops/actions/runs/20/job/30',1,1),
+              (31,20,'docker','queued','["self-hosted","docker"]','https://github.com/octo-org/gridops/actions/runs/20/job/31',1,1),
+              (32,20,'gpu','queued','["self-hosted","pool-b"]','https://github.com/octo-org/gridops/actions/runs/20/job/32',1,1),
+              (33,20,'org','queued','["self-hosted","org-only"]','https://github.com/octo-org/gridops/actions/runs/20/job/33',1,1),
+              (34,20,'unmatched','queued','["self-hosted","unmatched"]','https://github.com/octo-org/gridops/actions/runs/20/job/34',1,1);
+            "#,
+        )
+        .execute(&database)
+        .await?;
+
+        let mut pool_a = pool(1);
+        pool_a.id = "pool-a".into();
+        let mut pool_b = pool(1);
+        pool_b.id = "pool-b".into();
+        let mut pool_org = pool(1);
+        pool_org.id = "pool-org".into();
+
+        assert_eq!(queued_jobs(&database, &pool_a).await?, 2);
+        assert_eq!(queued_jobs(&database, &pool_b).await?, 1);
+        assert_eq!(queued_jobs(&database, &pool_org).await?, 1);
+
+        database.close().await;
+        fs::remove_dir_all(directory)?;
+        Ok(())
     }
 }

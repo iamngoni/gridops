@@ -373,7 +373,8 @@ pub async fn search(
           JOIN user_installations ui ON ui.installation_id=repo.installation_id
           WHERE ui.user_id=? AND repo.full_name LIKE ? ESCAPE '\'
           UNION ALL
-          SELECT 'runner pool',p.id,p.name,COALESCE(repo.full_name,i.account_login),'/runner-pools',p.name
+          SELECT 'runner pool',p.id,p.name,COALESCE(repo.full_name,i.account_login),
+            '/runner-pools/' || p.id,p.name
           FROM runner_pools p JOIN installations i ON i.id=p.installation_id
           JOIN user_installations ui ON ui.installation_id=p.installation_id
           LEFT JOIN repositories repo ON repo.id=p.repository_id
@@ -1661,6 +1662,89 @@ async fn delete_runner_resources(
     {
         tracing::warn!(runner_id = %runner.runner_id, error = ?error, "could not archive runner logs");
     }
+    let github_cleanup = cleanup_github_runner(state, user, runner).await;
+    let github_cleanup_error = github_cleanup
+        .err()
+        .map(|error| error.to_string().chars().take(2_000).collect::<String>());
+    if let Some(error) = &github_cleanup_error {
+        tracing::warn!(runner_id = %runner.runner_id, error, "GitHub runner cleanup deferred");
+        let now = now_millis();
+        sqlx::query(
+            r#"INSERT INTO github_runner_cleanup (
+              id,installation_id,target_owner,target_repository,github_runner_id,runner_name,
+              attempts,last_error,next_attempt_at,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,0,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+              installation_id=excluded.installation_id,target_owner=excluded.target_owner,
+              target_repository=excluded.target_repository,
+              github_runner_id=COALESCE(excluded.github_runner_id,github_runner_cleanup.github_runner_id),
+              runner_name=excluded.runner_name,last_error=excluded.last_error,
+              next_attempt_at=excluded.next_attempt_at,updated_at=excluded.updated_at"#,
+        )
+        .bind(&runner.runner_id)
+        .bind(runner.installation_id)
+        .bind(
+            runner
+                .repository_owner
+                .as_deref()
+                .unwrap_or(&runner.account_login),
+        )
+        .bind(&runner.repository_name)
+        .bind(runner.github_runner_id)
+        .bind(&runner.runner_name)
+        .bind(error)
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(&state.database)
+        .await?;
+    } else {
+        sqlx::query("DELETE FROM github_runner_cleanup WHERE id=?")
+            .bind(&runner.runner_id)
+            .execute(&state.database)
+            .await?;
+    }
+    if let Some(container_id) = &runner.container_id {
+        if let Err(error) = manager_json(
+            state,
+            Method::DELETE,
+            &format!("v1/runners/{container_id}"),
+            None,
+        )
+        .await
+        {
+            if !matches!(error, ApiError::NotFound(_)) {
+                return Err(error);
+            }
+        }
+    }
+    let now = now_millis();
+    sqlx::query("UPDATE runners SET status='deleted',busy=0,deleted_at=?,updated_at=? WHERE id=?")
+        .bind(now)
+        .bind(now)
+        .bind(&runner.runner_id)
+        .execute(&state.database)
+        .await?;
+    sqlx::query("INSERT INTO runner_events (id,runner_id,pool_id,level,event,message,metadata,created_at) VALUES (?,?,?,?, 'Runner deleted',?,?,?)")
+        .bind(uuid::Uuid::new_v4().to_string()).bind(&runner.runner_id).bind(&runner.pool_id)
+        .bind(if github_cleanup_error.is_some() { "warn" } else { "info" })
+        .bind(if github_cleanup_error.is_some() {
+            format!("{} was removed locally; GitHub cleanup will retry", runner.runner_name)
+        } else {
+            format!("{} was removed", runner.runner_name)
+        })
+        .bind(json!({
+            "githubCleanup": if github_cleanup_error.is_some() { "deferred" } else { "complete" },
+            "error": github_cleanup_error,
+        }).to_string())
+        .bind(now).execute(&state.database).await?;
+    Ok(())
+}
+
+async fn cleanup_github_runner(
+    state: &AppState,
+    user: &AuthUser,
+    runner: &RunnerAccess,
+) -> ApiResult<()> {
     let token = control_token(state, &user.id, runner.installation_id).await?;
     let target = match (&runner.repository_owner, &runner.repository_name) {
         (Some(owner), Some(repository)) => RunnerTarget::Repository { owner, repository },
@@ -1693,30 +1777,6 @@ async fn delete_runner_resources(
             .await
             .map_err(ApiError::Internal)?;
     }
-    if let Some(container_id) = &runner.container_id {
-        if let Err(error) = manager_json(
-            state,
-            Method::DELETE,
-            &format!("v1/runners/{container_id}"),
-            None,
-        )
-        .await
-        {
-            if !matches!(error, ApiError::NotFound(_)) {
-                return Err(error);
-            }
-        }
-    }
-    let now = now_millis();
-    sqlx::query("UPDATE runners SET status='deleted',busy=0,deleted_at=?,updated_at=? WHERE id=?")
-        .bind(now)
-        .bind(now)
-        .bind(&runner.runner_id)
-        .execute(&state.database)
-        .await?;
-    sqlx::query("INSERT INTO runner_events (id,runner_id,pool_id,event,message,metadata,created_at) VALUES (?,?,?,'Runner deleted',?,'{}',?)")
-        .bind(uuid::Uuid::new_v4().to_string()).bind(&runner.runner_id).bind(&runner.pool_id)
-        .bind(format!("{} was removed", runner.runner_name)).bind(now).execute(&state.database).await?;
     Ok(())
 }
 
