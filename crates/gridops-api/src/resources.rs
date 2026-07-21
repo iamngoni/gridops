@@ -1958,19 +1958,25 @@ pub async fn workflow_job_log_view(
     let repository = row.get::<String, _>("repository_name");
     let installation_id = row.get::<i64, _>("installation_id");
     let token = control_token(&state, &user.id, installation_id).await?;
-    let remote_job = state
-        .github
-        .get::<GitHubWorkflowJob>(
-            &format!("/repos/{owner}/{repository}/actions/jobs/{job_id}"),
-            &token,
-        )
-        .await;
+    let job_endpoint = format!("/repos/{owner}/{repository}/actions/jobs/{job_id}");
+    let (remote_job_result, remote_log_result) = tokio::join!(
+        tokio::time::timeout(
+            Duration::from_secs(8),
+            state.github.get::<GitHubWorkflowJob>(&job_endpoint, &token),
+        ),
+        tokio::time::timeout(
+            Duration::from_secs(8),
+            github_job_log_text(&state, &owner, &repository, job_id, &token),
+        ),
+    );
+    let remote_job = match remote_job_result {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("GitHub job metadata request timed out")),
+    };
     let metadata_warning = remote_job.as_ref().err().map(
         |_| "GitHub job metadata is temporarily unavailable; GridOps is using retained job state.",
     );
-    let remote_log = github_job_log_text(&state, &owner, &repository, job_id, &token)
-        .await
-        .unwrap_or(None);
+    let remote_log = remote_log_result.ok().and_then(Result::ok).flatten();
     let (raw_logs, source, truncated) = if let Some((logs, truncated)) = remote_log {
         (logs, "github", truncated)
     } else if let Some((logs, truncated)) = local_job_log_text(&state, &user, job_id).await? {
