@@ -1,5 +1,7 @@
 # GridOps
 
+[![CI](https://github.com/iamngoni/gridops/actions/workflows/ci.yml/badge.svg)](https://github.com/iamngoni/gridops/actions/workflows/ci.yml)
+
 GridOps is a self-hosted control plane for GitHub Actions runners. Connect a GitHub App, select repositories or organizations, and operate isolated Docker runner pools from one interface.
 
 ## Capabilities
