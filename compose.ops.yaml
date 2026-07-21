@@ -1,0 +1,12 @@
+services:
+  web:
+    networks:
+      control-plane:
+      antonlabs-edge:
+        aliases:
+          - gridops-web
+
+networks:
+  antonlabs-edge:
+    external: true
+    name: media-server_default

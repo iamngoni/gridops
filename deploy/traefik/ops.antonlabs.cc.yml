@@ -1,0 +1,14 @@
+http:
+  routers:
+    gridops:
+      rule: "Host(`ops.antonlabs.cc`)"
+      entryPoints:
+        - websecure
+      service: gridops
+      tls: {}
+
+  services:
+    gridops:
+      loadBalancer:
+        servers:
+          - url: "http://gridops-web:3000"

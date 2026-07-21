@@ -47,7 +47,7 @@ Configure:
 
 After signing in, Settings can launch GitHub's App-manifest flow with the exact permissions and webhook events GridOps needs. GitHub returns the App ID, private key, OAuth credentials, slug, and webhook secret directly to GridOps; they are authenticated-encrypted in SQLite and become active without a restart. GridOps then reauthorizes with the newly-created App and sends completed installations through the same state-verified OAuth flow before synchronizing their repositories. Environment values remain supported as bootstrap or deployment-managed overrides.
 
-For localhost development the generated manifest leaves webhook delivery disabled because GitHub cannot reach a loopback URL. Set `GRIDOPS_BASE_URL` to a public HTTPS origin before enabling deliveries. OAuth, App credentials, and runner control continue to work locally.
+For localhost development the generated manifest leaves webhook delivery disabled because GitHub cannot reach a loopback URL. Set `GRIDOPS_BASE_URL` to a public HTTPS origin before enabling deliveries. For a private HTTPS origin reachable only through Tailscale or another VPN, set `GRIDOPS_GITHUB_WEBHOOK_ACTIVE=false`; installation-token polling continues to synchronize workflow runs and jobs without inbound GitHub delivery. OAuth, App credentials, and runner control continue to work in both modes.
 
 ## Run with Docker
 
@@ -59,11 +59,25 @@ docker compose up --build -d
 
 Open `http://localhost:3000`. For a different public origin, set `GRIDOPS_BASE_URL` and configure the same URL in the GitHub App.
 
+The published web port binds to `127.0.0.1` by default. Set `GRIDOPS_BIND_ADDRESS` explicitly only when direct host exposure is intended; reverse-proxy deployments should attach `web` to an ingress network instead.
+
 For local credentials already stored in `.env.local`:
 
 ```sh
 GRIDOPS_ENV_FILE=.env.local docker compose --env-file .env.local up --build
 ```
+
+### `ops.antonlabs.cc`
+
+The private Anton Labs deployment uses `compose.ops.yaml` to attach the web container to the existing `media-server_default` ingress network. Its `.env.local` sets `GRIDOPS_BASE_URL=https://ops.antonlabs.cc`, `GRIDOPS_GITHUB_WEBHOOK_ACTIVE=false`, `GRIDOPS_BIND_ADDRESS=127.0.0.1`, and `GRIDOPS_PORT=3002`.
+
+```sh
+GRIDOPS_ENV_FILE=.env.local \
+  docker compose --env-file .env.local \
+  -f compose.yaml -f compose.ops.yaml up --build -d
+```
+
+Install `deploy/traefik/ops.antonlabs.cc.yml` in the host Traefik file-provider directory. The Cloudflare record must remain an unproxied `A` record to the Mac mini's Tailscale IP and must not be added to the public Cloudflare tunnel. This keeps the hostname on the same private lane as the other admin services while preserving a valid wildcard TLS certificate.
 
 Only `manager` receives `/var/run/docker.sock`. Runner containers do not receive it. The API and reconciler share the `gridops-data` volume for SQLite and retained logs.
 

@@ -17,6 +17,7 @@ struct Inner {
     github_app_private_key: Option<SecretString>,
     github_app_slug: String,
     github_webhook_secret: Option<SecretString>,
+    github_webhook_active: Option<bool>,
     session_secret: Option<SecretString>,
     encryption_key: Option<SecretString>,
     manager_url: Url,
@@ -48,6 +49,7 @@ impl Config {
                 .map(|value| SecretString::from(value.expose_secret().replace("\\n", "\n"))),
             github_app_slug: env::var("GITHUB_APP_SLUG").unwrap_or_else(|_| "gridops".into()),
             github_webhook_secret: secret("GITHUB_WEBHOOK_SECRET"),
+            github_webhook_active: optional_bool("GRIDOPS_GITHUB_WEBHOOK_ACTIVE")?,
             session_secret: secret("GRIDOPS_SESSION_SECRET"),
             encryption_key: secret("GRIDOPS_ENCRYPTION_KEY"),
             manager_url: Url::parse(&manager_url).context("GRIDOPS_MANAGER_URL must be a URL")?,
@@ -96,6 +98,9 @@ impl Config {
     pub fn github_webhook_secret(&self) -> Option<&SecretString> {
         self.0.github_webhook_secret.as_ref()
     }
+    pub fn github_webhook_active(&self) -> Option<bool> {
+        self.0.github_webhook_active
+    }
     pub fn session_secret(&self) -> Option<&SecretString> {
         self.0.session_secret.as_ref()
     }
@@ -130,4 +135,14 @@ fn optional(name: &str) -> Option<String> {
 
 fn secret(name: &str) -> Option<SecretString> {
     optional(name).map(SecretString::from)
+}
+
+fn optional_bool(name: &str) -> Result<Option<bool>> {
+    optional(name)
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Ok(true),
+            "false" | "0" | "no" | "off" => Ok(false),
+            _ => bail!("{name} must be true or false"),
+        })
+        .transpose()
 }

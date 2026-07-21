@@ -7,7 +7,7 @@ services:
       target: web
     restart: unless-stopped
     ports:
-      - "${GRIDOPS_PORT:-3000}:3000"
+      - "${GRIDOPS_BIND_ADDRESS:-127.0.0.1}:${GRIDOPS_PORT:-3000}:3000"
     read_only: true
     tmpfs:
       - /tmp
