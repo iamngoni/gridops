@@ -4,6 +4,7 @@ import { ExternalLink, GitPullRequestArrow, OctagonX, RefreshCw, RotateCcw, Squa
 import { AsyncActionButton } from "~/components/async-action-button";
 import { ListPagination } from "~/components/list-pagination";
 import { ResourcePage } from "~/components/resource-page";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { StatusBadge } from "~/components/status-badge";
 import { Card, CardContent } from "~/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
@@ -16,6 +17,13 @@ export const Route = createFileRoute("/workflow-runs")({
   validateSearch: validatePageSearch,
   loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
   loader: ({ deps }) => getWorkflowRunsPage({ page: deps.page }),
+  pendingComponent: () => (
+    <ResourcePageLoading
+      title="Workflow runs"
+      description="Follow GitHub Actions runs, jobs, conclusions, reruns, and cancellations."
+      icon={GitPullRequestArrow}
+    />
+  ),
   component: WorkflowRunsPage,
 });
 

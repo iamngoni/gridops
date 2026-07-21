@@ -4,6 +4,7 @@ import { Boxes, Minus, Pause, Play, Plus, RefreshCw, Settings2, Trash2 } from "l
 import { AsyncActionButton } from "~/components/async-action-button";
 import { ListPagination } from "~/components/list-pagination";
 import { ResourcePage } from "~/components/resource-page";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { StatusBadge } from "~/components/status-badge";
 import { Badge } from "~/components/ui/badge";
 import { Card, CardContent } from "~/components/ui/card";
@@ -17,6 +18,13 @@ export const Route = createFileRoute("/runner-pools")({
   validateSearch: validatePageSearch,
   loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
   loader: ({ deps }) => getRunnerPoolsPage({ page: deps.page }),
+  pendingComponent: () => (
+    <ResourcePageLoading
+      title="Runner pools"
+      description="Define capacity, labels, images, limits, and lifecycle policy for groups of runners."
+      icon={Boxes}
+    />
+  ),
   component: RunnerPoolsPage,
 });
 

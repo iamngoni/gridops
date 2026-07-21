@@ -4,6 +4,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { AppShell } from "~/components/app-shell";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { Button, buttonVariants } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
@@ -21,6 +22,13 @@ import { cn } from "~/lib/utils";
 
 export const Route = createFileRoute("/runner-pools_/new")({
   loader: () => getCreateRunnerPoolOptions(),
+  pendingComponent: () => (
+    <ResourcePageLoading
+      title="Create runner pool"
+      description="Define where runners register and how GridOps manages their capacity."
+      icon={Server}
+    />
+  ),
   component: NewRunnerPoolPage,
 });
 

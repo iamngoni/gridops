@@ -1,5 +1,6 @@
-import { createFileRoute, useNavigate, useRouter } from "@tanstack/react-router";
-import { ExternalLink, Lock, PackageSearch, RefreshCw, Search, X } from "lucide-react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { ExternalLink, LoaderCircle, Lock, PackageSearch, RefreshCw, Search, X } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
 import { ListPagination } from "~/components/list-pagination";
@@ -11,7 +12,7 @@ import { Input } from "~/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
 import { getRepositoriesPage } from "~/features/operations/operations.functions";
 import { parsePage } from "~/lib/pagination";
-import { formatRelativeTime } from "~/lib/utils";
+import { cn, formatRelativeTime } from "~/lib/utils";
 
 export const Route = createFileRoute("/repositories")({
   validateSearch: (search: Record<string, unknown>) => {
@@ -20,16 +21,18 @@ export const Route = createFileRoute("/repositories")({
       page: parsePage(search.page),
     };
   },
-  loaderDeps: ({ search }) => search,
-  loader: ({ deps }) => getRepositoriesPage({ query: deps.q, page: deps.page }),
   component: RepositoriesPage,
 });
 
 function RepositoriesPage() {
-  const data = Route.useLoaderData();
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  const router = useRouter();
+  const repositories = useQuery({
+    queryKey: ["repositories", search.q, search.page],
+    queryFn: () => getRepositoriesPage({ query: search.q, page: search.page }),
+    placeholderData: keepPreviousData,
+  });
+  const data = repositories.data;
 
   function searchRepositories(query: string) {
     void navigate({ search: { q: query, page: 1 } });
@@ -48,12 +51,29 @@ function RepositoriesPage() {
       title="Repositories"
       description="A live view of repositories available to your GitHub App installations."
       icon={PackageSearch}
-      emptyTitle={data.authenticated ? "No repositories in this installation" : "No repositories connected"}
+      emptyTitle={data?.authenticated ? "No repositories in this installation" : "No repositories connected"}
       emptyDescription="Authorize GridOps and install the GitHub App on the repositories or organizations you want to operate."
       action="Create runner pool"
       actionHref="/runner-pools/new"
     >
-      {data.authenticated ? (
+      {repositories.isError && !data ? (
+        <Card>
+          <CardContent className="grid min-h-72 place-items-center p-6 text-center">
+            <div className="max-w-sm">
+              <PackageSearch className="mx-auto size-7 text-destructive" />
+              <h2 className="mt-3 text-sm font-medium">Repositories could not be loaded</h2>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {repositories.error instanceof Error ? repositories.error.message : "The live GitHub repository request failed."}
+              </p>
+              <Button className="mt-4" onClick={() => void repositories.refetch()} size="sm" variant="outline">
+                <RefreshCw />Try again
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : !data ? (
+        <RepositoryLoadingCard initialQuery={search.q} onSearch={searchRepositories} />
+      ) : data.authenticated ? (
         <Card>
           <CardHeader className="flex-col md:flex-row md:items-center">
             <div>
@@ -64,9 +84,12 @@ function RepositoriesPage() {
                   : `${data.total} repositories available across your installations`}
               </p>
             </div>
-            <Button onClick={() => void router.invalidate()} size="sm" variant="outline"><RefreshCw />Refresh from GitHub</Button>
+            <Button disabled={repositories.isFetching} onClick={() => void repositories.refetch()} size="sm" variant="outline">
+              <RefreshCw className={cn(repositories.isFetching && "animate-spin")} />
+              {repositories.isFetching ? "Refreshing…" : "Refresh from GitHub"}
+            </Button>
           </CardHeader>
-          <CardContent className="px-0 pb-0">
+          <CardContent aria-busy={repositories.isFetching} className={cn("px-0 pb-0 transition-opacity", repositories.isPlaceholderData && "opacity-60")}>
             <RepositorySearchForm initialQuery={search.q} key={search.q} onSearch={searchRepositories} />
 
             {data.items.length > 0 ? (
@@ -112,6 +135,41 @@ function RepositoriesPage() {
         </Card>
       ) : undefined}
     </ResourcePage>
+  );
+}
+
+function RepositoryLoadingCard({ initialQuery, onSearch }: { initialQuery: string; onSearch: (query: string) => void }) {
+  return (
+    <Card aria-busy="true" aria-live="polite">
+      <CardHeader className="flex-col md:flex-row md:items-center">
+        <div>
+          <CardTitle>Connected repositories</CardTitle>
+          <p className="mt-1 text-xs text-muted-foreground">Loading repositories from GitHub…</p>
+        </div>
+        <div className="inline-flex items-center gap-2 text-xs text-muted-foreground" role="status">
+          <LoaderCircle className="size-4 animate-spin text-primary" />
+          Fetching live data
+        </div>
+      </CardHeader>
+      <CardContent className="px-0 pb-0">
+        <RepositorySearchForm initialQuery={initialQuery} onSearch={onSearch} />
+        <Table>
+          <TableHeader><TableRow>
+            <TableHead>Repository</TableHead><TableHead>Installation</TableHead><TableHead>Default branch</TableHead>
+            <TableHead>Runner pools</TableHead><TableHead>Runs</TableHead><TableHead>Source</TableHead><TableHead />
+          </TableRow></TableHeader>
+          <TableBody>
+            {Array.from({ length: 7 }, (_, index) => (
+              <TableRow key={index}>
+                {Array.from({ length: 7 }, (_, cell) => (
+                  <TableCell key={cell}><div className="h-7 animate-pulse rounded bg-muted" /></TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 }
 

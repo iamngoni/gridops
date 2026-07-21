@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FileClock } from "lucide-react";
 
 import { ResourcePage } from "~/components/resource-page";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { ListPagination } from "~/components/list-pagination";
 import { Badge } from "~/components/ui/badge";
 import { Card, CardContent } from "~/components/ui/card";
@@ -14,6 +15,13 @@ export const Route = createFileRoute("/audit-log")({
   validateSearch: validatePageSearch,
   loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
   loader: ({ deps }) => getAuditLogPage({ page: deps.page }),
+  pendingComponent: () => (
+    <ResourcePageLoading
+      title="Audit log"
+      description="Trace configuration and runner lifecycle actions across the control plane."
+      icon={FileClock}
+    />
+  ),
   component: AuditLogPage,
 });
 

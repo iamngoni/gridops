@@ -4,6 +4,7 @@ import { CheckCircle2, RefreshCw, ShieldAlert, Webhook } from "lucide-react";
 import { AsyncActionButton } from "~/components/async-action-button";
 import { ListPagination } from "~/components/list-pagination";
 import { ResourcePage } from "~/components/resource-page";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { StatusBadge } from "~/components/status-badge";
 import { Badge } from "~/components/ui/badge";
 import { Card, CardContent } from "~/components/ui/card";
@@ -17,6 +18,13 @@ export const Route = createFileRoute("/webhooks")({
   validateSearch: validatePageSearch,
   loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
   loader: ({ deps }) => getWebhooksPage({ page: deps.page }),
+  pendingComponent: () => (
+    <ResourcePageLoading
+      title="Webhooks"
+      description="Inspect GitHub deliveries, signature checks, processing state, and failures."
+      icon={Webhook}
+    />
+  ),
   component: WebhooksPage,
 });
 

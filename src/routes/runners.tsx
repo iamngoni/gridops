@@ -4,6 +4,7 @@ import { Activity, Pause, Play, RefreshCw, RotateCcw, Square, Trash2 } from "luc
 import { AsyncActionButton } from "~/components/async-action-button";
 import { ListPagination } from "~/components/list-pagination";
 import { ResourcePage } from "~/components/resource-page";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { StatusBadge } from "~/components/status-badge";
 import { Badge } from "~/components/ui/badge";
 import { Card, CardContent } from "~/components/ui/card";
@@ -18,6 +19,13 @@ export const Route = createFileRoute("/runners")({
   validateSearch: validatePageSearch,
   loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
   loader: ({ deps }) => getRunnersPage({ page: deps.page }),
+  pendingComponent: () => (
+    <ResourcePageLoading
+      title="Runners"
+      description="Inspect every managed container and its GitHub registration state."
+      icon={Activity}
+    />
+  ),
   component: RunnersPage,
 });
 

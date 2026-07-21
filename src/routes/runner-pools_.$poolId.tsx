@@ -3,6 +3,7 @@ import { ArrowLeft, LoaderCircle, Save, Server, Settings2 } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 
 import { AppShell } from "~/components/app-shell";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { StatusBadge } from "~/components/status-badge";
 import { Badge } from "~/components/ui/badge";
 import { Button, buttonVariants } from "~/components/ui/button";
@@ -23,6 +24,13 @@ import { cn } from "~/lib/utils";
 
 export const Route = createFileRoute("/runner-pools_/$poolId")({
   loader: ({ params }) => getRunnerPoolAction({ data: { poolId: params.poolId } }),
+  pendingComponent: () => (
+    <ResourcePageLoading
+      title="Runner pool"
+      description="Loading the pool configuration while the page remains available."
+      icon={Settings2}
+    />
+  ),
   component: EditRunnerPoolPage,
 });
 

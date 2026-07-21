@@ -3,6 +3,7 @@ import {
   Activity,
   ArrowRight,
   CheckCircle2,
+  CircleGauge,
   CircleDot,
   Clock3,
   Github,
@@ -19,6 +20,7 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 
 import { AppShell } from "~/components/app-shell";
 import { AsyncActionButton } from "~/components/async-action-button";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { Badge } from "~/components/ui/badge";
 import { Button, buttonVariants } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
@@ -38,6 +40,13 @@ import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
 export const Route = createFileRoute("/")({
   loader: () => getDashboardOverview(),
+  pendingComponent: () => (
+    <ResourcePageLoading
+      title="Operations overview"
+      description="Monitor capacity, runners, and workflow activity across your GitHub installations."
+      icon={CircleGauge}
+    />
+  ),
   component: OverviewPage,
 });
 

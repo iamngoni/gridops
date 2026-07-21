@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { ListPagination } from "~/components/list-pagination";
 import { ResourcePage } from "~/components/resource-page";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { StatusBadge } from "~/components/status-badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
@@ -18,6 +19,13 @@ export const Route = createFileRoute("/live-logs")({
   },
   loaderDeps: ({ search }) => ({ target: search.target, page: search.page ?? 1 }),
   loader: ({ deps }) => getLiveLogsPage({ page: deps.page }),
+  pendingComponent: () => (
+    <ResourcePageLoading
+      title="Live logs"
+      description="Stream output from active runners and inspect archived runner logs."
+      icon={Radio}
+    />
+  ),
   component: LiveLogsRoutePage,
 });
 

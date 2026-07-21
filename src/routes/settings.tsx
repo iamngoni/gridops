@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { AsyncActionButton } from "~/components/async-action-button";
 import { ResourcePage } from "~/components/resource-page";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
@@ -16,6 +17,13 @@ import { formatRelativeTime } from "~/lib/utils";
 
 export const Route = createFileRoute("/settings")({
   loader: () => getSettingsPage(),
+  pendingComponent: () => (
+    <ResourcePageLoading
+      title="Settings"
+      description="Configure GitHub, runners, retention, and system policy."
+      icon={Settings}
+    />
+  ),
   component: SettingsPage,
 });
 

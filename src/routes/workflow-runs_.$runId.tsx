@@ -3,6 +3,7 @@ import { ExternalLink, FileArchive, GitBranch, GitPullRequestArrow, OctagonX, Re
 
 import { AppShell } from "~/components/app-shell";
 import { AsyncActionButton } from "~/components/async-action-button";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { StatusBadge } from "~/components/status-badge";
 import { Badge } from "~/components/ui/badge";
 import { buttonVariants } from "~/components/ui/button";
@@ -14,6 +15,13 @@ import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
 export const Route = createFileRoute("/workflow-runs_/$runId")({
   loader: ({ params }) => getWorkflowRunDetailAction({ data: { runId: Number(params.runId) } }),
+  pendingComponent: () => (
+    <ResourcePageLoading
+      title="Workflow run"
+      description="Loading jobs, runner assignments, and GitHub status."
+      icon={GitPullRequestArrow}
+    />
+  ),
   component: WorkflowRunDetailPage,
 });
 
