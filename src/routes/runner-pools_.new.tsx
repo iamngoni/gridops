@@ -1,5 +1,5 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Github, LoaderCircle, Search, Server } from "lucide-react";
+import { ArrowLeft, Github, LoaderCircle, Server } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -7,6 +7,7 @@ import { AppShell } from "~/components/app-shell";
 import { Button, buttonVariants } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
+import { SearchableSelect } from "~/components/ui/searchable-select";
 import { createRunnerPoolAction, getCreateRunnerPoolOptions } from "~/features/runner-pools/runner-pools.functions";
 import { cn } from "~/lib/utils";
 
@@ -113,22 +114,21 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
   const [scope, setScope] = useState<"repository" | "organization">("repository");
   const [installationId, setInstallationId] = useState(options.installations[0]?.id ?? 0);
   const [repositoryId, setRepositoryId] = useState(0);
-  const [repositoryQuery, setRepositoryQuery] = useState("");
+  const [mode, setMode] = useState<"ephemeral" | "persistent">("ephemeral");
   const repositories = useMemo(
     () => options.repositories.filter((repository) => repository.installationId === installationId),
     [installationId, options.repositories],
   );
-  const filteredRepositories = useMemo(() => {
-    const query = repositoryQuery.trim().toLocaleLowerCase();
-    if (!query) return repositories;
-    return repositories.filter((repository) =>
-      repository.id === repositoryId || repository.fullName.toLocaleLowerCase().includes(query));
-  }, [repositories, repositoryId, repositoryQuery]);
   const runnerGroups = useMemo(
     () => options.runnerGroups.filter((group) => group.installationId === installationId),
     [installationId, options.runnerGroups],
   );
   const defaultRunnerGroup = runnerGroups.find((group) => group.isDefault) ?? runnerGroups[0];
+  const [runnerGroupId, setRunnerGroupId] = useState(
+    options.runnerGroups.find((group) => group.installationId === installationId && group.isDefault)?.id
+      ?? options.runnerGroups.find((group) => group.installationId === installationId)?.id
+      ?? options.defaults.runnerGroupId,
+  );
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -144,7 +144,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
             scope === "repository" ? repositoryId || null : null,
           name: String(form.get("name") ?? ""),
           scope,
-          mode: String(form.get("mode")) as "ephemeral" | "persistent",
+          mode,
           labels: String(form.get("labels") ?? "")
             .split(",")
             .map((label) => label.trim())
@@ -159,7 +159,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
           cpuLimit: Number(form.get("cpuLimit")),
           memoryLimitMb: Number(form.get("memoryLimitMb")),
           runnerGroupId: scope === "organization"
-            ? Number(form.get("runnerGroupId")) || defaultRunnerGroup?.id || 1
+            ? runnerGroupId || defaultRunnerGroup?.id || 1
             : 1,
         },
       });
@@ -190,38 +190,57 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
             <CardHeader><CardTitle>GitHub destination</CardTitle></CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2">
               <Field label="Installation">
-                <select className="gridops-select" value={installationId} onChange={(event) => {
-                  setInstallationId(Number(event.target.value));
-                  setRepositoryId(0);
-                  setRepositoryQuery("");
-                }}>
-                  {options.installations.map((installation) => (
-                    <option key={installation.id} value={installation.id}>{installation.accountLogin} · {installation.accountType}</option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  ariaLabel="GitHub installation"
+                  onValueChange={(nextInstallationId) => {
+                    const nextId = nextInstallationId ?? 0;
+                    const nextRunnerGroups = options.runnerGroups.filter((group) => group.installationId === nextId);
+                    setInstallationId(nextId);
+                    setRepositoryId(0);
+                    setRunnerGroupId(
+                      nextRunnerGroups.find((group) => group.isDefault)?.id
+                        ?? nextRunnerGroups[0]?.id
+                        ?? options.defaults.runnerGroupId,
+                    );
+                  }}
+                  options={options.installations.map((installation) => ({
+                    value: installation.id,
+                    label: installation.accountLogin,
+                    description: `${installation.accountType} installation`,
+                  }))}
+                  placeholder="Choose installation…"
+                  searchPlaceholder="Search installations…"
+                  value={installationId}
+                />
               </Field>
               <Field label="Scope">
-                <select className="gridops-select" value={scope} onChange={(event) => setScope(event.target.value as typeof scope)}>
-                  <option value="repository">Repository</option>
-                  <option value="organization">Organization</option>
-                </select>
+                <SearchableSelect
+                  ariaLabel="Runner pool scope"
+                  onValueChange={(nextScope) => setScope(nextScope ?? "repository")}
+                  options={[
+                    { value: "repository", label: "Repository", description: "Runners dedicated to one repository" },
+                    { value: "organization", label: "Organization", description: "Shared runners across an organization" },
+                  ]}
+                  searchable={false}
+                  value={scope}
+                />
               </Field>
               {scope === "repository" && (
-                <Field className="md:col-span-2" label="Repository" hint={`${filteredRepositories.length} of ${repositories.length} repositories shown`}>
-                  <div className="relative">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                      aria-label="Search repositories for this runner pool"
-                      className="pl-9"
-                      onChange={(event) => setRepositoryQuery(event.target.value)}
-                      placeholder="Search by owner or repository name…"
-                      value={repositoryQuery}
-                    />
-                  </div>
-                  <select className="gridops-select" name="repositoryId" onChange={(event) => setRepositoryId(Number(event.target.value))} required value={repositoryId || ""}>
-                    <option value="">Choose repository…</option>
-                    {filteredRepositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.fullName}{repository.private ? " · Private" : ""}</option>)}
-                  </select>
+                <Field className="md:col-span-2" label="Repository" hint={`${repositories.length} repositories available to this installation`}>
+                  <SearchableSelect
+                    ariaLabel="Repository"
+                    emptyMessage="No repositories match this search"
+                    onValueChange={(nextRepositoryId) => setRepositoryId(nextRepositoryId ?? 0)}
+                    options={repositories.map((repository) => ({
+                      value: repository.id,
+                      label: repository.fullName,
+                      description: repository.private ? "Private repository" : "Public repository",
+                      keywords: [repository.private ? "private" : "public"],
+                    }))}
+                    placeholder="Choose repository…"
+                    searchPlaceholder="Search by owner or repository name…"
+                    value={repositoryId || null}
+                  />
                 </Field>
               )}
             </CardContent>
@@ -234,10 +253,16 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                 <Input name="name" placeholder="linux-general" required pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" />
               </Field>
               <Field label="Mode">
-                <select className="gridops-select" defaultValue="ephemeral" name="mode">
-                  <option value="ephemeral">Ephemeral · one job per runner</option>
-                  <option value="persistent">Persistent</option>
-                </select>
+                <SearchableSelect
+                  ariaLabel="Runner mode"
+                  onValueChange={(nextMode) => setMode(nextMode ?? "ephemeral")}
+                  options={[
+                    { value: "ephemeral", label: "Ephemeral", description: "One clean runner per job" },
+                    { value: "persistent", label: "Persistent", description: "Reuse the runner across jobs" },
+                  ]}
+                  searchable={false}
+                  value={mode}
+                />
               </Field>
               <Field className="md:col-span-2" label="Container image">
                 <Input defaultValue={options.defaults.image} name="image" required />
@@ -248,9 +273,18 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
               {scope === "organization" ? (
                 <Field label="Runner group" hint={runnerGroups.length ? "Groups available to this GitHub App installation." : "GridOps could not discover groups; enter the GitHub runner group ID."}>
                   {runnerGroups.length ? (
-                    <select className="gridops-select" defaultValue={defaultRunnerGroup?.id} key={installationId} name="runnerGroupId">
-                      {runnerGroups.map((group) => <option key={group.id} value={group.id}>{group.name}{group.isDefault ? " · Default" : ` · ${group.visibility}`}</option>)}
-                    </select>
+                    <SearchableSelect
+                      ariaLabel="GitHub runner group"
+                      onValueChange={(nextRunnerGroupId) => setRunnerGroupId(nextRunnerGroupId ?? defaultRunnerGroup?.id ?? 1)}
+                      options={runnerGroups.map((group) => ({
+                        value: group.id,
+                        label: group.name,
+                        description: group.isDefault ? "Default runner group" : `${group.visibility} visibility`,
+                      }))}
+                      placeholder="Choose runner group…"
+                      searchPlaceholder="Search runner groups…"
+                      value={runnerGroupId}
+                    />
                   ) : (
                     <Input defaultValue={options.defaults.runnerGroupId} min="1" name="runnerGroupId" type="number" required />
                   )}

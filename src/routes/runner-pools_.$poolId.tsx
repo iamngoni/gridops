@@ -8,6 +8,7 @@ import { Badge } from "~/components/ui/badge";
 import { Button, buttonVariants } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
+import { SearchableSelect } from "~/components/ui/searchable-select";
 import {
   getCreateRunnerPoolOptions,
   getRunnerPoolAction,
@@ -28,6 +29,8 @@ function EditRunnerPoolPage() {
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"ephemeral" | "persistent">(pool.mode);
+  const [runnerGroupId, setRunnerGroupId] = useState(pool.runnerGroupId);
   const runnerGroups = useMemo(
     () => options.runnerGroups.filter((group) => group.installationId === pool.installationId),
     [options.runnerGroups, pool.installationId],
@@ -43,7 +46,7 @@ function EditRunnerPoolPage() {
         data: {
           poolId: pool.id,
           name: String(form.get("name") ?? ""),
-          mode: String(form.get("mode")) as "ephemeral" | "persistent",
+          mode,
           labels: String(form.get("labels") ?? "")
             .split(",")
             .map((label) => label.trim())
@@ -58,7 +61,7 @@ function EditRunnerPoolPage() {
           cpuLimit: Number(form.get("cpuLimit")),
           memoryLimitMb: Number(form.get("memoryLimitMb")),
           runnerGroupId: pool.scope === "organization"
-            ? Number(form.get("runnerGroupId")) || pool.runnerGroupId
+            ? runnerGroupId || pool.runnerGroupId
             : 1,
         },
       });
@@ -109,10 +112,16 @@ function EditRunnerPoolPage() {
                 <Input defaultValue={pool.name} name="name" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" required />
               </Field>
               <Field label="Mode">
-                <select className="gridops-select" defaultValue={pool.mode} name="mode">
-                  <option value="ephemeral">Ephemeral · one job per runner</option>
-                  <option value="persistent">Persistent</option>
-                </select>
+                <SearchableSelect
+                  ariaLabel="Runner mode"
+                  onValueChange={(nextMode) => setMode(nextMode ?? "ephemeral")}
+                  options={[
+                    { value: "ephemeral", label: "Ephemeral", description: "One clean runner per job" },
+                    { value: "persistent", label: "Persistent", description: "Reuse the runner across jobs" },
+                  ]}
+                  searchable={false}
+                  value={mode}
+                />
               </Field>
               <Field className="md:col-span-2" label="Container image">
                 <Input defaultValue={pool.image} name="image" required />
@@ -123,9 +132,18 @@ function EditRunnerPoolPage() {
               {pool.scope === "organization" ? (
                 <Field label="Runner group" hint={runnerGroups.length ? "GitHub runner groups available to this installation." : "Enter the GitHub runner group ID."}>
                   {runnerGroups.length ? (
-                    <select className="gridops-select" defaultValue={pool.runnerGroupId} name="runnerGroupId">
-                      {runnerGroups.map((group) => <option key={group.id} value={group.id}>{group.name}{group.isDefault ? " · Default" : ` · ${group.visibility}`}</option>)}
-                    </select>
+                    <SearchableSelect
+                      ariaLabel="GitHub runner group"
+                      onValueChange={(nextRunnerGroupId) => setRunnerGroupId(nextRunnerGroupId ?? pool.runnerGroupId)}
+                      options={runnerGroups.map((group) => ({
+                        value: group.id,
+                        label: group.name,
+                        description: group.isDefault ? "Default runner group" : `${group.visibility} visibility`,
+                      }))}
+                      placeholder="Choose runner group…"
+                      searchPlaceholder="Search runner groups…"
+                      value={runnerGroupId}
+                    />
                   ) : (
                     <Input defaultValue={pool.runnerGroupId} min="1" name="runnerGroupId" required type="number" />
                   )}

@@ -204,7 +204,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <summary className="inline-flex size-9 cursor-pointer list-none items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><ChevronDown className="size-4" /><span className="sr-only">Account menu</span></summary>
               <div className="absolute right-0 top-11 z-50 w-48 rounded-md border border-border bg-popover p-1 shadow-2xl">
                 <a className="block rounded-sm px-3 py-2 text-xs hover:bg-accent" href="/settings">Settings</a>
-                {viewer ? <button className="block w-full rounded-sm px-3 py-2 text-left text-xs text-red-300 hover:bg-accent" type="button" onClick={() => void api("/auth/logout", { method: "POST" }).then(() => { window.location.href = "/"; })}>Sign out</button> : <a className="block rounded-sm px-3 py-2 text-xs hover:bg-accent" href="/auth/github">Connect GitHub</a>}
+                {viewer ? <button className="block w-full rounded-sm px-3 py-2 text-left text-xs text-red-300 hover:bg-accent" type="button" onClick={() => void api("/auth/logout", { method: "POST" }).then(() => { window.location.href = "/login"; })}>Sign out</button> : <a className="block rounded-sm px-3 py-2 text-xs hover:bg-accent" href="/auth/github">Connect GitHub</a>}
               </div>
             </details>
           </div>

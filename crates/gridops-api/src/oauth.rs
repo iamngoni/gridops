@@ -641,7 +641,7 @@ fn parse_date(value: Option<&str>) -> Option<i64> {
 
 fn error_redirect(state: &AppState, message: &str) -> Response {
     let mut url = state.config.base_url().clone();
-    url.set_path("/");
+    url.set_path("/login");
     url.query_pairs_mut().append_pair("authError", message);
     (StatusCode::FOUND, [(header::LOCATION, url.to_string())]).into_response()
 }

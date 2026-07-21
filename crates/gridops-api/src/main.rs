@@ -64,6 +64,7 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/api/health", get(resources::health))
+        .route("/api/v1/auth/session", get(auth::session))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/github", get(oauth::begin))
         .route("/api/v1/auth/github/callback", get(oauth::callback))

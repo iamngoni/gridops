@@ -100,7 +100,22 @@ impl FromRequestParts<AppState> for OptionalAuth {
     }
 }
 
+pub async fn session(
+    State(state): State<AppState>,
+    OptionalAuth(user): OptionalAuth,
+) -> ApiResult<Json<Option<Viewer>>> {
+    let viewer = match user {
+        Some(user) => Some(load_viewer(&state, &user).await?),
+        None => None,
+    };
+    Ok(Json(viewer))
+}
+
 pub async fn me(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<Viewer>> {
+    Ok(Json(load_viewer(&state, &user).await?))
+}
+
+async fn load_viewer(state: &AppState, user: &AuthUser) -> ApiResult<Viewer> {
     let profile = sqlx::query("SELECT name, email, avatar_url FROM users WHERE id = ?")
         .bind(&user.id)
         .fetch_one(&state.database)
@@ -112,21 +127,21 @@ pub async fn me(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json
         (SELECT COUNT(*) FROM workflow_jobs wj JOIN workflow_runs wr ON wr.id=wj.run_id JOIN repositories repo ON repo.id=wr.repository_id JOIN user_installations ui ON ui.installation_id=repo.installation_id WHERE ui.user_id=? AND wj.status='queued') AS queued_jobs,
         (SELECT COUNT(*) FROM github_runner_cleanup cleanup JOIN user_installations ui ON ui.installation_id=cleanup.installation_id WHERE ui.user_id=?) AS deferred_runner_cleanup
     "#).bind(&user.id).bind(&user.id).bind(&user.id).bind(&user.id).fetch_one(&state.database).await?;
-    Ok(Json(Viewer {
-        id: user.id,
+    Ok(Viewer {
+        id: user.id.clone(),
         github_id: user.github_id,
-        login: user.login,
+        login: user.login.clone(),
         name: profile.try_get("name")?,
         email: profile.try_get("email")?,
         avatar_url: profile.try_get("avatar_url")?,
-        role: user.role,
+        role: user.role.clone(),
         alerts: Alerts {
             failed_runners: alerts.get("failed_runners"),
             failed_webhooks: alerts.get("failed_webhooks"),
             queued_jobs: alerts.get("queued_jobs"),
             deferred_runner_cleanup: alerts.get("deferred_runner_cleanup"),
         },
-    }))
+    })
 }
 
 pub fn require_system_admin(user: &AuthUser) -> ApiResult<()> {

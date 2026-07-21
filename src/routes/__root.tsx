@@ -1,15 +1,35 @@
 /// <reference types="vite/client" />
 
 import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
-import { Outlet, createRootRouteWithContext } from "@tanstack/react-router";
+import { Outlet, createRootRouteWithContext, redirect } from "@tanstack/react-router";
 import { Toaster } from "sonner";
 
 import { getViewer } from "~/lib/api";
+import { safeReturnTo } from "~/lib/auth-navigation";
 
 type RouterContext = { queryClient: QueryClient };
 
 export const Route = createRootRouteWithContext<RouterContext>()({
-  loader: () => getViewer(),
+  beforeLoad: async ({ location }) => {
+    const viewer = await getViewer();
+    const loginRoute = location.pathname === "/login";
+
+    if (!viewer && !loginRoute) {
+      throw redirect({
+        replace: true,
+        search: { returnTo: safeReturnTo(location.href) },
+        to: "/login",
+      });
+    }
+
+    if (viewer && loginRoute) {
+      const search = location.search as Record<string, unknown>;
+      throw redirect({ href: safeReturnTo(search.returnTo), replace: true });
+    }
+
+    return { viewer };
+  },
+  loader: ({ context }) => context.viewer,
   component: RootComponent,
   notFoundComponent: NotFound,
 });

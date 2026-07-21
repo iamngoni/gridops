@@ -9,6 +9,7 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
+import { SearchableSelect } from "~/components/ui/searchable-select";
 import { createGitHubAppManifestAction, getSettingsPage, saveSettingsAction, updateUserRoleAction } from "~/features/operations/operations.functions";
 import type { SettingsPage } from "~/features/operations/operations.functions";
 import { formatRelativeTime } from "~/lib/utils";
@@ -131,7 +132,7 @@ function AuthenticatedSettings({ data }: { data: NonNullable<SettingsPage["data"
                   You are already signed in with OAuth. GridOps also needs an installable, private GitHub App so it can obtain short-lived installation tokens with runner and Actions permissions. GitHub returns those App credentials directly to this instance, where they are encrypted at rest.
                 </p>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-2"><span className="block text-[11px] font-medium">App owner</span><select className="gridops-select" value={appOwnerType} onChange={(event) => setAppOwnerType(event.target.value as typeof appOwnerType)}><option value="user">My GitHub account</option><option value="organization">An organization</option></select></label>
+                  <label className="space-y-2"><span className="block text-[11px] font-medium">App owner</span><SearchableSelect ariaLabel="GitHub App owner" onValueChange={(ownerType) => setAppOwnerType(ownerType ?? "user")} options={[{ value: "user", label: "My GitHub account", description: "Create a user-owned GitHub App" }, { value: "organization", label: "An organization", description: "Create the App under an organization" }]} searchable={false} value={appOwnerType} /></label>
                   <label className="space-y-2"><span className="block text-[11px] font-medium">App name</span><Input maxLength={100} onChange={(event) => setAppName(event.target.value)} value={appName} /></label>
                   {appOwnerType === "organization" ? <label className="space-y-2 sm:col-span-2"><span className="block text-[11px] font-medium">Organization login</span><Input onChange={(event) => setAppOrganization(event.target.value)} placeholder="your-organization" required value={appOrganization} /></label> : null}
                 </div>

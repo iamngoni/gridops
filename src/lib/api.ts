@@ -30,10 +30,5 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
 }
 
 export async function getViewer(): Promise<Viewer | null> {
-  try {
-    return await api<Viewer>("/api/v1/auth/me");
-  } catch (error) {
-    if (error instanceof Error && error.message === "authentication required") return null;
-    throw error;
-  }
+  return api<Viewer | null>("/api/v1/auth/session");
 }
