@@ -6,7 +6,6 @@ import {
   CircleDot,
   Clock3,
   Github,
-  MoreHorizontal,
   Play,
   RefreshCw,
   Server,
@@ -15,6 +14,8 @@ import {
   Users,
   Workflow,
 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { AppShell } from "~/components/app-shell";
 import { AsyncActionButton } from "~/components/async-action-button";
@@ -29,9 +30,9 @@ import {
   TableHeader,
   TableRow,
 } from "~/components/ui/table";
-import { getDashboardOverview } from "~/features/dashboard/dashboard.functions";
+import { getCapacityHistory, getDashboardOverview } from "~/features/dashboard/dashboard.functions";
 import { syncGitHubAction } from "~/features/operations/operations.functions";
-import type { DashboardOverview } from "~/features/dashboard/types";
+import type { CapacityHistory, CapacityWindow, DashboardOverview } from "~/features/dashboard/types";
 import { formatDuration, formatRelativeTime } from "~/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -60,7 +61,7 @@ function OverviewPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <AsyncActionButton action={() => syncGitHub()} icon={<RefreshCw />} success="GitHub installations and repositories synced.">Sync GitHub</AsyncActionButton>
+            {data.authenticated ? <AsyncActionButton action={() => syncGitHub()} icon={<RefreshCw />} success="GitHub installations and repositories synced.">Sync GitHub</AsyncActionButton> : <a className={buttonVariants({ variant: "outline" })} href="/auth/github"><Github />Connect GitHub</a>}
             <Link className={buttonVariants()} to="/runner-pools/new"><Server />Provision runners</Link>
           </div>
         </div>
@@ -178,6 +179,37 @@ function MetricCard({
 }
 
 function CapacityPanel({ data }: { data: DashboardOverview }) {
+  const [capacityWindow, setCapacityWindow] = useState<CapacityWindow>("24h");
+  const [history, setHistory] = useState<CapacityHistory["points"]>([]);
+  const [loading, setLoading] = useState(data.installations > 0);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (data.installations === 0) {
+      return undefined;
+    }
+    let cancelled = false;
+    async function load() {
+      try {
+        const response = await getCapacityHistory(capacityWindow);
+        if (!cancelled) {
+          setHistory(response.points);
+          setError(null);
+        }
+      } catch (cause) {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not load capacity history.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void load();
+    const interval = capacityWindow === "24h" ? window.setInterval(() => void load(), 30_000) : undefined;
+    return () => {
+      cancelled = true;
+      if (interval !== undefined) window.clearInterval(interval);
+    };
+  }, [capacityWindow, data.installations]);
+
   return (
     <Card>
       <CardHeader>
@@ -190,26 +222,53 @@ function CapacityPanel({ data }: { data: DashboardOverview }) {
           </div>
         </div>
         <div className="flex gap-1">
-          <Button size="sm" variant="secondary">24h</Button>
-          <Button size="sm" variant="ghost">7d</Button>
-          <Button size="sm" variant="ghost">30d</Button>
+          {(["24h", "7d", "30d"] as const).map((period) => (
+            <Button aria-pressed={capacityWindow === period} key={period} onClick={() => { setLoading(true); setCapacityWindow(period); }} size="sm" variant={capacityWindow === period ? "secondary" : "ghost"}>{period}</Button>
+          ))}
         </div>
       </CardHeader>
       <CardContent>
-        <div className="capacity-grid relative flex min-h-64 items-center justify-center overflow-hidden rounded-md border border-border/70 bg-background/30">
-          <div className="relative z-10 max-w-sm px-6 text-center">
-            <Workflow className="mx-auto size-6 text-muted-foreground/70" />
-            <p className="mt-3 text-sm font-medium">
-              {data.installations === 0 ? "Connect GitHub to begin collecting capacity data" : "Capacity history is being collected"}
-            </p>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              Available, busy, and queued capacity appears here as runner pools process workflow jobs.
-            </p>
-          </div>
+        <div className="capacity-grid relative min-h-64 overflow-hidden rounded-md border border-border/70 bg-background/30">
+          {history.length > 0 ? (
+            <div className="h-64 w-full p-3">
+              <ResponsiveContainer height="100%" width="100%">
+                <AreaChart data={history} margin={{ bottom: 0, left: -22, right: 8, top: 8 }}>
+                  <defs>
+                    <linearGradient id="available-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="5%" stopColor="#34d399" stopOpacity={0.25} /><stop offset="95%" stopColor="#34d399" stopOpacity={0} /></linearGradient>
+                    <linearGradient id="busy-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="5%" stopColor="#60a5fa" stopOpacity={0.22} /><stop offset="95%" stopColor="#60a5fa" stopOpacity={0} /></linearGradient>
+                    <linearGradient id="queued-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="5%" stopColor="#fbbf24" stopOpacity={0.2} /><stop offset="95%" stopColor="#fbbf24" stopOpacity={0} /></linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="rgba(148,163,184,0.10)" vertical={false} />
+                  <XAxis axisLine={false} dataKey="recordedAt" minTickGap={40} tick={{ fill: "#718078", fontSize: 10 }} tickFormatter={(value: string) => formatCapacityTick(value, capacityWindow)} tickLine={false} />
+                  <YAxis allowDecimals={false} axisLine={false} tick={{ fill: "#718078", fontSize: 10 }} tickLine={false} width={36} />
+                  <Tooltip contentStyle={{ background: "#0d1512", border: "1px solid #24332d", borderRadius: 6, fontSize: 11 }} labelFormatter={(value) => new Date(String(value)).toLocaleString()} />
+                  <Area dataKey="available" fill="url(#available-fill)" name="Available" stroke="#34d399" strokeWidth={2} type="monotone" />
+                  <Area dataKey="busy" fill="url(#busy-fill)" name="Busy" stroke="#60a5fa" strokeWidth={2} type="monotone" />
+                  <Area dataKey="queued" fill="url(#queued-fill)" name="Queued" stroke="#fbbf24" strokeWidth={2} type="monotone" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="grid min-h-64 place-items-center">
+              <div className="relative z-10 max-w-sm px-6 text-center">
+                <Workflow className="mx-auto size-6 text-muted-foreground/70" />
+                <p className="mt-3 text-sm font-medium">{data.installations === 0 ? "Connect GitHub to begin collecting capacity data" : loading ? "Loading capacity history…" : "Waiting for the first runner-pool sample"}</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">Available, busy, and queued capacity is sampled every minute and retained for 31 days.</p>
+              </div>
+            </div>
+          )}
+          {error ? <div className="absolute inset-x-3 bottom-3 rounded border border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">{error}</div> : null}
         </div>
       </CardContent>
     </Card>
   );
+}
+
+function formatCapacityTick(value: string, window: CapacityWindow) {
+  const date = new Date(value);
+  return window === "24h"
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : date.toLocaleDateString([], { day: "numeric", month: "short" });
 }
 
 function Legend({ color, label }: { color: string; label: string }) {
@@ -275,7 +334,7 @@ function RunnerPoolsPanel({ data }: { data: DashboardOverview }) {
             <TableBody>
               {data.pools.map((pool) => (
                 <TableRow key={pool.id}>
-                  <TableCell className="font-medium"><span className="mr-2 inline-block size-1.5 rounded-full bg-emerald-400" />{pool.name}</TableCell>
+                  <TableCell className="font-medium"><span className="mr-2 inline-block size-1.5 rounded-full bg-emerald-400" /><Link className="hover:text-primary" params={{ poolId: pool.id }} to="/runner-pools/$poolId">{pool.name}</Link></TableCell>
                   <TableCell className="text-muted-foreground">{pool.scope}</TableCell>
                   <TableCell>{pool.desired}</TableCell>
                   <TableCell>{pool.online}</TableCell>
@@ -283,7 +342,7 @@ function RunnerPoolsPanel({ data }: { data: DashboardOverview }) {
                   <TableCell>{pool.queue}</TableCell>
                   <TableCell className="capitalize text-muted-foreground">{pool.mode}</TableCell>
                   <TableCell><StatusBadge status={pool.status} /></TableCell>
-                  <TableCell><Button aria-label={`Actions for ${pool.name}`} size="icon" variant="ghost"><MoreHorizontal /></Button></TableCell>
+                  <TableCell><Link aria-label={`Edit ${pool.name}`} className={buttonVariants({ size: "icon", variant: "ghost" })} params={{ poolId: pool.id }} to="/runner-pools/$poolId"><Settings2 /></Link></TableCell>
                 </TableRow>
               ))}
             </TableBody>

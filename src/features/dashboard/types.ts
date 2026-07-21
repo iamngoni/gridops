@@ -47,3 +47,15 @@ export type DashboardOverview = {
   }>;
   installations: number;
 };
+
+export type CapacityWindow = "24h" | "7d" | "30d";
+
+export type CapacityHistory = {
+  window: CapacityWindow;
+  points: Array<{
+    recordedAt: string;
+    available: number;
+    busy: number;
+    queued: number;
+  }>;
+};

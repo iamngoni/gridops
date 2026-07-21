@@ -10,6 +10,7 @@ GridOps is a self-hosted control plane for GitHub Actions runners. Connect a Git
 - Editable pool configuration with generation-tracked, busy-safe rolling runner replacement
 - Provision, scale, reconcile, pause, resume, stop, restart, rebuild, drain, and delete controls
 - Queue-driven autoscaling and idle scale-down
+- Minute-level available, busy, and queued capacity history with 24-hour, 7-day, and 30-day views
 - Workflow runs, jobs, cancellation, reruns, downloadable logs, and runner log streaming
 - Signed, idempotent GitHub webhooks with delivery retry and audit history
 - SQLite WAL persistence, retention policy, and consistent downloadable backups
