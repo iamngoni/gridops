@@ -1,6 +1,7 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Github, LoaderCircle, Server } from "lucide-react";
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import { AppShell } from "~/components/app-shell";
 import { Button, buttonVariants } from "~/components/ui/button";
@@ -16,6 +17,20 @@ export const Route = createFileRoute("/runner-pools_/new")({
 
 function NewRunnerPoolPage() {
   const options = Route.useLoaderData();
+
+  useEffect(() => {
+    const search = new URLSearchParams(window.location.search);
+    if (search.get("appCreated") === "1") {
+      toast.success("GitHub App created and authorized. Install it on an account to continue.");
+    }
+    if (search.get("installationUpdated") === "1") {
+      toast.success("GitHub App installation synchronized.");
+    }
+    if (search.has("appCreated") || search.has("installationUpdated")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
   if (!options.authenticated || !options.defaults) {
     return (
       <AppShell>
@@ -46,7 +61,7 @@ function NewRunnerPoolPage() {
             <p className="mt-2 max-w-sm text-sm leading-6 text-muted-foreground">
               Choose the account and repositories GridOps may operate, then return here and sync GitHub.
             </p>
-            <a className={cn(buttonVariants(), "mt-5")} href={options.installUrl} rel="noreferrer" target="_blank">
+            <a className={cn(buttonVariants(), "mt-5")} href={options.installUrl}>
               <Github />Install GridOps on GitHub
             </a>
           </CardContent>

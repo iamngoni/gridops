@@ -220,11 +220,12 @@ pub async fn manifest_callback(
     .await?;
     transaction.commit().await?;
 
-    let location = state
-        .config
-        .base_url()
-        .join("/settings?appCreated=1")
-        .map_err(|error| ApiError::Internal(error.into()))?;
+    // The manifest conversion replaces the bootstrap OAuth credentials with the
+    // new GitHub App credentials. The token in the current GridOps session was
+    // issued to the bootstrap app, so immediately run OAuth again before using
+    // it to discover installations for the newly-created App.
+    let location = oauth_start_url(state.config.base_url(), "/runner-pools/new?appCreated=1")
+        .map_err(ApiError::Internal)?;
     Ok(Redirect::to(location.as_str()).into_response())
 }
 
@@ -241,7 +242,7 @@ fn valid_slug(value: &str) -> bool {
 fn build_manifest(name: &str, base_url: &url::Url) -> anyhow::Result<(Value, bool)> {
     let callback_url = base_url.join("/auth/github/callback")?;
     let manifest_callback_url = base_url.join("/auth/github-app/manifest/callback")?;
-    let setup_url = base_url.join("/settings?appCreated=1")?;
+    let setup_url = oauth_start_url(base_url, "/runner-pools/new?installationUpdated=1")?;
     let webhook_url = base_url.join("/api/webhooks/github")?;
     let webhook_active = webhook_url.scheme() == "https"
         && !matches!(
@@ -258,7 +259,12 @@ fn build_manifest(name: &str, base_url: &url::Url) -> anyhow::Result<(Value, boo
             "callback_urls": [callback_url.as_str()],
             "setup_url": setup_url.as_str(),
             "public": false,
-            "request_oauth_on_install": true,
+            // Sending installations through our OAuth entry point gives every
+            // callback a verified state and a deliberate local return path.
+            // GitHub's automatic install-time OAuth callback does not include
+            // the state created by GridOps, so it cannot safely use our normal
+            // callback handler.
+            "request_oauth_on_install": false,
             "setup_on_update": true,
             "default_permissions": {
                 "actions": "write",
@@ -277,6 +283,12 @@ fn build_manifest(name: &str, base_url: &url::Url) -> anyhow::Result<(Value, boo
         }),
         webhook_active,
     ))
+}
+
+fn oauth_start_url(base_url: &url::Url, return_to: &str) -> anyhow::Result<url::Url> {
+    let mut url = base_url.join("/auth/github")?;
+    url.query_pairs_mut().append_pair("returnTo", return_to);
+    Ok(url)
 }
 
 fn settings_error_redirect(state: &AppState, message: &str) -> Response {
@@ -314,7 +326,23 @@ mod tests {
             manifest["redirect_url"],
             "http://localhost:3100/auth/github-app/manifest/callback"
         );
+        assert_eq!(manifest["request_oauth_on_install"], false);
+        assert_eq!(
+            manifest["setup_url"],
+            "http://localhost:3100/auth/github?returnTo=%2Frunner-pools%2Fnew%3FinstallationUpdated%3D1"
+        );
         assert_eq!(manifest["hook_attributes"]["active"], false);
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_conversion_reauthorizes_with_the_new_app() -> anyhow::Result<()> {
+        let base_url = url::Url::parse("http://localhost:3100")?;
+        let location = oauth_start_url(&base_url, "/runner-pools/new?appCreated=1")?;
+        assert_eq!(
+            location.as_str(),
+            "http://localhost:3100/auth/github?returnTo=%2Frunner-pools%2Fnew%3FappCreated%3D1"
+        );
         Ok(())
     }
 
