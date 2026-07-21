@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Braces, CheckCircle2, Copy, LoaderCircle, RefreshCw, Settings, ShieldAlert, Webhook, X } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AsyncActionButton } from "~/components/async-action-button";
@@ -42,6 +42,7 @@ function WebhooksPage() {
   const [payload, setPayload] = useState<WebhookPayload | null>(null);
   const [payloadLoading, setPayloadLoading] = useState(false);
   const [payloadError, setPayloadError] = useState<string | null>(null);
+  const payloadTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   async function viewPayload(delivery: WebhookDelivery) {
     setPayloadDelivery(delivery);
@@ -78,12 +79,16 @@ function WebhooksPage() {
               <TableCell>{delivery.signatureValid ? <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400"><CheckCircle2 className="size-3.5" />Verified</span> : <span className="inline-flex items-center gap-1.5 text-xs text-red-400"><ShieldAlert className="size-3.5" />Invalid</span>}</TableCell>
               <TableCell><StatusBadge status={delivery.status} /></TableCell>
               <TableCell className="text-xs text-muted-foreground">{formatRelativeTime(delivery.receivedAt)}</TableCell>
-              <TableCell><div className="flex justify-end gap-1">{delivery.hasPayload ? <Button aria-label="View request payload" onClick={() => void viewPayload(delivery)} size="icon" title="View request payload" variant="ghost"><Braces /></Button> : null}{delivery.canRetry && delivery.status === "failed" && delivery.signatureValid ? <AsyncActionButton action={() => retry({ data: { deliveryId: delivery.id } })} icon={<RefreshCw />} size="icon" success="Webhook delivery reprocessed." title="Retry delivery"><span className="sr-only">Retry delivery</span></AsyncActionButton> : null}</div></TableCell>
+              <TableCell><div className="flex justify-end gap-1">{delivery.hasPayload ? <Button aria-label="View request payload" onClick={(event) => { payloadTriggerRef.current = event.currentTarget; void viewPayload(delivery); }} size="icon" title="View request payload" variant="ghost"><Braces /></Button> : null}{delivery.canRetry && delivery.status === "failed" && delivery.signatureValid ? <AsyncActionButton action={() => retry({ data: { deliveryId: delivery.id } })} icon={<RefreshCw />} size="icon" success="Webhook delivery reprocessed." title="Retry delivery"><span className="sr-only">Retry delivery</span></AsyncActionButton> : null}</div></TableCell>
             </TableRow>
           ))}</TableBody>
         </Table><ListPagination itemCount={data.items.length} noun="webhook deliveries" onPageChange={(page) => void navigate({ search: { page } })} page={data.page} perPage={data.perPage} total={data.total} /></CardContent></Card>
       ) : undefined}
-      {payloadDelivery ? <WebhookPayloadDialog delivery={payloadDelivery} error={payloadError} loading={payloadLoading} onClose={() => setPayloadDelivery(null)} payload={payload} /> : null}
+      {payloadDelivery ? <WebhookPayloadDialog delivery={payloadDelivery} error={payloadError} loading={payloadLoading} onClose={() => {
+        const trigger = payloadTriggerRef.current;
+        setPayloadDelivery(null);
+        window.setTimeout(() => trigger?.focus());
+      }} payload={payload} /> : null}
     </ResourcePage>
   );
 }
