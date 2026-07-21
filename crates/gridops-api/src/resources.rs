@@ -570,7 +570,7 @@ pub async fn runner_pools(
     };
     let rows = sqlx::query(
         r#"SELECT p.id,p.name,p.scope,p.mode,p.labels,p.image,p.desired_count,p.min_count,
-          p.max_count,p.cpu_limit,p.memory_limit_mb,p.paused,p.state,i.account_login,
+          p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,p.paused,p.state,i.account_login,
           ui.permission AS installation_permission,
           repo.full_name AS repository,
           COUNT(CASE WHEN r.deleted_at IS NULL THEN 1 END) AS total_runners,
@@ -1971,7 +1971,8 @@ async fn cleanup_github_runner(
 async fn pool_access(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResult<PoolAccess> {
     sqlx::query_as::<_, PoolAccess>(r#"SELECT p.installation_id,ui.permission AS installation_permission,i.account_login,
       p.repository_id,repo.owner AS repository_owner,repo.name AS repository_name,p.name,p.scope,
-      p.mode,p.labels,p.image,p.desired_count,p.min_count,p.max_count,p.cpu_limit,p.memory_limit_mb,
+      p.mode,p.labels,p.image,p.desired_count,p.min_count,p.max_count,
+      CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,
       p.runner_group_id,p.ephemeral,p.paused,p.state,p.autoscaling_enabled,p.queue_scale_factor,
       p.idle_timeout_minutes,p.configuration_version
       FROM runner_pools p JOIN user_installations ui ON ui.installation_id=p.installation_id

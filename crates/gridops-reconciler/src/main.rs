@@ -162,17 +162,7 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
         .into_iter()
         .map(|runner| (runner.id, runner.state))
         .collect::<HashMap<_, _>>();
-    let pools = sqlx::query_as::<_, Pool>(
-        r#"SELECT p.id,p.installation_id,i.account_login,repo.owner AS repository_owner,
-          repo.name AS repository_name,p.name,p.mode,p.labels,p.image,p.desired_count,p.min_count,
-          p.max_count,p.cpu_limit,p.memory_limit_mb,p.runner_group_id,p.ephemeral,p.paused,
-          p.autoscaling_enabled,p.queue_scale_factor,p.idle_timeout_minutes,p.configuration_version FROM runner_pools p
-          JOIN installations i ON i.id=p.installation_id
-          LEFT JOIN repositories repo ON repo.id=p.repository_id
-          WHERE p.state != 'deleting' ORDER BY p.created_at"#,
-    )
-    .fetch_all(&app.database)
-    .await?;
+    let pools = load_pools(&app.database).await?;
     for pool in pools {
         if let Err(error) = reconcile_pool(app, &pool, &container_states).await {
             tracing::error!(pool_id = %pool.id, pool = %pool.name, error = ?error, "pool reconciliation failed");
@@ -201,6 +191,21 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
         .execute(&app.database)
         .await?;
     Ok(())
+}
+
+async fn load_pools(database: &SqlitePool) -> Result<Vec<Pool>> {
+    Ok(sqlx::query_as::<_, Pool>(
+        r#"SELECT p.id,p.installation_id,i.account_login,repo.owner AS repository_owner,
+          repo.name AS repository_name,p.name,p.mode,p.labels,p.image,p.desired_count,p.min_count,
+          p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,
+          p.runner_group_id,p.ephemeral,p.paused,
+          p.autoscaling_enabled,p.queue_scale_factor,p.idle_timeout_minutes,p.configuration_version FROM runner_pools p
+          JOIN installations i ON i.id=p.installation_id
+          LEFT JOIN repositories repo ON repo.id=p.repository_id
+          WHERE p.state != 'deleting' ORDER BY p.created_at"#,
+    )
+    .fetch_all(database)
+    .await?)
 }
 
 async fn reconcile_pool(
@@ -1345,6 +1350,36 @@ mod tests {
             configuration_version,
             updated_at: 1_000,
         }
+    }
+
+    #[tokio::test]
+    async fn loads_whole_cpu_limits_stored_as_sqlite_integers() -> Result<()> {
+        let directory =
+            std::env::temp_dir().join(format!("gridops-cpu-limit-test-{}", uuid::Uuid::new_v4()));
+        let database = connect_database_path(&directory.join("gridops.sqlite")).await?;
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO installations (id,account_id,account_login,account_type,target_type,repository_selection,created_at,updated_at)
+              VALUES (1,1,'octo-org','Organization','Organization','all',1,1);
+            INSERT INTO runner_pools (id,installation_id,name,scope,image,created_at,updated_at)
+              VALUES ('pool-1',1,'linux','organization','runner:latest',1,1);
+            "#,
+        )
+        .execute(&database)
+        .await?;
+
+        let storage_class =
+            sqlx::query_scalar::<_, String>("SELECT typeof(cpu_limit) FROM runner_pools")
+                .fetch_one(&database)
+                .await?;
+        assert_eq!(storage_class, "integer");
+        let pools = load_pools(&database).await?;
+        assert_eq!(pools.len(), 1);
+        assert!((pools[0].cpu_limit - 2.0).abs() < f64::EPSILON);
+
+        database.close().await;
+        fs::remove_dir_all(directory)?;
+        Ok(())
     }
 
     #[test]
