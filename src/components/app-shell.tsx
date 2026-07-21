@@ -19,6 +19,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { GridLogo } from "./grid-logo";
+import { ThemeToggle } from "./theme-toggle";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { cn } from "~/lib/utils";
@@ -118,7 +119,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="app-shell min-h-screen text-foreground">
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-64 -translate-x-full flex-col border-r border-border/60 bg-sidebar/95 shadow-[12px_0_40px_hsl(160_70%_2%/0.16)] backdrop-blur transition-transform lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 flex w-64 -translate-x-full flex-col border-r border-border/60 bg-sidebar/95 shadow-[12px_0_40px_var(--sidebar-shadow)] backdrop-blur transition-transform lg:translate-x-0",
           mobileOpen && "translate-x-0",
         )}
       >
@@ -219,6 +220,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </div>
               ) : null}
             </label>
+            <ThemeToggle />
             <details className="group relative">
               <summary className="relative inline-flex size-9 cursor-pointer list-none items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><Bell className="size-4" />{alertCount > 0 ? <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-red-400" /> : null}<span className="sr-only">Notifications</span></summary>
               <div className="absolute right-0 top-11 z-50 w-72 rounded-md border border-border bg-popover p-3 shadow-2xl">

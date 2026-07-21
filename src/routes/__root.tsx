@@ -4,6 +4,7 @@ import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { Outlet, createRootRouteWithContext, redirect } from "@tanstack/react-router";
 import { Toaster } from "sonner";
 
+import { ThemeProvider, useTheme } from "~/components/theme-provider";
 import { getViewer } from "~/lib/api";
 import { safeReturnTo } from "~/lib/auth-navigation";
 
@@ -37,11 +38,18 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   return (
-    <QueryClientProvider client={queryClient}>
-      <Outlet />
-      <Toaster theme="dark" richColors position="bottom-right" />
-    </QueryClientProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <Outlet />
+        <ThemeToaster />
+      </QueryClientProvider>
+    </ThemeProvider>
   );
+}
+
+function ThemeToaster() {
+  const { theme } = useTheme();
+  return <Toaster theme={theme} richColors position="bottom-right" />;
 }
 
 function NotFound() {

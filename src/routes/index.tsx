@@ -179,8 +179,8 @@ function MetricCard({
         <div
           className={
             tone === "green"
-              ? "grid size-10 place-items-center rounded-full bg-emerald-500/10 text-emerald-400"
-              : "grid size-10 place-items-center rounded-full bg-amber-500/10 text-amber-400"
+              ? "grid size-10 place-items-center rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+              : "grid size-10 place-items-center rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400"
           }
         >
           <Icon className="size-5" />
@@ -263,7 +263,7 @@ function CapacityPanel({ data }: { data: DashboardOverview }) {
                   <CartesianGrid stroke="rgba(148,163,184,0.10)" vertical={false} />
                   <XAxis axisLine={false} dataKey="recordedAt" minTickGap={40} tick={{ fill: "#718078", fontSize: 10 }} tickFormatter={(value: string) => formatCapacityTick(value, capacityWindow)} tickLine={false} />
                   <YAxis allowDecimals={false} axisLine={false} tick={{ fill: "#718078", fontSize: 10 }} tickLine={false} width={36} />
-                  <Tooltip contentStyle={{ background: "#0d1512", border: "1px solid #24332d", borderRadius: 6, fontSize: 11 }} labelFormatter={(value) => new Date(String(value)).toLocaleString()} />
+                  <Tooltip contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--popover-foreground)", fontSize: 11 }} labelFormatter={(value) => new Date(String(value)).toLocaleString()} />
                   <Area dataKey="available" fill="url(#available-fill)" name="Available" stroke="#34d399" strokeWidth={2} type="monotone" />
                   <Area dataKey="busy" fill="url(#busy-fill)" name="Busy" stroke="#60a5fa" strokeWidth={2} type="monotone" />
                   <Area dataKey="queued" fill="url(#queued-fill)" name="Queued" stroke="#fbbf24" strokeWidth={2} type="monotone" />
@@ -321,7 +321,7 @@ function ActivityPanel({ data }: { data: DashboardOverview }) {
 
 function ActivityRow({ item }: { item: DashboardOverview["activity"][number] }) {
   const content = <>
-    <span className={`mt-1 grid size-7 shrink-0 place-items-center rounded-full ${item.level === "error" ? "bg-red-500/10 text-red-400" : item.level === "warning" ? "bg-amber-500/10 text-amber-400" : "bg-emerald-500/10 text-emerald-400"}`}><CircleDot className="size-3.5" /></span>
+    <span className={`mt-1 grid size-7 shrink-0 place-items-center rounded-full ${item.level === "error" ? "bg-red-500/10 text-red-700 dark:text-red-400" : item.level === "warning" ? "bg-amber-500/10 text-amber-700 dark:text-amber-400" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"}`}><CircleDot className="size-3.5" /></span>
     <div className="min-w-0 flex-1">
       <p className="truncate text-sm font-medium">{item.event}</p>
       <p className="mt-1 truncate text-xs text-muted-foreground">{item.message}</p>

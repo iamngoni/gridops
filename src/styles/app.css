@@ -4,8 +4,38 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
   --radius: 0.625rem;
+  --background: hsl(150 20% 98%);
+  --foreground: hsl(160 22% 11%);
+  --card: hsl(0 0% 100%);
+  --card-foreground: hsl(160 22% 11%);
+  --popover: hsl(0 0% 100%);
+  --popover-foreground: hsl(160 22% 11%);
+  --primary: hsl(154 72% 31%);
+  --primary-foreground: hsl(0 0% 100%);
+  --secondary: hsl(150 16% 93%);
+  --secondary-foreground: hsl(160 20% 16%);
+  --muted: hsl(150 14% 94%);
+  --muted-foreground: hsl(158 9% 40%);
+  --accent: hsl(150 17% 92%);
+  --accent-foreground: hsl(160 22% 11%);
+  --destructive: hsl(3 68% 46%);
+  --border: hsl(154 13% 84%);
+  --input: hsl(154 13% 77%);
+  --ring: hsl(154 72% 31%);
+  --sidebar: hsl(150 22% 96%);
+  --shell-glow: hsl(153 68% 72% / 0.2);
+  --shell-top: hsl(150 28% 97% / 0.92);
+  --sidebar-shadow: hsl(160 35% 18% / 0.08);
+  --card-shadow:
+    0 1px 0 hsl(0 0% 100% / 0.9) inset,
+    0 1px 2px hsl(160 30% 20% / 0.08),
+    0 12px 32px hsl(160 30% 20% / 0.05);
+}
+
+.dark {
+  color-scheme: dark;
   --background: hsl(160 16% 6%);
   --foreground: hsl(150 12% 96%);
   --card: hsl(160 14% 8.5%);
@@ -25,6 +55,13 @@
   --input: hsl(160 10% 20%);
   --ring: hsl(153 64% 52%);
   --sidebar: hsl(163 18% 5%);
+  --shell-glow: hsl(153 60% 20% / 0.14);
+  --shell-top: hsl(160 16% 7% / 0.86);
+  --sidebar-shadow: hsl(160 70% 2% / 0.16);
+  --card-shadow:
+    0 1px 0 hsl(150 20% 95% / 0.025) inset,
+    0 1px 2px hsl(160 60% 2% / 0.32),
+    0 12px 32px hsl(160 60% 2% / 0.12);
 }
 
 @theme inline {
@@ -75,16 +112,13 @@ body {
 .app-shell {
   background-color: var(--background);
   background-image:
-    radial-gradient(circle at 78% -12%, hsl(153 60% 20% / 0.14), transparent 34rem),
-    linear-gradient(180deg, hsl(160 16% 7% / 0.86), var(--background) 26rem);
+    radial-gradient(circle at 78% -12%, var(--shell-glow), transparent 34rem),
+    linear-gradient(180deg, var(--shell-top), var(--background) 26rem);
   background-attachment: fixed;
 }
 
 [data-slot="card"] {
-  box-shadow:
-    0 1px 0 hsl(150 20% 95% / 0.025) inset,
-    0 1px 2px hsl(160 60% 2% / 0.32),
-    0 12px 32px hsl(160 60% 2% / 0.12);
+  box-shadow: var(--card-shadow);
 }
 
 [data-slot="button"]:active:not(:disabled) {

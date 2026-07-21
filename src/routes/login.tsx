@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { Boxes, Github, Radio, ShieldCheck } from "lucide-react";
 
 import { GridLogo } from "~/components/grid-logo";
+import { ThemeToggle } from "~/components/theme-toggle";
 import { buttonVariants } from "~/components/ui/button";
 import { safeReturnTo } from "~/lib/auth-navigation";
 import { cn } from "~/lib/utils";
@@ -29,11 +30,14 @@ function LoginPage() {
       <div className="pointer-events-none absolute left-1/2 top-0 h-96 w-[48rem] -translate-x-1/2 rounded-full bg-emerald-500/8 blur-3xl" />
 
       <div className="relative z-10 mx-auto flex min-h-[calc(100vh-4rem)] max-w-6xl flex-col">
-        <GridLogo className="h-10" />
+        <div className="flex items-center justify-between">
+          <GridLogo className="h-10" />
+          <ThemeToggle />
+        </div>
 
         <div className="grid flex-1 items-center gap-12 py-12 lg:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.72fr)]">
           <section className="max-w-2xl">
-            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-400/5 px-3 py-1.5 text-xs font-medium text-emerald-300">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-400/5 px-3 py-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
               <span className="size-1.5 rounded-full bg-emerald-400" />
               Self-hosted runner operations
             </div>
@@ -51,7 +55,7 @@ function LoginPage() {
             </div>
           </section>
 
-          <section className="rounded-xl border border-border bg-card/95 p-6 shadow-2xl shadow-black/25 backdrop-blur sm:p-8">
+          <section className="rounded-xl border border-border bg-card/95 p-6 shadow-2xl shadow-black/10 backdrop-blur dark:shadow-black/25 sm:p-8">
             <div className="grid size-11 place-items-center rounded-lg border border-border bg-background">
               <Github className="size-5" />
             </div>
@@ -61,7 +65,7 @@ function LoginPage() {
             </p>
 
             {authError ? (
-              <p className="mt-5 rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2.5 text-xs leading-5 text-red-300" role="alert">
+              <p className="mt-5 rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2.5 text-xs leading-5 text-red-700 dark:text-red-300" role="alert">
                 {authError}
               </p>
             ) : null}
@@ -73,7 +77,7 @@ function LoginPage() {
 
             <div className="mt-6 border-t border-border pt-5">
               <div className="flex items-start gap-3 text-xs leading-5 text-muted-foreground">
-                <ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-400" />
+                <ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-700 dark:text-emerald-400" />
                 <span>Authentication is handled by GitHub. GridOps never receives or stores your GitHub password.</span>
               </div>
             </div>
