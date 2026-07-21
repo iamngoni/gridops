@@ -94,12 +94,17 @@ function AuthenticatedSettings({ data }: { data: NonNullable<SettingsPage["data"
   }
 
   const checks = [
-    ["GitHub OAuth", data.configuration.githubOAuth, "Client ID and secret"],
-    ["Runner control", data.configuration.githubAppControl, "GitHub runner API access"],
-    ["Webhook verification", data.configuration.webhookVerification, "HMAC signature secret"],
-    ["Encrypted storage", data.configuration.secureStorage, "Session and AES keys"],
-    ["Manager authentication", data.configuration.runnerManager, "Internal bearer token"],
-  ] as const;
+    { label: "GitHub OAuth", ready: data.configuration.githubOAuth, detail: "Client ID and secret" },
+    { label: "Runner control", ready: data.configuration.githubAppControl, detail: "GitHub App installation credentials" },
+    {
+      label: "Webhook verification",
+      ready: !data.configuration.webhookActive || data.configuration.webhookVerification,
+      detail: data.configuration.webhookActive ? "HMAC signature secret" : "Delivery disabled; GitHub API polling is active",
+      status: data.configuration.webhookActive ? undefined : "polling",
+    },
+    { label: "Encrypted storage", ready: data.configuration.secureStorage, detail: "Session and AES keys" },
+    { label: "Manager authentication", ready: data.configuration.runnerManager, detail: "Internal bearer token" },
+  ];
 
   return (
     <ResourcePage title="Settings" description="Configure GitHub, runner defaults, retention, backups, and system policy." icon={Settings} emptyTitle="Settings unavailable" emptyDescription="Connect GitHub to manage GridOps.">
@@ -108,22 +113,22 @@ function AuthenticatedSettings({ data }: { data: NonNullable<SettingsPage["data"
           <CardHeader><div><CardTitle>Security and integrations</CardTitle><p className="mt-1 text-xs text-muted-foreground">Secrets come from the host environment or encrypted runtime storage and are never rendered here.</p></div><ShieldCheck className="size-5 text-emerald-400" /></CardHeader>
           <CardContent className="space-y-2">
             {!isAdmin ? <p className="rounded-md border border-border bg-muted/25 p-3 text-xs leading-5 text-muted-foreground">You have read-only access to system configuration. A GridOps administrator manages credentials, backups, and policy.</p> : null}
-            {checks.map(([label, ready, detail]) => (
+            {checks.map(({ label, ready, detail, status }) => (
               <div className="flex items-center gap-3 rounded-md border border-border p-3" key={label}>
                 {ready ? <CheckCircle2 className="size-4 text-emerald-400" /> : <CircleX className="size-4 text-amber-400" />}
                 <div className="min-w-0 flex-1"><div className="text-sm font-medium">{label}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{detail}</div></div>
-                <Badge variant={ready ? "success" : "warning"}>{ready ? "configured" : "required"}</Badge>
+                <Badge variant={ready ? "success" : "warning"}>{status ?? (ready ? "configured" : "required")}</Badge>
               </div>
             ))}
             <div className="mt-4 space-y-3 rounded-md bg-muted/25 p-3 text-xs">
               <CopyRow label="OAuth callback" value={data.configuration.callbackUrl} />
               <CopyRow label="Webhook URL" value={data.configuration.webhookUrl} />
             </div>
-            {isAdmin && (!data.configuration.githubAppControl || !data.configuration.webhookVerification) ? (
+            {isAdmin && !data.configuration.githubAppControl ? (
               <div className="mt-4 rounded-md border border-amber-500/20 bg-amber-500/5 p-4">
-                <div className="text-sm font-medium">Finish GitHub App setup</div>
+                <div className="text-sm font-medium">Create the controller GitHub App</div>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  GridOps can create a private GitHub App with the runner, Actions, installation, and webhook permissions it needs. GitHub returns the private key and webhook secret directly to this instance, where they are encrypted at rest.
+                  You are already signed in with OAuth. GridOps also needs an installable, private GitHub App so it can obtain short-lived installation tokens with runner and Actions permissions. GitHub returns those App credentials directly to this instance, where they are encrypted at rest.
                 </p>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <label className="space-y-2"><span className="block text-[11px] font-medium">App owner</span><select className="gridops-select" value={appOwnerType} onChange={(event) => setAppOwnerType(event.target.value as typeof appOwnerType)}><option value="user">My GitHub account</option><option value="organization">An organization</option></select></label>
@@ -134,8 +139,8 @@ function AuthenticatedSettings({ data }: { data: NonNullable<SettingsPage["data"
                   {manifestPending ? <LoaderCircle className="animate-spin" /> : <Github />}
                   {manifestPending ? "Opening GitHub…" : "Create GitHub App"}
                 </Button>
-                {data.configuration.webhookUrl.startsWith("http://localhost") ? (
-                  <p className="mt-2 text-[11px] leading-4 text-amber-300/80">The manifest will leave webhook delivery disabled while GridOps uses localhost. Set a public HTTPS base URL before enabling GitHub deliveries.</p>
+                {!data.configuration.webhookActive ? (
+                  <p className="mt-2 text-[11px] leading-4 text-amber-300/80">Webhook delivery will remain disabled for this private deployment. GridOps will synchronize GitHub state by polling instead.</p>
                 ) : null}
               </div>
             ) : null}

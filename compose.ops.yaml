@@ -1,10 +1,10 @@
 services:
-  web:
+  api:
     networks:
       control-plane:
       antonlabs-edge:
         aliases:
-          - gridops-web
+          - gridops-api
 
 networks:
   antonlabs-edge:

@@ -2047,6 +2047,7 @@ async fn configuration(state: &AppState) -> ApiResult<ConfigurationState> {
             .await
             .map_err(ApiError::Internal)?
             .is_some(),
+        webhook_active: state.config.webhook_delivery_active(),
         webhook_verification: state
             .github_webhook_secret()
             .await

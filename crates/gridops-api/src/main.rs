@@ -12,16 +12,19 @@ use anyhow::Result;
 use axum::{
     Router,
     extract::DefaultBodyLimit,
-    http::{HeaderName, HeaderValue, Method, StatusCode, header},
-    routing::{get, post},
+    http::{HeaderName, HeaderValue, Method, Request, StatusCode, header},
+    routing::{any, get, post},
 };
 use gridops_core::{Config, GitHubClient, Vault, connect_database};
+use tower::ServiceBuilder;
 use tower_http::{
     catch_panic::CatchPanicLayer,
     compression::CompressionLayer,
     cors::CorsLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     sensitive_headers::SetSensitiveRequestHeadersLayer,
+    services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
@@ -48,6 +51,16 @@ async fn main() -> Result<()> {
     state.validate_api().await?;
     let request_id = HeaderName::from_static("x-request-id");
     let origin: HeaderValue = config.base_url().origin().ascii_serialization().parse()?;
+    let web_root = config.web_root();
+    let assets = ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        ))
+        .service(ServeDir::new(web_root.join("assets")));
+    let spa = ServeDir::new(web_root)
+        .append_index_html_on_directories(true)
+        .fallback(ServeFile::new(web_root.join("index.html")));
 
     let app = Router::new()
         .route("/api/health", get(resources::health))
@@ -145,6 +158,10 @@ async fn main() -> Result<()> {
         )
         .route("/api/v1/backups/database", get(resources::database_backup))
         .route("/api/backups/database", get(resources::database_backup))
+        .route("/api/{*path}", any(not_found))
+        .route("/auth/{*path}", any(not_found))
+        .nest_service("/assets", assets)
+        .fallback_service(spa)
         .with_state(state)
         .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
@@ -158,6 +175,35 @@ async fn main() -> Result<()> {
             Duration::from_secs(30),
         ))
         .layer(CompressionLayer::new())
+        .layer(
+            ServiceBuilder::new()
+                .layer(SetResponseHeaderLayer::overriding(
+                    HeaderName::from_static("content-security-policy"),
+                    HeaderValue::from_static(
+                        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com https://github.com; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://github.com",
+                    ),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    HeaderName::from_static("cross-origin-opener-policy"),
+                    HeaderValue::from_static("same-origin"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    HeaderName::from_static("permissions-policy"),
+                    HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::REFERRER_POLICY,
+                    HeaderValue::from_static("strict-origin-when-cross-origin"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::X_CONTENT_TYPE_OPTIONS,
+                    HeaderValue::from_static("nosniff"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    HeaderName::from_static("x-frame-options"),
+                    HeaderValue::from_static("DENY"),
+                )),
+        )
         .layer(CatchPanicLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(
@@ -175,4 +221,8 @@ async fn main() -> Result<()> {
     tracing::info!(address = %config.api_bind(), "GridOps Rust API listening");
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
+}
+
+async fn not_found(_: Request<axum::body::Body>) -> StatusCode {
+    StatusCode::NOT_FOUND
 }

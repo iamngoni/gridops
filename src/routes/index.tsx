@@ -48,7 +48,7 @@ function OverviewPage() {
   const configurationComplete =
     data.configuration.githubOAuth &&
     data.configuration.githubAppControl &&
-    data.configuration.webhookVerification &&
+    (!data.configuration.webhookActive || data.configuration.webhookVerification) &&
     data.configuration.secureStorage &&
     data.configuration.runnerManager;
 
@@ -119,7 +119,7 @@ function ConfigurationBanner({ data }: { data: DashboardOverview }) {
   const missing = [
     !data.configuration.githubOAuth && "OAuth credentials",
     !data.configuration.githubAppControl && "App ID and private key",
-    !data.configuration.webhookVerification && "webhook secret",
+    data.configuration.webhookActive && !data.configuration.webhookVerification && "webhook secret",
     !data.configuration.secureStorage && "secure storage keys",
     !data.configuration.runnerManager && "runner manager token",
   ].filter(Boolean) as string[];
@@ -131,7 +131,7 @@ function ConfigurationBanner({ data }: { data: DashboardOverview }) {
           <TriangleAlert className="size-5" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">Finish GitHub App configuration</p>
+          <p className="text-sm font-medium">Complete the runner integration</p>
           <p className="mt-1 text-xs text-muted-foreground">
             Still required: {missing.join(", ")}. GridOps keeps operational controls disabled until secure credentials are complete.
           </p>

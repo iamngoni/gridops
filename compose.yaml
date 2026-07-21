@@ -1,30 +1,6 @@
 name: gridops
 
 services:
-  web:
-    build:
-      context: .
-      target: web
-    restart: unless-stopped
-    ports:
-      - "${GRIDOPS_BIND_ADDRESS:-127.0.0.1}:${GRIDOPS_PORT:-3000}:3000"
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /var/cache/nginx
-      - /var/run
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
-    depends_on:
-      api:
-        condition: service_healthy
-    networks:
-      - control-plane
-
   api:
     build:
       context: .
@@ -38,6 +14,9 @@ services:
       GRIDOPS_LOG_DIRECTORY: /app/data/logs
       GRIDOPS_MANAGER_URL: http://manager:8788
       GRIDOPS_API_BIND: 0.0.0.0:8080
+      GRIDOPS_WEB_ROOT: /app/web
+    ports:
+      - "${GRIDOPS_BIND_ADDRESS:-127.0.0.1}:${GRIDOPS_PORT:-3000}:8080"
     volumes:
       - gridops-data:/app/data
     read_only: true

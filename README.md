@@ -24,7 +24,7 @@ GridOps is a self-hosted control plane for GitHub Actions runners. Connect a Git
 - Rust/SQLx with SQLite migrations
 - Rust/Bollard runner manager as the only service with Docker socket access
 - Rust background reconciler
-- Nginx serves the client and proxies same-origin API and OAuth traffic
+- Axum serves the compiled client, same-origin API, and OAuth traffic; Traefik handles private ingress and TLS
 
 TypeScript is confined to the browser application. All authentication, GitHub credentials, persistence, webhooks, runner orchestration, Docker access, and reconciliation live in Rust.
 
@@ -36,7 +36,7 @@ Create a GitHub App with these repository permissions:
 - Administration: read and write
 - Metadata: read-only
 
-For organization-scoped pools, grant organization self-hosted runners read and write access. Subscribe to `installation`, `installation_repositories`, `workflow_job`, `workflow_run`, and `github_app_authorization` events. Enable expiring user access tokens.
+For organization-scoped pools, grant organization self-hosted runners read and write access. Subscribe to `workflow_job` and `workflow_run`; GitHub Apps receive `installation`, `installation_repositories`, and `github_app_authorization` automatically, so those events must not be included in a manifest's `default_events`. Enable expiring user access tokens.
 
 Grant organization members read access as well. GridOps uses that permission to distinguish organization owners, who may manage runner infrastructure, from members with read-only visibility.
 
@@ -59,7 +59,7 @@ docker compose up --build -d
 
 Open `http://localhost:3000`. For a different public origin, set `GRIDOPS_BASE_URL` and configure the same URL in the GitHub App.
 
-The published web port binds to `127.0.0.1` by default. Set `GRIDOPS_BIND_ADDRESS` explicitly only when direct host exposure is intended; reverse-proxy deployments should attach `web` to an ingress network instead.
+The published API/UI port binds to `127.0.0.1` by default. Set `GRIDOPS_BIND_ADDRESS` explicitly only when direct host exposure is intended; reverse-proxy deployments should attach `api` to an ingress network instead.
 
 For local credentials already stored in `.env.local`:
 
@@ -69,7 +69,7 @@ GRIDOPS_ENV_FILE=.env.local docker compose --env-file .env.local up --build
 
 ### `ops.antonlabs.cc`
 
-The private Anton Labs deployment uses `compose.ops.yaml` to attach the web container to the existing `media-server_default` ingress network. Its `.env.local` sets `GRIDOPS_BASE_URL=https://ops.antonlabs.cc`, `GRIDOPS_GITHUB_WEBHOOK_ACTIVE=false`, `GRIDOPS_BIND_ADDRESS=127.0.0.1`, and `GRIDOPS_PORT=3002`.
+The private Anton Labs deployment uses `compose.ops.yaml` to attach the Rust API/UI container to the existing `media-server_default` ingress network. Its `.env.local` sets `GRIDOPS_BASE_URL=https://ops.antonlabs.cc`, `GRIDOPS_GITHUB_WEBHOOK_ACTIVE=false`, `GRIDOPS_BIND_ADDRESS=127.0.0.1`, and `GRIDOPS_PORT=3002`.
 
 ```sh
 GRIDOPS_ENV_FILE=.env.local \

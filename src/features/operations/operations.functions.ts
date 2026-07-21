@@ -59,7 +59,7 @@ export type SettingsPage = {
   authenticated: boolean;
   data: null | {
     configuration: {
-      githubOAuth: boolean; githubAppControl: boolean; webhookVerification: boolean;
+      githubOAuth: boolean; githubAppControl: boolean; webhookActive: boolean; webhookVerification: boolean;
       secureStorage: boolean; runnerManager: boolean; installationTokens: boolean;
       callbackUrl: string; webhookUrl: string;
     };

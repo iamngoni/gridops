@@ -25,6 +25,7 @@ struct Inner {
     runner_network: String,
     runner_image: String,
     api_bind: String,
+    web_root: PathBuf,
     manager_bind: String,
 }
 
@@ -59,6 +60,9 @@ impl Config {
             runner_image: env::var("GRIDOPS_RUNNER_IMAGE")
                 .unwrap_or_else(|_| "ghcr.io/actions/actions-runner:latest".into()),
             api_bind: env::var("GRIDOPS_API_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into()),
+            web_root: env::var("GRIDOPS_WEB_ROOT")
+                .unwrap_or_else(|_| "./dist".into())
+                .into(),
             manager_bind: env::var("GRIDOPS_MANAGER_BIND")
                 .unwrap_or_else(|_| "127.0.0.1:8788".into()),
         })))
@@ -101,6 +105,15 @@ impl Config {
     pub fn github_webhook_active(&self) -> Option<bool> {
         self.0.github_webhook_active
     }
+    pub fn webhook_delivery_active(&self) -> bool {
+        self.0.github_webhook_active.unwrap_or_else(|| {
+            self.0.base_url.scheme() == "https"
+                && !matches!(
+                    self.0.base_url.host_str(),
+                    Some("localhost" | "127.0.0.1" | "::1")
+                )
+        })
+    }
     pub fn session_secret(&self) -> Option<&SecretString> {
         self.0.session_secret.as_ref()
     }
@@ -121,6 +134,9 @@ impl Config {
     }
     pub fn api_bind(&self) -> &str {
         &self.0.api_bind
+    }
+    pub fn web_root(&self) -> &PathBuf {
+        &self.0.web_root
     }
     pub fn manager_bind(&self) -> &str {
         &self.0.manager_bind

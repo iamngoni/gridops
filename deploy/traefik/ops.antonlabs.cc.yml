@@ -11,4 +11,4 @@ http:
     gridops:
       loadBalancer:
         servers:
-          - url: "http://gridops-web:3000"
+          - url: "http://gridops-api:8080"

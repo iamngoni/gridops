@@ -284,9 +284,6 @@ fn build_manifest(
                 "organization_self_hosted_runners": "write"
             },
             "default_events": [
-                "github_app_authorization",
-                "installation",
-                "installation_repositories",
                 "workflow_job",
                 "workflow_run"
             ]
@@ -337,6 +334,10 @@ mod tests {
             "http://localhost:3100/auth/github-app/manifest/callback"
         );
         assert_eq!(manifest["request_oauth_on_install"], false);
+        assert_eq!(
+            manifest["default_events"],
+            json!(["workflow_job", "workflow_run"])
+        );
         assert_eq!(
             manifest["setup_url"],
             "http://localhost:3100/auth/github?returnTo=%2Frunner-pools%2Fnew%3FinstallationUpdated%3D1"

@@ -3,6 +3,7 @@ export type DashboardOverview = {
   configuration: {
     githubOAuth: boolean;
     githubAppControl: boolean;
+    webhookActive: boolean;
     webhookVerification: boolean;
     secureStorage: boolean;
     runnerManager: boolean;

@@ -26,11 +26,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     && cp /app/target/release/gridops-manager /app/bin/gridops-manager \
     && cp /app/target/release/gridops-reconciler /app/bin/gridops-reconciler
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS web
-COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=ui-build /app/dist /usr/share/nginx/html
-EXPOSE 3000
-
 FROM debian:bookworm-slim AS rust-runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
@@ -42,6 +37,7 @@ WORKDIR /app
 
 FROM rust-runtime AS api
 COPY --from=rust-build /app/bin/gridops-api /usr/local/bin/gridops-api
+COPY --from=ui-build /app/dist /app/web
 USER gridops
 EXPOSE 8080
 CMD ["gridops-api"]

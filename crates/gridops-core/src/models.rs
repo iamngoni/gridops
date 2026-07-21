@@ -28,6 +28,7 @@ pub struct ConfigurationState {
     #[serde(rename = "githubOAuth")]
     pub github_oauth: bool,
     pub github_app_control: bool,
+    pub webhook_active: bool,
     pub webhook_verification: bool,
     pub secure_storage: bool,
     pub runner_manager: bool,

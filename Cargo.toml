@@ -37,7 +37,7 @@ subtle = "2.6.1"
 thiserror = "2.0.18"
 tokio = { version = "1.53.1", features = ["full"] }
 tower = "0.5.3"
-tower-http = { version = "0.7.0", features = ["catch-panic", "compression-gzip", "cors", "request-id", "sensitive-headers", "set-header", "timeout", "trace"] }
+tower-http = { version = "0.7.0", features = ["catch-panic", "compression-gzip", "cors", "fs", "request-id", "sensitive-headers", "set-header", "timeout", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url = "2.5.8"
