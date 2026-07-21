@@ -234,16 +234,16 @@ function CapacityPanel({ data }: { data: DashboardOverview }) {
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex-col sm:flex-row">
         <div>
           <CardTitle>Runner capacity</CardTitle>
-          <div className="mt-3 flex items-center gap-4 text-[11px] text-muted-foreground">
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-muted-foreground">
             <Legend color="bg-emerald-400" label="Available" value={current?.available} />
             <Legend color="bg-blue-400" label="Busy" value={current?.busy} />
             <Legend color="bg-amber-400" label="Queued" value={current?.queued} />
           </div>
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-1 self-start sm:self-auto">
           {(["24h", "7d", "30d"] as const).map((period) => (
             <Button aria-pressed={capacityWindow === period} key={period} onClick={() => { setLoading(true); setCapacityWindow(period); }} size="sm" variant={capacityWindow === period ? "secondary" : "ghost"}>{period}</Button>
           ))}
