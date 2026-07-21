@@ -371,6 +371,18 @@ pub struct GitHubWorkflowJob {
     pub html_url: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<GitHubWorkflowStep>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubWorkflowStep {
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub number: i64,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

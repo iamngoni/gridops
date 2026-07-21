@@ -147,6 +147,10 @@ async fn main() -> Result<()> {
             post(resources::workflow_run_action),
         )
         .route(
+            "/api/v1/workflow-jobs/{job_id}/logs",
+            get(resources::workflow_job_log_view),
+        )
+        .route(
             "/api/workflow-runs/{run_id}/logs",
             get(resources::workflow_run_logs),
         )

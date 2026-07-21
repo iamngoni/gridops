@@ -654,7 +654,12 @@ fi"#;
 fn instrumented_runner_script(setup: &str, launch: &str) -> String {
     format!(
         r#"{setup}
-{launch} &
+# The runner listener writes verbose transport diagnostics to stdout/stderr even
+# when its explicit diagnostic-output flag is absent. Keep those diagnostics inside the
+# container; GridOps' user-facing stream is populated exclusively from the
+# secret-masked job console pages below.
+runner_diagnostics=/tmp/gridops-runner-diagnostics.log
+{launch} >"$runner_diagnostics" 2>&1 &
 runner_pid=$!
 trap 'kill -TERM "$runner_pid" 2>/dev/null || true' TERM INT
 
@@ -849,6 +854,7 @@ mod tests {
         assert!(metadata.contains("read -r GRIDOPS_BOOTSTRAP_SECRET"));
         assert!(metadata.contains("_diag/pages/*.log"));
         assert!(metadata.contains("GRIDOPS JOB LOG"));
+        assert!(metadata.contains("gridops-runner-diagnostics.log"));
         assert!(!metadata.contains("ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT"));
         Ok(())
     }
@@ -867,6 +873,7 @@ mod tests {
         assert!(metadata.contains("if [ ! -f .runner ]"));
         assert!(metadata.contains("_diag/pages/*.log"));
         assert!(metadata.contains("GRIDOPS JOB LOG"));
+        assert!(metadata.contains("gridops-runner-diagnostics.log"));
         assert!(!metadata.contains("ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT"));
         Ok(())
     }
