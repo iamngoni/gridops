@@ -1,5 +1,5 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Activity, Pause, Play, RefreshCw, RotateCcw, Square, Terminal, Trash2 } from "lucide-react";
+import { Activity, Boxes, Pause, Play, RefreshCw, RotateCcw, Square, Terminal, Trash2 } from "lucide-react";
 
 import { AsyncActionButton } from "~/components/async-action-button";
 import { ListPagination } from "~/components/list-pagination";
@@ -44,6 +44,7 @@ function RunnersPage() {
       emptyDescription="Runners appear here when a pool provisions its first container."
       action="Manage runner pools"
       actionHref="/runner-pools"
+      actionIcon={Boxes}
     >
       {data.items.length > 0 ? (
         <Card><CardContent className="px-0 py-0">

@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowDown, LoaderCircle, Pause, Play, Radio, RefreshCw, Terminal } from "lucide-react";
+import { Activity, ArrowDown, LoaderCircle, Pause, Play, Radio, RefreshCw, Terminal } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { ListPagination } from "~/components/list-pagination";
@@ -199,11 +199,12 @@ function LiveLogsPage() {
       emptyDescription="A stream becomes available as soon as a managed runner container is created."
       action="Manage runners"
       actionHref="/runners"
+      actionIcon={Activity}
     >
       {targets.length > 0 ? (
-        <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
+        <div className="grid items-start gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
           <Card><CardHeader><div><CardTitle>Runner streams</CardTitle><p className="mt-1 text-xs text-muted-foreground">Choose a live runner or retained archive.</p></div></CardHeader><CardContent className="p-0">
-            <div className="space-y-2 p-3">
+            <div className="max-h-[28rem] space-y-2 overflow-y-auto p-3 lg:max-h-[36rem]">
               {targets.map((runner) => (
                 <button aria-pressed={runner.id === selectedId} className={`w-full rounded-lg p-3 text-left transition-colors ${runner.id === selectedId ? "bg-primary/[0.09] shadow-[inset_3px_0_0_hsl(153_64%_52%)]" : "hover:bg-muted/50"}`} key={runner.id} onClick={() => selectTarget(runner.id)} type="button">
                   <div className="flex items-center justify-between gap-2"><span className="truncate font-mono text-xs font-medium">{runner.name}</span><div className="flex items-center gap-1.5"><span className="text-[10px] uppercase tracking-wide text-muted-foreground">{runner.kind}</span><StatusBadge status={runner.busy ? "busy" : String(runner.status)} /></div></div>
@@ -224,7 +225,7 @@ function LiveLogsPage() {
             </CardHeader>
             <CardContent className="relative p-0">
               {error ? <div className="border-t border-red-500/20 bg-red-500/5 px-4 py-3 text-xs text-red-300">{error}</div> : null}
-              <pre aria-live="polite" className="min-h-[560px] max-h-[70vh] overflow-auto border-t border-border/60 bg-[hsl(162_28%_4%)] p-5 font-mono text-[12px] leading-5 text-emerald-100/85 shadow-[inset_0_12px_28px_hsl(160_80%_2%/0.28)]" onScroll={handleLogScroll} ref={logViewport}><code>{logs || (loading ? "Loading runner output…" : "No output yet.")}</code></pre>
+              <pre aria-live="polite" className="h-[60vh] min-h-[360px] max-h-[640px] overflow-auto border-t border-border/60 bg-[hsl(162_28%_4%)] p-5 font-mono text-[12px] leading-5 text-emerald-100/85 shadow-[inset_0_12px_28px_hsl(160_80%_2%/0.28)]" onScroll={handleLogScroll} ref={logViewport}><code>{logs || (loading ? "Loading runner output…" : "No output yet.")}</code></pre>
               {selected?.kind === "live" && streaming && !following ? (
                 <Button className="absolute bottom-4 right-4 shadow-lg" onClick={jumpToLatest} size="sm" variant="secondary">
                   <ArrowDown />Jump to latest

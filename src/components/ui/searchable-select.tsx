@@ -69,6 +69,7 @@ export function SearchableSelect<TValue extends SearchableSelectValue>({
   const [activeIndex, setActiveIndex] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const listboxRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listboxId = useId();
   const selectedOption = options.find((option) => option.value === value);
@@ -88,7 +89,10 @@ export function SearchableSelect<TValue extends SearchableSelectValue>({
 
   useEffect(() => {
     if (!open) return;
-    if (searchable) window.requestAnimationFrame(() => searchInputRef.current?.focus());
+    window.requestAnimationFrame(() => {
+      if (searchable) searchInputRef.current?.focus();
+      else listboxRef.current?.focus();
+    });
   }, [open, searchable]);
 
   function openSelect() {
@@ -152,7 +156,10 @@ export function SearchableSelect<TValue extends SearchableSelectValue>({
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
-            openSelect();
+            if (!open) openSelect();
+          } else if (event.key === "Escape" && open) {
+            event.preventDefault();
+            close({ restoreFocus: true });
           }
         }}
         ref={triggerRef}
@@ -182,6 +189,9 @@ export function SearchableSelect<TValue extends SearchableSelectValue>({
               <div className="relative">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <input
+                  aria-activedescendant={filteredOptions[activeIndex] ? `${listboxId}-option-${activeIndex}` : undefined}
+                  aria-controls={listboxId}
+                  aria-expanded={open}
                   aria-label={`Search ${ariaLabel}`}
                   className="h-9 w-full rounded-md border border-input bg-background pl-8 pr-3 text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/30"
                   onChange={(event) => {
@@ -191,6 +201,7 @@ export function SearchableSelect<TValue extends SearchableSelectValue>({
                   onKeyDown={handleListKeyDown}
                   placeholder={searchPlaceholder}
                   ref={searchInputRef}
+                  role="combobox"
                   value={query}
                 />
               </div>
@@ -199,9 +210,11 @@ export function SearchableSelect<TValue extends SearchableSelectValue>({
 
           <div
             aria-label={ariaLabel}
+            aria-activedescendant={filteredOptions[activeIndex] ? `${listboxId}-option-${activeIndex}` : undefined}
             className="max-h-64 overflow-y-auto p-1"
             id={listboxId}
             onKeyDown={searchable ? undefined : handleListKeyDown}
+            ref={listboxRef}
             role="listbox"
             tabIndex={searchable ? -1 : 0}
           >
@@ -218,10 +231,12 @@ export function SearchableSelect<TValue extends SearchableSelectValue>({
                     active && "bg-accent",
                     selected && "text-primary",
                   )}
+                  id={`${listboxId}-option-${index}`}
                   key={option.value}
                   onClick={() => select(option.value)}
                   onMouseEnter={() => setActiveIndex(index)}
                   role="option"
+                  tabIndex={-1}
                   type="button"
                 >
                   <span className="min-w-0 flex-1">

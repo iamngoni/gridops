@@ -102,5 +102,21 @@ export const createRunnerPoolSchema = z
     validateCapacity(value, context);
   });
 
+export function parseCreateRunnerPoolInput(input: unknown) {
+  const result = createRunnerPoolSchema.safeParse(input);
+  if (!result.success) {
+    throw new Error(result.error.issues[0]?.message ?? "Runner pool configuration is invalid.");
+  }
+  return result.data;
+}
+
+export function parseUpdateRunnerPoolInput(input: unknown) {
+  const result = updateRunnerPoolSchema.safeParse(input);
+  if (!result.success) {
+    throw new Error(result.error.issues[0]?.message ?? "Runner pool configuration is invalid.");
+  }
+  return result.data;
+}
+
 export type CreateRunnerPoolInput = z.infer<typeof createRunnerPoolSchema>;
 export type UpdateRunnerPoolInput = z.infer<typeof updateRunnerPoolSchema>;

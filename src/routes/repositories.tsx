@@ -77,7 +77,7 @@ function RepositoriesPage() {
         <Card>
           <CardHeader className="flex-col md:flex-row md:items-center">
             <div>
-              <CardTitle>Connected repositories</CardTitle>
+              <CardTitle>Available repositories</CardTitle>
               <p className="mt-1 text-xs text-muted-foreground">
                 {search.q
                   ? `${data.total} repositories match “${search.q}”`
@@ -142,7 +142,7 @@ function RepositoryLoadingCard({ initialQuery, onSearch }: { initialQuery: strin
     <Card aria-busy="true" aria-live="polite">
       <CardHeader className="flex-col md:flex-row md:items-center">
         <div>
-          <CardTitle>Connected repositories</CardTitle>
+          <CardTitle>Available repositories</CardTitle>
           <p className="mt-1 text-xs text-muted-foreground">Loading repositories from GitHub…</p>
         </div>
         <div className="inline-flex items-center gap-2 text-xs text-muted-foreground" role="status">

@@ -55,10 +55,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const viewer = getRouteApi("__root__").useLoaderData();
   const search = searchAction;
+  const searchRoot = useRef<HTMLLabelElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<Array<{ kind: string; id: string; title: string; subtitle: string; href: string }>>([]);
+  const normalizedQuery = query.trim();
+  const [searchResult, setSearchResult] = useState<{
+    query: string;
+    items: Array<{ kind: string; id: string; title: string; subtitle: string; href: string }>;
+  }>({ query: "", items: [] });
   const [searchOpen, setSearchOpen] = useState(false);
+  const results = searchResult.query === normalizedQuery ? searchResult.items : [];
+  const searchPending = Boolean(viewer && normalizedQuery.length >= 2 && searchResult.query !== normalizedQuery);
 
   useEffect(() => {
     function shortcut(event: KeyboardEvent) {
@@ -72,17 +79,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (!viewer || query.trim().length < 2) {
+    if (!viewer || normalizedQuery.length < 2) {
       return;
     }
+    let cancelled = false;
     const timeout = window.setTimeout(() => {
-      void search({ data: { query } }).then((items) => {
-        setResults(items);
-        setSearchOpen(true);
-      }).catch(() => setResults([]));
+      void search({ data: { query: normalizedQuery } }).then((items) => {
+        if (!cancelled) {
+          setSearchResult({ query: normalizedQuery, items });
+          setSearchOpen(true);
+        }
+      }).catch(() => {
+        if (!cancelled) setSearchResult({ query: normalizedQuery, items: [] });
+      });
     }, 180);
-    return () => window.clearTimeout(timeout);
-  }, [query, search, viewer]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [normalizedQuery, search, viewer]);
+
+  useEffect(() => {
+    function closeSearch(event: PointerEvent) {
+      if (!searchRoot.current?.contains(event.target as Node)) setSearchOpen(false);
+    }
+    document.addEventListener("pointerdown", closeSearch);
+    return () => document.removeEventListener("pointerdown", closeSearch);
+  }, []);
 
   const alertCount = viewer
     ? viewer.alerts.failedRunners + viewer.alerts.failedWebhooks + viewer.alerts.queuedJobs + viewer.alerts.deferredRunnerCleanup
@@ -178,15 +201,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
-            <label className="relative hidden w-72 xl:block">
+            <label className="relative hidden w-72 xl:block" ref={searchRoot}>
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input autoComplete="off" className="pl-9 pr-14" onChange={(event) => setQuery(event.target.value)} onFocus={() => setSearchOpen(true)} placeholder="Search runners, runs, repositories…" ref={searchInput} value={query} />
+              <Input autoComplete="off" className="pl-9 pr-14" onChange={(event) => setQuery(event.target.value)} onFocus={() => setSearchOpen(true)} onKeyDown={(event) => { if (event.key === "Escape") setSearchOpen(false); }} placeholder="Search GridOps…" ref={searchInput} value={query} />
               <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                 ⌘ K
               </kbd>
-              {searchOpen && query.trim().length >= 2 ? (
+              {searchOpen && normalizedQuery.length >= 2 ? (
                 <div className="absolute right-0 top-11 z-50 w-[420px] overflow-hidden rounded-xl border border-border/80 bg-popover p-1.5 shadow-2xl">
-                  {results.length ? results.map((result) => (
+                  {searchPending ? <div className="px-3 py-6 text-center text-xs text-muted-foreground">Searching GridOps…</div> : results.length ? results.map((result) => (
                     <Link className="flex items-center gap-3 rounded-sm px-3 py-2 hover:bg-accent" key={`${result.kind}-${result.id}`} onClick={() => setSearchOpen(false)} to={result.href}>
                       <Search className="size-3.5 text-muted-foreground" />
                       <span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium">{result.title}</span><span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{result.subtitle}</span></span>

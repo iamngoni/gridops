@@ -1,8 +1,8 @@
 import {
-  createRunnerPoolSchema,
   type CreateRunnerPoolInput,
-  updateRunnerPoolSchema,
   type UpdateRunnerPoolInput,
+  parseCreateRunnerPoolInput,
+  parseUpdateRunnerPoolInput,
 } from "./schemas";
 import { api } from "~/lib/api";
 
@@ -78,13 +78,13 @@ export const getInstallationRepositories = (installationId: number, signal?: Abo
   api<{ items: RepositoryOption[] }>(`/api/v1/installations/${installationId}/repositories`, { signal });
 
 export function createRunnerPoolAction({ data }: { data: CreateRunnerPoolInput }) {
-  const input = createRunnerPoolSchema.parse(data);
+  const input = parseCreateRunnerPoolInput(data);
   return api<{ id: string }>("/api/v1/runner-pools", { method: "POST", body: input });
 }
 
 export function updateRunnerPoolAction({ data }: { data: UpdateRunnerPoolInput & { poolId: string } }) {
   const { poolId, ...values } = data;
-  const input = updateRunnerPoolSchema.parse(values);
+  const input = parseUpdateRunnerPoolInput(values);
   return api<{ ok: true; configurationVersion: number; rollingReplacement: boolean }>(
     `/api/v1/runner-pools/${poolId}`,
     { method: "PUT", body: input },

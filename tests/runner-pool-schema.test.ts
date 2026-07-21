@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { createRunnerPoolSchema, updateRunnerPoolSchema } from "~/features/runner-pools/schemas";
+import {
+  createRunnerPoolSchema,
+  parseCreateRunnerPoolInput,
+  updateRunnerPoolSchema,
+} from "~/features/runner-pools/schemas";
 
 const validPool = {
   installationId: 123,
@@ -29,6 +33,11 @@ describe("runner pool validation", () => {
   it("requires a repository for repository scope", () => {
     const result = createRunnerPoolSchema.safeParse({ ...validPool, repositoryIds: [] });
     expect(result.success).toBe(false);
+  });
+
+  it("turns validation failures into concise user-facing errors", () => {
+    expect(() => parseCreateRunnerPoolInput({ ...validPool, repositoryIds: [] }))
+      .toThrow("Choose at least one repository for a repository-scoped pool.");
   });
 
   it("rejects a repository on organization scope", () => {

@@ -13,7 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{SecondsFormat, Utc};
-use futures_util::{StreamExt as _, TryStreamExt as _};
+use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use gridops_core::{
     ConfigurationState, CreateRunnerPool, GitHubRepository, JitRequest, RepositoryCapacity,
     RepositoryPage, RunnerTarget, UpdateRunnerPool, effective_runner_labels,
@@ -519,23 +519,35 @@ async fn available_repositories_for_installation(
     installation: &InstallationAccess,
 ) -> ApiResult<Vec<GitHubRepository>> {
     let token = control_token(state, &user.id, installation.id).await?;
-    let mut repositories = Vec::new();
-    let mut expected_total = 0_i64;
-    for page in 1..=100 {
-        let response: RepositoryPage = state
-            .github
-            .get(
-                &format!("/installation/repositories?per_page=100&page={page}"),
-                &token,
-            )
-            .await
-            .map_err(ApiError::Internal)?;
-        expected_total = response.total_count;
-        let page_count = response.repositories.len();
-        repositories.extend(response.repositories);
-        let loaded = i64::try_from(repositories.len()).unwrap_or(i64::MAX);
-        if page_count == 0 || loaded >= expected_total {
-            break;
+    let first_page: RepositoryPage = state
+        .github
+        .get("/installation/repositories?per_page=100&page=1", &token)
+        .await
+        .map_err(ApiError::Internal)?;
+    let expected_total = first_page.total_count;
+    let mut repositories = first_page.repositories;
+    let last_page = expected_total
+        .saturating_add(99)
+        .div_euclid(100)
+        .clamp(1, 100);
+    if last_page > 1 {
+        let github = &state.github;
+        let token = &token;
+        let remaining = stream::iter(2..=last_page)
+            .map(|page| async move {
+                github
+                    .get::<RepositoryPage>(
+                        &format!("/installation/repositories?per_page=100&page={page}"),
+                        token,
+                    )
+                    .await
+                    .map_err(ApiError::Internal)
+            })
+            .buffered(4)
+            .try_collect::<Vec<_>>()
+            .await?;
+        for page in remaining {
+            repositories.extend(page.repositories);
         }
     }
     let loaded = i64::try_from(repositories.len()).unwrap_or(i64::MAX);
@@ -2602,12 +2614,22 @@ async fn configuration(state: &AppState) -> ApiResult<ConfigurationState> {
             .base_url()
             .join("/auth/github/callback")
             .map_or_else(|_| "/auth/github/callback".into(), |url| url.to_string()),
-        webhook_url: state
-            .config
-            .base_url()
-            .join("/api/webhooks/github")
-            .map_or_else(|_| "/api/webhooks/github".into(), |url| url.to_string()),
+        webhook_url: effective_webhook_url(
+            state.config.base_url(),
+            state.config.github_webhook_url(),
+        ),
     })
+}
+
+fn effective_webhook_url(base_url: &url::Url, override_url: Option<&url::Url>) -> String {
+    override_url.cloned().map_or_else(
+        || {
+            base_url
+                .join("/api/webhooks/github")
+                .map_or_else(|_| "/api/webhooks/github".into(), |url| url.to_string())
+        },
+        |url| url.to_string(),
+    )
 }
 
 fn workflow_run_json(row: &sqlx::sqlite::SqliteRow, system_admin: bool) -> Value {
@@ -2853,5 +2875,21 @@ mod tests {
         assert_eq!(pagination(Some(-1), Some(500)), (1, 100));
         assert_eq!(bounded_pagination(9, 42, 10), (5, 40));
         assert_eq!(bounded_pagination(3, 0, 25), (1, 0));
+    }
+
+    #[test]
+    fn settings_report_the_effective_webhook_url() -> anyhow::Result<()> {
+        let base_url = url::Url::parse("https://private.example.com")?;
+        let public_webhook = url::Url::parse("https://hooks.example.com/api/webhooks/github")?;
+
+        assert_eq!(
+            effective_webhook_url(&base_url, None),
+            "https://private.example.com/api/webhooks/github"
+        );
+        assert_eq!(
+            effective_webhook_url(&base_url, Some(&public_webhook)),
+            "https://hooks.example.com/api/webhooks/github"
+        );
+        Ok(())
     }
 }

@@ -35,6 +35,7 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
 }: SearchableMultiSelectProps<TValue>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -72,6 +73,16 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
     onValueChange([...values, value]);
   }
 
+  function moveActive(direction: 1 | -1) {
+    if (filteredOptions.length === 0) return;
+    setActiveIndex((current) => (current + direction + filteredOptions.length) % filteredOptions.length);
+  }
+
+  function toggleActive() {
+    const option = filteredOptions[activeIndex];
+    if (option) toggle(option.value);
+  }
+
   const summary = selectedOptions.length === 0
     ? placeholder
     : selectedOptions.length === 1
@@ -92,7 +103,11 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
           (disabled || loading) && "cursor-not-allowed opacity-50",
         )}
         disabled={disabled || loading}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => setOpen((current) => {
+          const next = !current;
+          if (next) setActiveIndex(0);
+          return next;
+        })}
         ref={triggerRef}
         type="button"
       >
@@ -126,14 +141,39 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <input
+                aria-activedescendant={filteredOptions[activeIndex] ? `${listboxId}-option-${activeIndex}` : undefined}
+                aria-controls={listboxId}
+                aria-expanded={open}
                 aria-label={`Search ${ariaLabel}`}
                 className="h-9 w-full rounded-md border border-input bg-background pl-8 pr-3 text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/30"
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setActiveIndex(0);
+                }}
                 onKeyDown={(event) => {
-                  if (event.key === "Escape") close({ restoreFocus: true });
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    moveActive(1);
+                  } else if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    moveActive(-1);
+                  } else if (event.key === "Home") {
+                    event.preventDefault();
+                    setActiveIndex(0);
+                  } else if (event.key === "End") {
+                    event.preventDefault();
+                    setActiveIndex(Math.max(0, filteredOptions.length - 1));
+                  } else if (event.key === "Enter") {
+                    event.preventDefault();
+                    toggleActive();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    close({ restoreFocus: true });
+                  }
                 }}
                 placeholder={searchPlaceholder}
                 ref={searchInputRef}
+                role="combobox"
                 value={query}
               />
             </div>
@@ -146,7 +186,7 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
           <div aria-label={ariaLabel} className="max-h-72 overflow-y-auto p-1" id={listboxId} role="listbox" aria-multiselectable="true">
             {filteredOptions.length === 0 ? (
               <div className="px-3 py-6 text-center text-xs text-muted-foreground">{emptyMessage}</div>
-            ) : filteredOptions.map((option) => {
+            ) : filteredOptions.map((option, index) => {
               const selected = values.includes(option.value);
               const atLimit = !selected && maxSelected !== undefined && values.length >= maxSelected;
               return (
@@ -154,13 +194,17 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
                   aria-selected={selected}
                   className={cn(
                     "flex w-full items-center gap-3 rounded-sm px-3 py-2 text-left transition-colors hover:bg-accent",
+                    index === activeIndex && "bg-accent",
                     selected && "text-primary",
                     atLimit && "cursor-not-allowed opacity-40",
                   )}
                   disabled={atLimit}
+                  id={`${listboxId}-option-${index}`}
                   key={option.value}
                   onClick={() => toggle(option.value)}
+                  onMouseEnter={() => setActiveIndex(index)}
                   role="option"
+                  tabIndex={-1}
                   type="button"
                 >
                   <span className={cn(

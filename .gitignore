@@ -42,4 +42,5 @@ yarn-error.log*
 /src/routeTree.gen.ts
 /.wrangler/
 /outputs/
+/output/
 /work/

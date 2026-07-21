@@ -109,7 +109,7 @@ function OverviewPage() {
             icon={CheckCircle2}
             label="Success rate"
             value={data.metrics.successRate === null ? "—" : `${data.metrics.successRate}%`}
-            footer="Completed runs"
+            footer="Across all completed runs"
             tone="green"
             to="/workflow-runs"
           />

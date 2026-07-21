@@ -14,6 +14,7 @@ export function ResourcePage({
   emptyDescription,
   action,
   actionHref,
+  actionIcon: ActionIcon = Plus,
   children,
 }: {
   title: string;
@@ -23,6 +24,7 @@ export function ResourcePage({
   emptyDescription: string;
   action?: string;
   actionHref?: string;
+  actionIcon?: LucideIcon;
   children?: React.ReactNode;
 }) {
   return (
@@ -41,10 +43,10 @@ export function ResourcePage({
           </div>
           {action && actionHref && (
             <Link className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90" to={actionHref}>
-              <Plus />{action}
+              <ActionIcon />{action}
             </Link>
           )}
-          {action && !actionHref && <Button><Plus />{action}</Button>}
+          {action && !actionHref && <Button><ActionIcon />{action}</Button>}
         </div>
 
         {children ?? (
