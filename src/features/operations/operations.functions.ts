@@ -14,7 +14,7 @@ export type RunnerPool = {
   desiredCount: number; minCount: number; maxCount: number; cpuLimit: number; memoryLimitMb: number;
   paused: boolean; state: string; accountLogin: string; repository: string | null;
   totalRunners: number; onlineRunners: number; busyRunners: number; failedRunners: number;
-  outdatedRunners: number; createdAt: string;
+  outdatedRunners: number; createdAt: string; canManage: boolean;
 };
 
 export type Runner = {
@@ -22,14 +22,14 @@ export type Runner = {
   architecture: string; containerId: string | null; githubRunnerId: number | null;
   failureReason: string | null; registeredAt: string | null; lastHeartbeatAt: string | null;
   createdAt: string; poolId: string; poolName: string; poolPaused: boolean; accountLogin: string;
-  repository: string | null; currentJobName: string | null; currentRunId: number | null;
+  repository: string | null; currentJobName: string | null; currentRunId: number | null; canManage: boolean;
 };
 
 export type WorkflowRun = {
   id: number; workflowName: string; runNumber: number; runAttempt: number; event: string;
   status: string; conclusion: string | null; headBranch: string | null; headSha: string;
   actorLogin: string | null; htmlUrl: string; startedAt: string | null; completedAt: string | null;
-  createdAt: string; repository: string; jobCount: number; activeJobs: number; failedJobs: number;
+  createdAt: string; repository: string; jobCount: number; activeJobs: number; failedJobs: number; canManage: boolean;
 };
 
 export type WorkflowRunDetail = Omit<WorkflowRun, "jobCount" | "activeJobs" | "failedJobs"> & {
@@ -41,7 +41,7 @@ export type WorkflowRunDetail = Omit<WorkflowRun, "jobCount" | "activeJobs" | "f
 export type WebhookDelivery = {
   id: string; event: string; action: string | null; installationId: number | null;
   repositoryId: number | null; signatureValid: boolean; status: string; error: string | null;
-  receivedAt: string; processedAt: string | null; accountLogin: string | null; repository: string | null;
+  receivedAt: string; processedAt: string | null; accountLogin: string | null; repository: string | null; canRetry: boolean;
 };
 
 export type AuditEvent = {
@@ -66,7 +66,7 @@ export type SettingsPage = {
     manager: { ok: boolean; dockerVersion?: string; apiVersion?: string; error?: string };
     settings: { logRetentionDays: number; webhookRetentionDays: number; auditRetentionDays: number;
       reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean };
-    user: { login: string };
+    user: { login: string; role: "admin" | "member" };
   };
 };
 

@@ -66,7 +66,7 @@ function RunnersPage() {
                   <StatusBadge status={runner.busy ? "busy" : String(runner.status)} />
                   {runner.failureReason ? <div className="mt-1 max-w-52 truncate text-[11px] text-red-400" title={String(runner.failureReason)}>{String(runner.failureReason)}</div> : null}
                 </TableCell>
-                <TableCell><div className="flex justify-end gap-1">
+                <TableCell>{runner.canManage ? <div className="flex justify-end gap-1">
                   {runner.status === "paused" ? (
                     <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "resume" } })} icon={<Play />} size="icon" success="Runner resumed."><span className="sr-only">Resume {runner.name}</span></AsyncActionButton>
                   ) : runner.status === "stopped" && !runner.ephemeral ? (
@@ -78,7 +78,7 @@ function RunnersPage() {
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "restart" } })} confirm={runner.busy ? `${runner.name} is busy. Restart it and interrupt the current job?` : undefined} disabled={runner.ephemeral || !runner.containerId || runner.status === "stopped"} icon={<RotateCcw />} size="icon" success="Runner restarted."><span className="sr-only">Restart {runner.name}</span></AsyncActionButton>
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "rebuild" } })} confirm={`Rebuild ${runner.name}? GridOps will replace it with a newly registered container.`} disabled={runner.busy} icon={<RefreshCw />} size="icon" success="Runner rebuilt."><span className="sr-only">Rebuild {runner.name}</span></AsyncActionButton>
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "delete" } })} confirm={`Delete ${runner.name} from Docker and GitHub?`} icon={<Trash2 />} size="icon" success="Runner deleted." variant="destructive"><span className="sr-only">Delete {runner.name}</span></AsyncActionButton>
-                </div></TableCell>
+                </div> : <div className="flex justify-end"><Badge variant="outline">read only</Badge></div>}</TableCell>
               </TableRow>
             ))}</TableBody>
           </Table>

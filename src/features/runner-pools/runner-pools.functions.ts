@@ -49,6 +49,7 @@ export type RunnerPoolDetail = {
   queueScaleFactor: number;
   idleTimeoutMinutes: number;
   configurationVersion: number;
+  canManage: boolean;
 };
 
 export const getCreateRunnerPoolOptions = () => api<RunnerPoolOptions>("/api/v1/runner-pools/options");

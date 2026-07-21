@@ -41,7 +41,7 @@ function WebhooksPage() {
               <TableCell>{delivery.signatureValid ? <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400"><CheckCircle2 className="size-3.5" />Verified</span> : <span className="inline-flex items-center gap-1.5 text-xs text-red-400"><ShieldAlert className="size-3.5" />Invalid</span>}</TableCell>
               <TableCell><StatusBadge status={delivery.status} /></TableCell>
               <TableCell className="text-xs text-muted-foreground">{formatRelativeTime(delivery.receivedAt)}</TableCell>
-              <TableCell>{delivery.status === "failed" && delivery.signatureValid ? <AsyncActionButton action={() => retry({ data: { deliveryId: delivery.id } })} icon={<RefreshCw />} size="icon" success="Webhook delivery reprocessed."><span className="sr-only">Retry delivery</span></AsyncActionButton> : null}</TableCell>
+              <TableCell>{delivery.canRetry && delivery.status === "failed" && delivery.signatureValid ? <AsyncActionButton action={() => retry({ data: { deliveryId: delivery.id } })} icon={<RefreshCw />} size="icon" success="Webhook delivery reprocessed."><span className="sr-only">Retry delivery</span></AsyncActionButton> : null}</TableCell>
             </TableRow>
           ))}</TableBody>
         </Table></CardContent></Card>

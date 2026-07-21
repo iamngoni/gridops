@@ -76,7 +76,7 @@ function RunnerPoolsPage() {
                     </TableCell>
                     <TableCell><StatusBadge status={pool.paused ? "paused" : pool.state} /></TableCell>
                     <TableCell>
-                      <div className="flex justify-end gap-1">
+                      {pool.canManage ? <div className="flex justify-end gap-1">
                         <Link aria-label={`Edit ${pool.name}`} className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" params={{ poolId: pool.id }} to="/runner-pools/$poolId"><Settings2 className="size-4" /></Link>
                         <AsyncActionButton
                           action={() => control({ data: { action: "scale", poolId: pool.id, desiredCount: pool.desiredCount - 1 } })}
@@ -113,7 +113,7 @@ function RunnerPoolsPage() {
                           success="Runner pool deleted."
                           variant="destructive"
                         ><span className="sr-only">Delete {pool.name}</span></AsyncActionButton>
-                      </div>
+                      </div> : <div className="flex justify-end"><Badge variant="outline">read only</Badge></div>}
                     </TableCell>
                   </TableRow>
                 ))}

@@ -25,6 +25,7 @@ function SettingsPage() {
 }
 
 function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<typeof Route.useLoaderData>, { authenticated: true }>['data']> }) {
+  const isAdmin = data.user.role === "admin";
   const save = saveSettingsAction;
   const router = useRouter();
   const [pending, setPending] = useState(false);
@@ -103,6 +104,7 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
         <Card>
           <CardHeader><div><CardTitle>Security and integrations</CardTitle><p className="mt-1 text-xs text-muted-foreground">Secrets come from the host environment or encrypted runtime storage and are never rendered here.</p></div><ShieldCheck className="size-5 text-emerald-400" /></CardHeader>
           <CardContent className="space-y-2">
+            {!isAdmin ? <p className="rounded-md border border-border bg-muted/25 p-3 text-xs leading-5 text-muted-foreground">You have read-only access to system configuration. A GridOps administrator manages credentials, backups, and policy.</p> : null}
             {checks.map(([label, ready, detail]) => (
               <div className="flex items-center gap-3 rounded-md border border-border p-3" key={label}>
                 {ready ? <CheckCircle2 className="size-4 text-emerald-400" /> : <CircleX className="size-4 text-amber-400" />}
@@ -114,7 +116,7 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
               <CopyRow label="OAuth callback" value={data.configuration.callbackUrl} />
               <CopyRow label="Webhook URL" value={data.configuration.webhookUrl} />
             </div>
-            {!data.configuration.githubAppControl || !data.configuration.webhookVerification ? (
+            {isAdmin && (!data.configuration.githubAppControl || !data.configuration.webhookVerification) ? (
               <div className="mt-4 rounded-md border border-amber-500/20 bg-amber-500/5 p-4">
                 <div className="text-sm font-medium">Finish GitHub App setup</div>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
@@ -145,14 +147,14 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
             <InfoRow label="Docker API" value={data.manager.apiVersion ?? "—"} />
             <InfoRow label="GitHub control token" value={data.configuration.installationTokens ? "Installation token" : "Authorized user token fallback"} />
             <InfoRow label="Database" value="SQLite · WAL mode" />
-            <InfoRow label="Signed in as" value={data.user.login} />
+            <InfoRow label="Signed in as" value={`${data.user.login} · ${data.user.role}`} />
             {!data.manager.ok && data.manager.error ? <p className="rounded-md border border-red-500/20 bg-red-500/5 p-3 text-xs leading-5 text-red-300">{data.manager.error}</p> : null}
-            <a className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border px-3 text-xs font-medium hover:bg-accent" href="/api/backups/database"><DatabaseBackup className="size-4" />Download SQLite backup</a>
+            {isAdmin ? <a className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border px-3 text-xs font-medium hover:bg-accent" href="/api/backups/database"><DatabaseBackup className="size-4" />Download SQLite backup</a> : null}
           </CardContent>
         </Card>
       </div>
 
-      <form className="mt-4" onSubmit={submit}>
+      {isAdmin ? <form className="mt-4" onSubmit={submit}>
         <Card>
           <CardHeader><div><CardTitle>Retention and reconciliation</CardTitle><p className="mt-1 text-xs text-muted-foreground">Durable system policy stored in SQLite and included in backups.</p></div></CardHeader>
           <CardContent>
@@ -170,7 +172,7 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
             <div className="mt-5 flex justify-end"><Button disabled={pending} type="submit">{pending ? <LoaderCircle className="animate-spin" /> : <Save />}{pending ? "Saving…" : "Save policy"}</Button></div>
           </CardContent>
         </Card>
-      </form>
+      </form> : <Card className="mt-4"><CardHeader><div><CardTitle>Retention and reconciliation</CardTitle><p className="mt-1 text-xs text-muted-foreground">System policy is visible to members and editable by administrators.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><InfoRow label="Runner logs" value={`${data.settings.logRetentionDays} days`} /><InfoRow label="Webhooks" value={`${data.settings.webhookRetentionDays} days`} /><InfoRow label="Audit" value={`${data.settings.auditRetentionDays} days`} /><InfoRow label="Reconcile" value={`${data.settings.reconcileIntervalSeconds} seconds`} /><InfoRow label="GitHub polling" value={`${data.settings.githubSyncIntervalSeconds} seconds`} /></CardContent></Card>}
     </ResourcePage>
   );
 }

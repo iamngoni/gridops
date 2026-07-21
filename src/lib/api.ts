@@ -5,6 +5,7 @@ export type Viewer = {
   name: string | null;
   email: string | null;
   avatarUrl: string | null;
+  role: "admin" | "member";
   alerts: { failedRunners: number; failedWebhooks: number; queuedJobs: number; deferredRunnerCleanup: number };
 };
 

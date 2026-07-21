@@ -90,7 +90,7 @@ function EditRunnerPoolPage() {
           <Badge variant="outline">{pool.mode}</Badge>
         </div>
 
-        <form className="mt-6 space-y-4" onSubmit={submit}>
+        {pool.canManage ? <form className="mt-6 space-y-4" onSubmit={submit}>
           <Card>
             <CardHeader><CardTitle>GitHub destination</CardTitle></CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2">
@@ -162,7 +162,7 @@ function EditRunnerPoolPage() {
               {submitting ? "Saving changes…" : "Save changes"}
             </Button>
           </div>
-        </form>
+        </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.repository ?? pool.accountLogin} /><ReadOnly label="Capacity" value={`${pool.desiredCount} desired · ${pool.minCount}-${pool.maxCount}`} /><ReadOnly label="Runner image" value={pool.image} /><ReadOnly label="Resources" value={`${pool.cpuLimit} CPU · ${pool.memoryLimitMb} MB`} /></CardContent></Card>}
       </div>
     </AppShell>
   );
