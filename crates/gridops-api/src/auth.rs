@@ -25,6 +25,7 @@ pub struct AuthUser {
     pub id: String,
     pub login: String,
     pub github_id: i64,
+    pub role: String,
 }
 
 pub struct OptionalAuth(pub Option<AuthUser>);
@@ -50,7 +51,7 @@ impl FromRequestParts<AppState> for AuthUser {
         }
         let row = sqlx::query(
             r#"
-            SELECT u.id, u.login, u.github_id, s.id AS session_id, s.expires_at
+            SELECT u.id, u.login, u.github_id, u.role, s.id AS session_id, s.expires_at
             FROM sessions s JOIN users u ON u.id = s.user_id
             WHERE s.token_hash = ?
         "#,
@@ -73,6 +74,7 @@ impl FromRequestParts<AppState> for AuthUser {
             id: row.get("id"),
             login: row.get("login"),
             github_id: row.get("github_id"),
+            role: row.get("role"),
         })
     }
 }
@@ -111,6 +113,7 @@ pub async fn me(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json
         name: profile.try_get("name")?,
         email: profile.try_get("email")?,
         avatar_url: profile.try_get("avatar_url")?,
+        role: user.role,
         alerts: Alerts {
             failed_runners: alerts.get("failed_runners"),
             failed_webhooks: alerts.get("failed_webhooks"),
@@ -118,6 +121,43 @@ pub async fn me(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json
             deferred_runner_cleanup: alerts.get("deferred_runner_cleanup"),
         },
     }))
+}
+
+pub fn require_system_admin(user: &AuthUser) -> ApiResult<()> {
+    if user.role == "admin" {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden)
+    }
+}
+
+pub async fn assert_installation_admin(
+    state: &AppState,
+    user: &AuthUser,
+    installation_id: i64,
+) -> ApiResult<()> {
+    let permission = sqlx::query_scalar::<_, String>(
+        r#"SELECT ui.permission FROM user_installations ui
+          JOIN installations i ON i.id=ui.installation_id
+          WHERE ui.user_id=? AND ui.installation_id=? AND i.suspended_at IS NULL
+          LIMIT 1"#,
+    )
+    .bind(&user.id)
+    .bind(installation_id)
+    .fetch_optional(&state.database)
+    .await?;
+    if permission
+        .as_deref()
+        .is_some_and(|permission| can_administer_installation(&user.role, permission))
+    {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden)
+    }
+}
+
+fn can_administer_installation(system_role: &str, installation_permission: &str) -> bool {
+    system_role == "admin" || installation_permission == "admin"
 }
 
 pub async fn logout(
@@ -233,4 +273,34 @@ pub async fn audit(
         .bind(uuid::Uuid::new_v4().to_string()).bind(&user.id).bind(&user.login).bind(action).bind(target_type).bind(target_id)
         .bind(metadata.to_string()).bind(now_millis()).execute(&state.database).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user(role: &str) -> AuthUser {
+        AuthUser {
+            id: "user-1".into(),
+            login: "octocat".into(),
+            github_id: 1,
+            role: role.into(),
+        }
+    }
+
+    #[test]
+    fn system_policy_requires_an_administrator() {
+        assert!(require_system_admin(&user("admin")).is_ok());
+        assert!(matches!(
+            require_system_admin(&user("member")),
+            Err(ApiError::Forbidden)
+        ));
+    }
+
+    #[test]
+    fn installation_policy_accepts_system_or_installation_administrators() {
+        assert!(can_administer_installation("admin", "read"));
+        assert!(can_administer_installation("member", "admin"));
+        assert!(!can_administer_installation("member", "read"));
+    }
 }

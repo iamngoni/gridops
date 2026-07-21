@@ -8,8 +8,9 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use gridops_core::{
-    GitHubInstallation, GitHubRepository, GitHubUser, InstallationPage, RepositoryPage,
-    WorkflowJobPage, WorkflowRunPage, associate_runner_with_job, crypto::hash_token, now_millis,
+    GitHubInstallation, GitHubOrganizationMembership, GitHubRepository, GitHubUser,
+    InstallationPage, RepositoryPage, WorkflowJobPage, WorkflowRunPage, associate_runner_with_job,
+    crypto::hash_token, now_millis,
 };
 use reqwest::Method;
 use serde::Deserialize;
@@ -155,8 +156,10 @@ pub async fn callback(
         r#"
         INSERT INTO users (
           id,github_id,login,name,email,avatar_url,access_token,access_token_expires_at,
-          refresh_token,refresh_token_expires_at,last_login_at,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+          refresh_token,refresh_token_expires_at,role,last_login_at,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,
+          CASE WHEN EXISTS (SELECT 1 FROM users WHERE role='admin') THEN 'member' ELSE 'admin' END,
+          ?,?,?)
         ON CONFLICT(github_id) DO UPDATE SET
           login=excluded.login,name=excluded.name,email=excluded.email,avatar_url=excluded.avatar_url,
           access_token=excluded.access_token,access_token_expires_at=excluded.access_token_expires_at,
@@ -373,6 +376,10 @@ async fn sync_user_installations(
     user_id: &str,
     access_token: &str,
 ) -> ApiResult<()> {
+    let user_login = sqlx::query_scalar::<_, String>("SELECT login FROM users WHERE id=?")
+        .bind(user_id)
+        .fetch_one(&state.database)
+        .await?;
     let mut installations = Vec::new();
     for page in 1..=100 {
         let response: InstallationPage = state
@@ -395,13 +402,15 @@ async fn sync_user_installations(
             continue;
         };
         upsert_installation(state, installation).await?;
+        let permission = installation_permission(state, account, &user_login, access_token).await;
         sqlx::query(
             r#"INSERT INTO user_installations (user_id,installation_id,permission,created_at)
-               VALUES (?,?,'admin',?) ON CONFLICT(user_id,installation_id)
-               DO UPDATE SET permission='admin'"#,
+               VALUES (?,?,?,?) ON CONFLICT(user_id,installation_id)
+               DO UPDATE SET permission=excluded.permission"#,
         )
         .bind(user_id)
         .bind(installation.id)
+        .bind(permission)
         .bind(now_millis())
         .execute(&state.database)
         .await?;
@@ -433,7 +442,9 @@ async fn sync_user_installations(
                 tracing::warn!(repository = %repository.full_name, error = ?error, "workflow sync failed");
             }
         }
-        archive_missing_repositories(state, installation.id, &repositories).await?;
+        if permission == "admin" {
+            archive_missing_repositories(state, installation.id, &repositories).await?;
+        }
         tracing::info!(installation = %account.login, repositories = repositories.len(), "GitHub installation synced");
     }
 
@@ -461,6 +472,55 @@ async fn sync_user_installations(
     }
     transaction.commit().await?;
     Ok(())
+}
+
+async fn installation_permission(
+    state: &AppState,
+    account: &gridops_core::github::GitHubAccount,
+    user_login: &str,
+    access_token: &str,
+) -> &'static str {
+    if account.kind == "Organization" {
+        match state
+            .github
+            .get::<GitHubOrganizationMembership>(
+                &format!("/user/memberships/orgs/{}", account.login),
+                access_token,
+            )
+            .await
+        {
+            Ok(membership) => {
+                permission_for_account(&account.kind, &account.login, user_login, Some(&membership))
+            }
+            Err(error) => {
+                tracing::warn!(organization = %account.login, error = ?error, "could not determine organization ownership; granting read-only access");
+                "read"
+            }
+        }
+    } else {
+        permission_for_account(&account.kind, &account.login, user_login, None)
+    }
+}
+
+fn permission_for_account(
+    account_kind: &str,
+    account_login: &str,
+    user_login: &str,
+    membership: Option<&GitHubOrganizationMembership>,
+) -> &'static str {
+    if account_kind == "Organization" {
+        if membership
+            .is_some_and(|membership| membership.state == "active" && membership.role == "admin")
+        {
+            "admin"
+        } else {
+            "read"
+        }
+    } else if account_login.eq_ignore_ascii_case(user_login) {
+        "admin"
+    } else {
+        "read"
+    }
 }
 
 async fn upsert_installation(state: &AppState, installation: &GitHubInstallation) -> ApiResult<()> {
@@ -789,4 +849,37 @@ fn error_redirect(state: &AppState, message: &str) -> Response {
     url.set_path("/");
     url.query_pairs_mut().append_pair("authError", message);
     (StatusCode::FOUND, [(header::LOCATION, url.to_string())]).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installation_permissions_follow_account_ownership() {
+        let owner = GitHubOrganizationMembership {
+            state: "active".into(),
+            role: "admin".into(),
+        };
+        let member = GitHubOrganizationMembership {
+            state: "active".into(),
+            role: "member".into(),
+        };
+        assert_eq!(
+            permission_for_account("Organization", "octo-org", "octocat", Some(&owner)),
+            "admin"
+        );
+        assert_eq!(
+            permission_for_account("Organization", "octo-org", "octocat", Some(&member)),
+            "read"
+        );
+        assert_eq!(
+            permission_for_account("User", "OctoCat", "octocat", None),
+            "admin"
+        );
+        assert_eq!(
+            permission_for_account("User", "someone-else", "octocat", None),
+            "read"
+        );
+    }
 }

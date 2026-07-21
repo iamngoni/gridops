@@ -236,6 +236,14 @@ mod tests {
                 .iter()
                 .any(|row| row.get::<String, _>("name") == "configuration_version")
         );
+        let user_columns = sqlx::query("PRAGMA table_info(users)")
+            .fetch_all(&pool)
+            .await?;
+        assert!(
+            user_columns
+                .iter()
+                .any(|row| row.get::<String, _>("name") == "role")
+        );
         pool.close().await;
         fs::remove_dir_all(directory)?;
         Ok(())
@@ -275,6 +283,11 @@ mod tests {
                 "INSERT INTO settings (key, value, updated_at) VALUES ('legacy', 'preserved', 1)",
             )
             .await?;
+        connection
+            .execute(
+                "INSERT INTO users (id,github_id,login,access_token,last_login_at,created_at,updated_at) VALUES ('legacy-user',1,'octocat','sealed',1,1,1)",
+            )
+            .await?;
         connection.close().await?;
 
         let pool = connect_database_path(&path).await?;
@@ -285,8 +298,13 @@ mod tests {
             sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'legacy'")
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(migration_count, 9);
+        let migrated_role =
+            sqlx::query_scalar::<_, String>("SELECT role FROM users WHERE id='legacy-user'")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(migration_count, 10);
         assert_eq!(preserved, "preserved");
+        assert_eq!(migrated_role, "admin");
         pool.close().await;
         fs::remove_dir_all(directory)?;
         Ok(())

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use sqlx::Row as _;
 
 use crate::{
-    auth::{AuthUser, assert_same_origin, random_token},
+    auth::{AuthUser, assert_same_origin, random_token, require_system_admin},
     error::{ApiError, ApiResult},
     state::{
         AppState, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_APP_SLUG, GITHUB_CLIENT_ID,
@@ -51,6 +51,7 @@ pub async fn create_manifest(
     Json(input): Json<ManifestRequest>,
 ) -> ApiResult<Json<Value>> {
     assert_same_origin(&state, &headers)?;
+    require_system_admin(&user)?;
     let owner_type = input.owner_type.as_deref().unwrap_or("user");
     let action = match owner_type {
         "user" => "https://github.com/settings/apps/new".to_owned(),
@@ -114,7 +115,7 @@ pub async fn manifest_callback(
         ));
     };
     let record = sqlx::query(
-        r#"SELECT ms.id,ms.user_id,ms.expires_at,u.login FROM github_app_manifest_states ms
+        r#"SELECT ms.id,ms.user_id,ms.expires_at,u.login,u.role FROM github_app_manifest_states ms
            JOIN users u ON u.id=ms.user_id WHERE ms.state_hash=?"#,
     )
     .bind(hash_token(&manifest_state))
@@ -134,6 +135,12 @@ pub async fn manifest_callback(
         return Ok(settings_error_redirect(
             &state,
             "The GitHub App setup request expired.",
+        ));
+    }
+    if record.get::<String, _>("role") != "admin" {
+        return Ok(settings_error_redirect(
+            &state,
+            "Only a GridOps administrator can configure the GitHub App.",
         ));
     }
 
@@ -257,6 +264,7 @@ fn build_manifest(name: &str, base_url: &url::Url) -> anyhow::Result<(Value, boo
                 "actions": "write",
                 "administration": "write",
                 "metadata": "read",
+                "members": "read",
                 "organization_self_hosted_runners": "write"
             },
             "default_events": [
@@ -301,6 +309,7 @@ mod tests {
             "write"
         );
         assert_eq!(manifest["default_permissions"]["actions"], "write");
+        assert_eq!(manifest["default_permissions"]["members"], "read");
         assert_eq!(
             manifest["redirect_url"],
             "http://localhost:3100/auth/github-app/manifest/callback"

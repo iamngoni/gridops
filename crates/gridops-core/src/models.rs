@@ -9,6 +9,7 @@ pub struct Viewer {
     pub name: Option<String>,
     pub email: Option<String>,
     pub avatar_url: Option<String>,
+    pub role: String,
     pub alerts: Alerts,
 }
 

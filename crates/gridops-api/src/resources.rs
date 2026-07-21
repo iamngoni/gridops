@@ -24,7 +24,10 @@ use sqlx::{FromRow, Row as _};
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
 
 use crate::{
-    auth::{AuthUser, OptionalAuth, assert_same_origin, audit},
+    auth::{
+        AuthUser, OptionalAuth, assert_installation_admin, assert_same_origin, audit,
+        require_system_admin,
+    },
     error::{ApiError, ApiResult},
     oauth::control_token,
     state::AppState,
@@ -36,6 +39,7 @@ const MAX_ARCHIVED_LOG_VIEW_BYTES: u64 = 1_000_000;
 #[derive(Debug, FromRow)]
 struct PoolAccess {
     installation_id: i64,
+    installation_permission: String,
     account_login: String,
     repository_id: Option<i64>,
     repository_owner: Option<String>,
@@ -417,6 +421,7 @@ pub async fn runner_pools(
     let rows = sqlx::query(
         r#"SELECT p.id,p.name,p.scope,p.mode,p.labels,p.image,p.desired_count,p.min_count,
           p.max_count,p.cpu_limit,p.memory_limit_mb,p.paused,p.state,i.account_login,
+          ui.permission AS installation_permission,
           repo.full_name AS repository,
           COUNT(CASE WHEN r.deleted_at IS NULL THEN 1 END) AS total_runners,
           COUNT(CASE WHEN r.deleted_at IS NULL AND r.status IN ('online','idle','busy') THEN 1 END) AS online_runners,
@@ -440,6 +445,7 @@ pub async fn runner_pools(
         "repository": row.try_get::<Option<String>,_>("repository").ok().flatten(), "totalRunners": row.get::<i64,_>("total_runners"),
         "onlineRunners": row.get::<i64,_>("online_runners"), "busyRunners": row.get::<i64,_>("busy_runners"),
         "failedRunners": row.get::<i64,_>("failed_runners"), "outdatedRunners": row.get::<i64,_>("outdated_runners"),
+        "canManage": user.role == "admin" || row.get::<String,_>("installation_permission") == "admin",
         "createdAt": iso(row.get::<i64,_>("created_at")),
     })).collect::<Vec<_>>();
     Ok(Json(json!({ "authenticated": true, "items": items })))
@@ -483,6 +489,7 @@ pub async fn runner_pool(
         "queueScaleFactor": pool.queue_scale_factor,
         "idleTimeoutMinutes": pool.idle_timeout_minutes,
         "configurationVersion": pool.configuration_version,
+        "canManage": user.role == "admin" || pool.installation_permission == "admin",
     })))
 }
 
@@ -496,6 +503,7 @@ pub async fn update_runner_pool(
     assert_same_origin(&state, &headers)?;
     input.validate().map_err(ApiError::BadRequest)?;
     let pool = pool_access(&state, &user, &pool_id).await?;
+    assert_installation_admin(&state, &user, pool.installation_id).await?;
     let labels = normalized_pool_labels(&input.name, &input.labels)?;
     let encoded_labels =
         serde_json::to_string(&labels).map_err(|error| ApiError::Internal(error.into()))?;
@@ -580,6 +588,7 @@ pub async fn runners(
         r#"SELECT r.id,r.name,r.status,r.busy,r.ephemeral,r.os,r.architecture,r.container_id,
           r.github_runner_id,r.failure_reason,r.registered_at,r.last_heartbeat_at,r.created_at,
           p.id AS pool_id,p.name AS pool_name,p.paused AS pool_paused,i.account_login,
+          ui.permission AS installation_permission,
           repo.full_name AS repository,wj.name AS current_job_name,wj.run_id AS current_run_id
         FROM runners r JOIN runner_pools p ON p.id=r.pool_id
         JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
@@ -601,6 +610,7 @@ pub async fn runners(
         "poolId": row.get::<String,_>("pool_id"), "poolName": row.get::<String,_>("pool_name"), "poolPaused": row.get::<bool,_>("pool_paused"),
         "accountLogin": row.get::<String,_>("account_login"), "repository": row.try_get::<Option<String>,_>("repository").ok().flatten(),
         "currentJobName": row.try_get::<Option<String>,_>("current_job_name").ok().flatten(), "currentRunId": row.try_get::<Option<i64>,_>("current_run_id").ok().flatten(),
+        "canManage": user.role == "admin" || row.get::<String,_>("installation_permission") == "admin",
     })).collect::<Vec<_>>();
     Ok(Json(json!({ "authenticated": true, "items": items })))
 }
@@ -615,7 +625,7 @@ pub async fn workflow_runs(
     let rows = sqlx::query(
         r#"SELECT wr.id,wr.workflow_name,wr.run_number,wr.run_attempt,wr.event,wr.status,
           wr.conclusion,wr.head_branch,wr.head_sha,wr.actor_login,wr.html_url,wr.started_at,
-          wr.completed_at,wr.github_created_at,repo.full_name,
+          wr.completed_at,wr.github_created_at,repo.full_name,ui.permission AS installation_permission,
           COUNT(wj.id) AS job_count,COUNT(CASE WHEN wj.status='in_progress' THEN 1 END) AS active_jobs,
           COUNT(CASE WHEN wj.conclusion='failure' THEN 1 END) AS failed_jobs
         FROM workflow_runs wr JOIN repositories repo ON repo.id=wr.repository_id
@@ -625,7 +635,10 @@ pub async fn workflow_runs(
     .bind(&user.id)
     .fetch_all(&state.database)
     .await?;
-    let items = rows.iter().map(workflow_run_json).collect::<Vec<_>>();
+    let items = rows
+        .iter()
+        .map(|row| workflow_run_json(row, user.role == "admin"))
+        .collect::<Vec<_>>();
     Ok(Json(json!({ "authenticated": true, "items": items })))
 }
 
@@ -637,7 +650,7 @@ pub async fn workflow_run(
     let run = sqlx::query(
         r#"SELECT wr.id,wr.workflow_name,wr.run_number,wr.run_attempt,wr.event,wr.status,
           wr.conclusion,wr.head_branch,wr.head_sha,wr.actor_login,wr.html_url,wr.started_at,
-          wr.completed_at,wr.github_created_at,repo.full_name
+          wr.completed_at,wr.github_created_at,repo.full_name,ui.permission AS installation_permission
         FROM workflow_runs wr JOIN repositories repo ON repo.id=wr.repository_id
         JOIN user_installations ui ON ui.installation_id=repo.installation_id
         WHERE wr.id=? AND ui.user_id=?"#,
@@ -678,6 +691,7 @@ pub async fn workflow_run(
         "htmlUrl": run.get::<String,_>("html_url"), "startedAt": iso_optional(run.try_get::<Option<i64>,_>("started_at").ok().flatten()),
         "completedAt": iso_optional(run.try_get::<Option<i64>,_>("completed_at").ok().flatten()), "createdAt": iso(run.get::<i64,_>("github_created_at")),
         "repository": run.get::<String,_>("full_name"), "jobs": jobs,
+        "canManage": user.role == "admin" || run.get::<String,_>("installation_permission") == "admin",
     })))
 }
 
@@ -691,12 +705,19 @@ pub async fn webhook_deliveries(
     let rows = sqlx::query(
         r#"SELECT wd.id,wd.event,wd.action,wd.installation_id,wd.repository_id,
           wd.signature_valid,wd.status,wd.error,wd.received_at,wd.processed_at,
+          CASE WHEN wd.installation_id IS NULL THEN ?='admin' ELSE EXISTS (
+            SELECT 1 FROM user_installations manage WHERE manage.installation_id=wd.installation_id
+              AND manage.user_id=? AND (manage.permission='admin' OR ?='admin')
+          ) END AS can_retry,
           i.account_login,repo.full_name FROM webhook_deliveries wd
         LEFT JOIN installations i ON i.id=wd.installation_id LEFT JOIN repositories repo ON repo.id=wd.repository_id
         WHERE wd.installation_id IS NULL OR EXISTS (SELECT 1 FROM user_installations ui
           WHERE ui.installation_id=wd.installation_id AND ui.user_id=?)
         ORDER BY wd.received_at DESC LIMIT 250"#,
     )
+    .bind(&user.role)
+    .bind(&user.id)
+    .bind(&user.role)
     .bind(&user.id)
     .fetch_all(&state.database)
     .await?;
@@ -706,6 +727,7 @@ pub async fn webhook_deliveries(
         "signatureValid": row.get::<bool,_>("signature_valid"), "status": row.get::<String,_>("status"), "error": row.try_get::<Option<String>,_>("error").ok().flatten(),
         "receivedAt": iso(row.get::<i64,_>("received_at")), "processedAt": iso_optional(row.try_get::<Option<i64>,_>("processed_at").ok().flatten()),
         "accountLogin": row.try_get::<Option<String>,_>("account_login").ok().flatten(), "repository": row.try_get::<Option<String>,_>("full_name").ok().flatten(),
+        "canRetry": row.get::<bool,_>("can_retry"),
     })).collect::<Vec<_>>();
     Ok(Json(json!({ "authenticated": true, "items": items })))
 }
@@ -789,18 +811,22 @@ pub async fn runner_pool_options(
     let installation_rows = sqlx::query(
         r#"SELECT i.id,i.account_login,i.account_type FROM user_installations ui
            JOIN installations i ON i.id=ui.installation_id
-           WHERE ui.user_id=? AND i.suspended_at IS NULL ORDER BY i.account_login"#,
+           WHERE ui.user_id=? AND i.suspended_at IS NULL
+             AND (ui.permission='admin' OR ?='admin') ORDER BY i.account_login"#,
     )
     .bind(&user.id)
+    .bind(&user.role)
     .fetch_all(&state.database)
     .await?;
     let repository_rows = sqlx::query(
         r#"SELECT r.id,r.installation_id,r.full_name,r.private FROM repositories r
            JOIN user_installations ui ON ui.installation_id=r.installation_id
            JOIN installations i ON i.id=r.installation_id
-           WHERE ui.user_id=? AND r.archived=0 AND i.suspended_at IS NULL ORDER BY r.full_name"#,
+           WHERE ui.user_id=? AND r.archived=0 AND i.suspended_at IS NULL
+             AND (ui.permission='admin' OR ?='admin') ORDER BY r.full_name"#,
     )
     .bind(&user.id)
+    .bind(&user.role)
     .fetch_all(&state.database)
     .await?;
     let installations = installation_rows.iter().map(|row| json!({
@@ -856,17 +882,7 @@ pub async fn create_runner_pool(
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     assert_same_origin(&state, &headers)?;
     input.validate().map_err(ApiError::BadRequest)?;
-    let allowed = sqlx::query(
-        r#"SELECT 1 FROM user_installations ui JOIN installations i ON i.id=ui.installation_id
-           WHERE ui.user_id=? AND ui.installation_id=? AND i.suspended_at IS NULL"#,
-    )
-    .bind(&user.id)
-    .bind(input.installation_id)
-    .fetch_optional(&state.database)
-    .await?;
-    if allowed.is_none() {
-        return Err(ApiError::Forbidden);
-    }
+    assert_installation_admin(&state, &user, input.installation_id).await?;
     if let Some(repository_id) = input.repository_id {
         let repository =
             sqlx::query("SELECT installation_id,archived FROM repositories WHERE id=?")
@@ -948,6 +964,7 @@ pub async fn runner_pool_action(
         "reconcile" => return Ok(Json(reconcile_pool(&state, &user, &pool_id).await?)),
         "scale" => {
             let pool = pool_access(&state, &user, &pool_id).await?;
+            assert_installation_admin(&state, &user, pool.installation_id).await?;
             let desired = input
                 .desired_count
                 .ok_or_else(|| ApiError::BadRequest("desiredCount is required.".into()))?;
@@ -991,7 +1008,8 @@ pub async fn delete_runner_pool(
     user: AuthUser,
 ) -> ApiResult<Json<Value>> {
     assert_same_origin(&state, &headers)?;
-    pool_access(&state, &user, &pool_id).await?;
+    let pool = pool_access(&state, &user, &pool_id).await?;
+    assert_installation_admin(&state, &user, pool.installation_id).await?;
     sqlx::query("UPDATE runner_pools SET paused=1,state='deleting',updated_at=? WHERE id=?")
         .bind(now_millis())
         .bind(&pool_id)
@@ -1026,6 +1044,7 @@ pub async fn runner_action(
 ) -> ApiResult<Json<Value>> {
     assert_same_origin(&state, &headers)?;
     let runner = runner_access(&state, &user, &runner_id).await?;
+    assert_installation_admin(&state, &user, runner.installation_id).await?;
     match input.action.as_str() {
         "delete" => delete_runner_resources(&state, &user, &runner).await?,
         "rebuild" => {
@@ -1197,6 +1216,7 @@ pub async fn workflow_run_action(
         "rerun-failed" => "rerun-failed-jobs",
         _ => return Err(ApiError::BadRequest("Workflow action is invalid.".into())),
     };
+    assert_installation_admin(&state, &user, run.get("installation_id")).await?;
     let token = control_token(&state, &user.id, run.get("installation_id")).await?;
     state
         .github
@@ -1312,7 +1332,7 @@ pub async fn settings(
             "reconcileIntervalSeconds": stored_i64(&stored, "reconcileIntervalSeconds", 30),
             "githubSyncIntervalSeconds": stored_i64(&stored, "githubSyncIntervalSeconds", 60),
             "autoUpdateImages": stored.get("autoUpdateImages").and_then(Value::as_bool).unwrap_or(false),
-        }, "user": { "login": user.login }
+        }, "user": { "login": user.login, "role": user.role }
     }})))
 }
 
@@ -1323,6 +1343,7 @@ pub async fn save_settings(
     Json(input): Json<SystemSettings>,
 ) -> ApiResult<Json<Value>> {
     assert_same_origin(&state, &headers)?;
+    require_system_admin(&user)?;
     if !(1..=3_650).contains(&input.log_retention_days)
         || !(1..=3_650).contains(&input.webhook_retention_days)
         || !(1..=3_650).contains(&input.audit_retention_days)
@@ -1363,10 +1384,8 @@ pub async fn save_settings(
     Ok(Json(json!({ "ok": true })))
 }
 
-pub async fn database_backup(
-    State(state): State<AppState>,
-    _user: AuthUser,
-) -> ApiResult<Response> {
+pub async fn database_backup(State(state): State<AppState>, user: AuthUser) -> ApiResult<Response> {
+    require_system_admin(&user)?;
     let backup_name = format!(
         "gridops-backup-{}.sqlite",
         Utc::now().format("%Y%m%d-%H%M%S")
@@ -1403,6 +1422,7 @@ pub async fn database_backup(
 
 async fn provision(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResult<Value> {
     let pool = pool_access(state, user, pool_id).await?;
+    assert_installation_admin(state, user, pool.installation_id).await?;
     if pool.paused {
         return Err(ApiError::Conflict("Runner pool is paused.".into()));
     }
@@ -1479,7 +1499,8 @@ async fn set_pool_paused(
     pool_id: &str,
     paused: bool,
 ) -> ApiResult<()> {
-    pool_access(state, user, pool_id).await?;
+    let pool = pool_access(state, user, pool_id).await?;
+    assert_installation_admin(state, user, pool.installation_id).await?;
     sqlx::query("UPDATE runner_pools SET paused=?,state=?,updated_at=? WHERE id=?")
         .bind(paused)
         .bind(if paused { "draining" } else { "active" })
@@ -1516,6 +1537,7 @@ async fn set_pool_paused(
 
 async fn reconcile_pool(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResult<Value> {
     let pool = pool_access(state, user, pool_id).await?;
+    assert_installation_admin(state, user, pool.installation_id).await?;
     let known = runners_for_pool(state, pool_id).await?;
     let managed = match manager_json(state, Method::GET, "v1/runners", None).await {
         Ok(value) => value,
@@ -1781,7 +1803,7 @@ async fn cleanup_github_runner(
 }
 
 async fn pool_access(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResult<PoolAccess> {
-    sqlx::query_as::<_, PoolAccess>(r#"SELECT p.installation_id,i.account_login,
+    sqlx::query_as::<_, PoolAccess>(r#"SELECT p.installation_id,ui.permission AS installation_permission,i.account_login,
       p.repository_id,repo.owner AS repository_owner,repo.name AS repository_name,p.name,p.scope,
       p.mode,p.labels,p.image,p.desired_count,p.min_count,p.max_count,p.cpu_limit,p.memory_limit_mb,
       p.runner_group_id,p.ephemeral,p.paused,p.state,p.autoscaling_enabled,p.queue_scale_factor,
@@ -2031,7 +2053,7 @@ async fn configuration(state: &AppState) -> ApiResult<ConfigurationState> {
     })
 }
 
-fn workflow_run_json(row: &sqlx::sqlite::SqliteRow) -> Value {
+fn workflow_run_json(row: &sqlx::sqlite::SqliteRow, system_admin: bool) -> Value {
     json!({
         "id": row.get::<i64,_>("id"), "workflowName": row.get::<String,_>("workflow_name"), "runNumber": row.get::<i64,_>("run_number"),
         "runAttempt": row.get::<i64,_>("run_attempt"), "event": row.get::<String,_>("event"), "status": row.get::<String,_>("status"),
@@ -2041,6 +2063,7 @@ fn workflow_run_json(row: &sqlx::sqlite::SqliteRow) -> Value {
         "completedAt": iso_optional(row.try_get::<Option<i64>,_>("completed_at").ok().flatten()), "createdAt": iso(row.get::<i64,_>("github_created_at")),
         "repository": row.get::<String,_>("full_name"), "jobCount": row.get::<i64,_>("job_count"),
         "activeJobs": row.get::<i64,_>("active_jobs"), "failedJobs": row.get::<i64,_>("failed_jobs"),
+        "canManage": system_admin || row.get::<String,_>("installation_permission") == "admin",
     })
 }
 

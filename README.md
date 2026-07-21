@@ -38,6 +38,8 @@ Create a GitHub App with these repository permissions:
 
 For organization-scoped pools, grant organization self-hosted runners read and write access. Subscribe to `installation`, `installation_repositories`, `workflow_job`, `workflow_run`, and `github_app_authorization` events. Enable expiring user access tokens.
 
+Grant organization members read access as well. GridOps uses that permission to distinguish organization owners, who may manage runner infrastructure, from members with read-only visibility.
+
 Configure:
 
 - Callback URL: `${GRIDOPS_BASE_URL}/auth/github/callback`

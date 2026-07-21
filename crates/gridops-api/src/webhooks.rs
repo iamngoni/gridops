@@ -10,7 +10,7 @@ use sha2::Sha256;
 use sqlx::{Row as _, SqlitePool};
 
 use crate::{
-    auth::{AuthUser, assert_same_origin, audit},
+    auth::{AuthUser, assert_installation_admin, assert_same_origin, audit, require_system_admin},
     error::{ApiError, ApiResult},
     state::AppState,
 };
@@ -114,7 +114,7 @@ pub async fn retry(
 ) -> ApiResult<Json<Value>> {
     assert_same_origin(&state, &headers)?;
     let delivery = sqlx::query(
-        r#"SELECT event,action,signature_valid,payload FROM webhook_deliveries wd
+        r#"SELECT event,action,installation_id,signature_valid,payload FROM webhook_deliveries wd
            WHERE wd.id=? AND (wd.installation_id IS NULL OR EXISTS (
              SELECT 1 FROM user_installations ui
              WHERE ui.installation_id=wd.installation_id AND ui.user_id=?
@@ -131,6 +131,10 @@ pub async fn retry(
         return Err(ApiError::BadRequest(
             "Only verified webhook payloads can be retried.".into(),
         ));
+    }
+    match delivery.try_get::<Option<i64>, _>("installation_id")? {
+        Some(installation_id) => assert_installation_admin(&state, &user, installation_id).await?,
+        None => require_system_admin(&user)?,
     }
     let payload = delivery
         .try_get::<Option<String>, _>("payload")?

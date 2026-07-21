@@ -325,6 +325,12 @@ pub struct GitHubAccount {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GitHubOrganizationMembership {
+    pub state: String,
+    pub role: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct RepositoryPage {
     pub repositories: Vec<GitHubRepository>,
 }
