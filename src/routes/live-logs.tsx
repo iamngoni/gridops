@@ -1,27 +1,39 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { LoaderCircle, Pause, Play, Radio, RefreshCw, Terminal } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
+import { ListPagination } from "~/components/list-pagination";
 import { ResourcePage } from "~/components/resource-page";
 import { StatusBadge } from "~/components/status-badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { archivedLogsAction, getLiveLogsPage, runnerLogsAction } from "~/features/operations/operations.functions";
+import { parsePage } from "~/lib/pagination";
 
 export const Route = createFileRoute("/live-logs")({
-  validateSearch: (search: Record<string, unknown>) => ({
-    target: typeof search.target === "string" ? search.target : undefined,
-  }),
-  loader: () => getLiveLogsPage(),
-  component: LiveLogsPage,
+  validateSearch: (search: Record<string, unknown>): { target?: string; page?: number } => {
+    const target = typeof search.target === "string" ? search.target : undefined;
+    const page = parsePage(search.page);
+    return { ...(target ? { target } : {}), ...(page > 1 ? { page } : {}) };
+  },
+  loaderDeps: ({ search }) => ({ target: search.target, page: search.page ?? 1 }),
+  loader: ({ deps }) => getLiveLogsPage({ page: deps.page }),
+  component: LiveLogsRoutePage,
 });
+
+function LiveLogsRoutePage() {
+  const search = Route.useSearch();
+  return <LiveLogsPage key={search.page ?? 1} />;
+}
 
 function LiveLogsPage() {
   const data = Route.useLoaderData();
   const search = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
   const getLogs = runnerLogsAction;
   const getArchive = archivedLogsAction;
-  const [targets, setTargets] = useState(data.items);
+  const [targetPage, setTargetPage] = useState(data);
+  const targets = targetPage.items;
   const [runnerId, setRunnerId] = useState(
     data.items.some((item) => item.id === search.target) ? String(search.target) : (data.items[0]?.id ?? ""),
   );
@@ -42,9 +54,9 @@ function LiveLogsPage() {
       if (cancelled || refreshing || document.visibilityState === "hidden") return;
       refreshing = true;
       try {
-        const page = await getLiveLogsPage();
+        const page = await getLiveLogsPage({ page: search.page });
         if (!cancelled) {
-          setTargets(page.items);
+          setTargetPage(page);
           setRunnerId((current) => page.items.some((item) => item.id === current)
             ? current
             : (page.items[0]?.id ?? ""));
@@ -67,7 +79,7 @@ function LiveLogsPage() {
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [data.authenticated]);
+  }, [data.authenticated, search.page]);
 
   const refresh = useCallback(async () => {
     if (!selectedId || !selectedKind) return;
@@ -150,13 +162,16 @@ function LiveLogsPage() {
     >
       {targets.length > 0 ? (
         <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <Card><CardHeader><CardTitle>Managed streams</CardTitle></CardHeader><CardContent className="space-y-2">
-            {targets.map((runner) => (
-              <button className={`w-full rounded-md border p-3 text-left transition-colors ${runner.id === selectedId ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"}`} key={runner.id} onClick={() => setRunnerId(runner.id)} type="button">
-                <div className="flex items-center justify-between gap-2"><span className="truncate font-mono text-xs font-medium">{runner.name}</span><StatusBadge status={runner.busy ? "busy" : String(runner.status)} /></div>
-                <div className="mt-2 truncate text-[11px] text-muted-foreground">{runner.poolName} · {runner.repository ?? "organization"}</div>
-              </button>
-            ))}
+          <Card><CardHeader><CardTitle>Managed streams</CardTitle></CardHeader><CardContent className="p-0">
+            <div className="space-y-2 p-4">
+              {targets.map((runner) => (
+                <button className={`w-full rounded-md border p-3 text-left transition-colors ${runner.id === selectedId ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"}`} key={runner.id} onClick={() => setRunnerId(runner.id)} type="button">
+                  <div className="flex items-center justify-between gap-2"><span className="truncate font-mono text-xs font-medium">{runner.name}</span><StatusBadge status={runner.busy ? "busy" : String(runner.status)} /></div>
+                  <div className="mt-2 truncate text-[11px] text-muted-foreground">{runner.poolName} · {runner.repository ?? "organization"}</div>
+                </button>
+              ))}
+            </div>
+            <ListPagination itemCount={targets.length} noun="log streams" onPageChange={(page) => void navigate({ search: { page, target: undefined } })} page={targetPage.page} perPage={targetPage.perPage} total={targetPage.total} />
           </CardContent></Card>
           <Card className="min-w-0 overflow-hidden">
             <CardHeader>

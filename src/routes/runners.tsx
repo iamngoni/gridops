@@ -1,7 +1,8 @@
-import { Link, createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Activity, Pause, Play, RefreshCw, RotateCcw, Square, Trash2 } from "lucide-react";
 
 import { AsyncActionButton } from "~/components/async-action-button";
+import { ListPagination } from "~/components/list-pagination";
 import { ResourcePage } from "~/components/resource-page";
 import { StatusBadge } from "~/components/status-badge";
 import { Badge } from "~/components/ui/badge";
@@ -9,16 +10,20 @@ import { Card, CardContent } from "~/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
 import { getRunnersPage } from "~/features/operations/operations.functions";
 import { runnerAction } from "~/features/runner-pools/runner-pools.functions";
+import { validatePageSearch } from "~/lib/pagination";
 import { formatRelativeTime } from "~/lib/utils";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
 export const Route = createFileRoute("/runners")({
-  loader: () => getRunnersPage(),
+  validateSearch: validatePageSearch,
+  loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
+  loader: ({ deps }) => getRunnersPage({ page: deps.page }),
   component: RunnersPage,
 });
 
 function RunnersPage() {
   const data = Route.useLoaderData();
+  const navigate = useNavigate({ from: Route.fullPath });
   useLiveRouteRefresh(5_000, data.authenticated);
   const control = runnerAction;
 
@@ -82,6 +87,7 @@ function RunnersPage() {
               </TableRow>
             ))}</TableBody>
           </Table>
+          <ListPagination itemCount={data.items.length} noun="runners" onPageChange={(page) => void navigate({ search: { page } })} page={data.page} perPage={data.perPage} total={data.total} />
         </CardContent></Card>
       ) : undefined}
     </ResourcePage>

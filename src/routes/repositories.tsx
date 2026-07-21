@@ -1,7 +1,8 @@
 import { createFileRoute, useNavigate, useRouter } from "@tanstack/react-router";
-import { ChevronLeft, ChevronRight, ExternalLink, Lock, PackageSearch, RefreshCw, Search, X } from "lucide-react";
+import { ExternalLink, Lock, PackageSearch, RefreshCw, Search, X } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
+import { ListPagination } from "~/components/list-pagination";
 import { ResourcePage } from "~/components/resource-page";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -9,18 +10,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
 import { getRepositoriesPage } from "~/features/operations/operations.functions";
+import { parsePage } from "~/lib/pagination";
 import { formatRelativeTime } from "~/lib/utils";
 
 export const Route = createFileRoute("/repositories")({
   validateSearch: (search: Record<string, unknown>) => {
-    const rawPage = typeof search.page === "number"
-      ? search.page
-      : typeof search.page === "string"
-        ? Number(search.page)
-        : 1;
     return {
       q: typeof search.q === "string" ? search.q.slice(0, 100) : "",
-      page: Number.isFinite(rawPage) && rawPage >= 1 ? Math.floor(rawPage) : 1,
+      page: parsePage(search.page),
     };
   },
   loaderDeps: ({ search }) => search,
@@ -33,7 +30,6 @@ function RepositoriesPage() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const router = useRouter();
-  const totalPages = Math.max(1, Math.ceil(data.total / data.perPage));
 
   function searchRepositories(query: string) {
     void navigate({ search: { q: query, page: 1 } });
@@ -111,17 +107,7 @@ function RepositoriesPage() {
               </div>
             )}
 
-            {data.total > data.perPage ? (
-              <div className="flex items-center justify-between border-t border-border px-4 py-3">
-                <p className="text-xs text-muted-foreground">
-                  Page {data.page} of {totalPages} · showing {data.items.length} of {data.total}
-                </p>
-                <div className="flex gap-2">
-                  <Button aria-label="Previous repository page" disabled={data.page <= 1} onClick={() => goToPage(data.page - 1)} size="icon" variant="outline"><ChevronLeft /></Button>
-                  <Button aria-label="Next repository page" disabled={data.page >= totalPages} onClick={() => goToPage(data.page + 1)} size="icon" variant="outline"><ChevronRight /></Button>
-                </div>
-              </div>
-            ) : null}
+            <ListPagination itemCount={data.items.length} noun="repositories" onPageChange={goToPage} page={data.page} perPage={data.perPage} total={data.total} />
           </CardContent>
         </Card>
       ) : undefined}

@@ -36,6 +36,7 @@ use crate::{
 
 const MAX_ARCHIVED_LOG_BYTES: i64 = 100 * 1_024 * 1_024;
 const MAX_ARCHIVED_LOG_VIEW_BYTES: u64 = 1_000_000;
+const DEFAULT_PAGE_SIZE: i64 = 25;
 
 #[derive(Debug, FromRow)]
 struct PoolAccess {
@@ -109,6 +110,13 @@ pub(crate) struct SearchQuery {
 #[derive(Deserialize)]
 pub(crate) struct RepositoryQuery {
     q: Option<String>,
+    page: Option<i64>,
+    #[serde(rename = "perPage")]
+    per_page: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct PaginationQuery {
     page: Option<i64>,
     #[serde(rename = "perPage")]
     per_page: Option<i64>,
@@ -352,7 +360,7 @@ pub async fn repositories(
     Query(query): Query<RepositoryQuery>,
     OptionalAuth(user): OptionalAuth,
 ) -> ApiResult<Json<Value>> {
-    let page = query_page(query.page);
+    let requested_page = query_page(query.page);
     let per_page = query.per_page.unwrap_or(50).clamp(1, 100);
     let query = query.q.unwrap_or_default().trim().to_owned();
     if query.len() > 100 {
@@ -362,7 +370,7 @@ pub async fn repositories(
     }
     let Some(user) = user else {
         return Ok(Json(json!({
-            "authenticated": false, "items": [], "total": 0, "page": page,
+            "authenticated": false, "items": [], "total": 0, "page": requested_page,
             "perPage": per_page, "query": query,
         })));
     };
@@ -378,8 +386,8 @@ pub async fn repositories(
             .cmp(&right.repository.full_name.to_lowercase())
     });
     let total = i64::try_from(available.len()).unwrap_or(i64::MAX);
-    let offset =
-        usize::try_from(page.saturating_sub(1).saturating_mul(per_page)).unwrap_or(usize::MAX);
+    let (page, offset) = bounded_pagination(requested_page, total, per_page);
+    let offset = usize::try_from(offset).unwrap_or(usize::MAX);
     let limit = usize::try_from(per_page).unwrap_or(100);
     let stored_rows = sqlx::query(
         r#"SELECT repo.id,repo.last_synced_at,COUNT(DISTINCT p.id) AS pool_count,
@@ -563,11 +571,21 @@ pub async fn search(
 
 pub async fn runner_pools(
     State(state): State<AppState>,
+    Query(query): Query<PaginationQuery>,
     OptionalAuth(user): OptionalAuth,
 ) -> ApiResult<Json<Value>> {
+    let (requested_page, per_page) = pagination(query.page, query.per_page);
     let Some(user) = user else {
-        return Ok(empty_page());
+        return Ok(empty_paginated_page(requested_page, per_page));
     };
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM runner_pools p
+        JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?"#,
+    )
+    .bind(&user.id)
+    .fetch_one(&state.database)
+    .await?;
+    let (page, offset) = bounded_pagination(requested_page, total, per_page);
     let rows = sqlx::query(
         r#"SELECT p.id,p.name,p.scope,p.mode,p.labels,p.image,p.desired_count,p.min_count,
           p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,p.paused,p.state,i.account_login,
@@ -581,9 +599,12 @@ pub async fn runner_pools(
           p.created_at FROM runner_pools p
         JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
         JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=p.repository_id
-        LEFT JOIN runners r ON r.pool_id=p.id GROUP BY p.id ORDER BY p.created_at DESC"#,
+        LEFT JOIN runners r ON r.pool_id=p.id GROUP BY p.id ORDER BY p.created_at DESC
+        LIMIT ? OFFSET ?"#,
     )
     .bind(&user.id)
+    .bind(per_page)
+    .bind(offset)
     .fetch_all(&state.database)
     .await?;
     let items = rows.iter().map(|row| json!({
@@ -598,7 +619,7 @@ pub async fn runner_pools(
         "canManage": user.role == "admin" || row.get::<String,_>("installation_permission") == "admin",
         "createdAt": iso(row.get::<i64,_>("created_at")),
     })).collect::<Vec<_>>();
-    Ok(Json(json!({ "authenticated": true, "items": items })))
+    Ok(paginated_page(&items, total, page, per_page))
 }
 
 pub async fn runner_pool(
@@ -729,11 +750,22 @@ pub async fn update_runner_pool(
 
 pub async fn runners(
     State(state): State<AppState>,
+    Query(query): Query<PaginationQuery>,
     OptionalAuth(user): OptionalAuth,
 ) -> ApiResult<Json<Value>> {
+    let (requested_page, per_page) = pagination(query.page, query.per_page);
     let Some(user) = user else {
-        return Ok(empty_page());
+        return Ok(empty_paginated_page(requested_page, per_page));
     };
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM runners r JOIN runner_pools p ON p.id=r.pool_id
+        JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
+        WHERE r.deleted_at IS NULL"#,
+    )
+    .bind(&user.id)
+    .fetch_one(&state.database)
+    .await?;
+    let (page, offset) = bounded_pagination(requested_page, total, per_page);
     let rows = sqlx::query(
         r#"SELECT r.id,r.name,r.status,r.busy,r.ephemeral,r.os,r.architecture,r.container_id,
           r.github_runner_id,r.failure_reason,r.registered_at,r.last_heartbeat_at,r.created_at,
@@ -744,9 +776,11 @@ pub async fn runners(
         JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
         JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=p.repository_id
         LEFT JOIN workflow_jobs wj ON wj.id=r.current_job_id
-        WHERE r.deleted_at IS NULL ORDER BY r.created_at DESC"#,
+        WHERE r.deleted_at IS NULL ORDER BY r.created_at DESC LIMIT ? OFFSET ?"#,
     )
     .bind(&user.id)
+    .bind(per_page)
+    .bind(offset)
     .fetch_all(&state.database)
     .await?;
     let items = rows.iter().map(|row| json!({
@@ -762,16 +796,27 @@ pub async fn runners(
         "currentJobName": row.try_get::<Option<String>,_>("current_job_name").ok().flatten(), "currentRunId": row.try_get::<Option<i64>,_>("current_run_id").ok().flatten(),
         "canManage": user.role == "admin" || row.get::<String,_>("installation_permission") == "admin",
     })).collect::<Vec<_>>();
-    Ok(Json(json!({ "authenticated": true, "items": items })))
+    Ok(paginated_page(&items, total, page, per_page))
 }
 
 pub async fn workflow_runs(
     State(state): State<AppState>,
+    Query(query): Query<PaginationQuery>,
     OptionalAuth(user): OptionalAuth,
 ) -> ApiResult<Json<Value>> {
+    let (requested_page, per_page) = pagination(query.page, query.per_page);
     let Some(user) = user else {
-        return Ok(empty_page());
+        return Ok(empty_paginated_page(requested_page, per_page));
     };
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM workflow_runs wr
+        JOIN repositories repo ON repo.id=wr.repository_id
+        JOIN user_installations ui ON ui.installation_id=repo.installation_id AND ui.user_id=?"#,
+    )
+    .bind(&user.id)
+    .fetch_one(&state.database)
+    .await?;
+    let (page, offset) = bounded_pagination(requested_page, total, per_page);
     let rows = sqlx::query(
         r#"SELECT wr.id,wr.workflow_name,wr.run_number,wr.run_attempt,wr.event,wr.status,
           wr.conclusion,wr.head_branch,wr.head_sha,wr.actor_login,wr.html_url,wr.started_at,
@@ -780,16 +825,19 @@ pub async fn workflow_runs(
           COUNT(CASE WHEN wj.conclusion='failure' THEN 1 END) AS failed_jobs
         FROM workflow_runs wr JOIN repositories repo ON repo.id=wr.repository_id
         JOIN user_installations ui ON ui.installation_id=repo.installation_id AND ui.user_id=?
-        LEFT JOIN workflow_jobs wj ON wj.run_id=wr.id GROUP BY wr.id ORDER BY wr.github_created_at DESC LIMIT 250"#,
+        LEFT JOIN workflow_jobs wj ON wj.run_id=wr.id GROUP BY wr.id
+        ORDER BY wr.github_created_at DESC LIMIT ? OFFSET ?"#,
     )
     .bind(&user.id)
+    .bind(per_page)
+    .bind(offset)
     .fetch_all(&state.database)
     .await?;
     let items = rows
         .iter()
         .map(|row| workflow_run_json(row, user.role == "admin"))
         .collect::<Vec<_>>();
-    Ok(Json(json!({ "authenticated": true, "items": items })))
+    Ok(paginated_page(&items, total, page, per_page))
 }
 
 pub async fn workflow_run(
@@ -847,11 +895,22 @@ pub async fn workflow_run(
 
 pub async fn webhook_deliveries(
     State(state): State<AppState>,
+    Query(query): Query<PaginationQuery>,
     OptionalAuth(user): OptionalAuth,
 ) -> ApiResult<Json<Value>> {
+    let (requested_page, per_page) = pagination(query.page, query.per_page);
     let Some(user) = user else {
-        return Ok(empty_page());
+        return Ok(empty_paginated_page(requested_page, per_page));
     };
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM webhook_deliveries wd
+        WHERE wd.installation_id IS NULL OR EXISTS (SELECT 1 FROM user_installations ui
+          WHERE ui.installation_id=wd.installation_id AND ui.user_id=?)"#,
+    )
+    .bind(&user.id)
+    .fetch_one(&state.database)
+    .await?;
+    let (page, offset) = bounded_pagination(requested_page, total, per_page);
     let rows = sqlx::query(
         r#"SELECT wd.id,wd.event,wd.action,wd.installation_id,wd.repository_id,
           wd.signature_valid,wd.status,wd.error,wd.received_at,wd.processed_at,
@@ -863,12 +922,14 @@ pub async fn webhook_deliveries(
         LEFT JOIN installations i ON i.id=wd.installation_id LEFT JOIN repositories repo ON repo.id=wd.repository_id
         WHERE wd.installation_id IS NULL OR EXISTS (SELECT 1 FROM user_installations ui
           WHERE ui.installation_id=wd.installation_id AND ui.user_id=?)
-        ORDER BY wd.received_at DESC LIMIT 250"#,
+        ORDER BY wd.received_at DESC LIMIT ? OFFSET ?"#,
     )
     .bind(&user.role)
     .bind(&user.id)
     .bind(&user.role)
     .bind(&user.id)
+    .bind(per_page)
+    .bind(offset)
     .fetch_all(&state.database)
     .await?;
     let items = rows.iter().map(|row| json!({
@@ -879,22 +940,33 @@ pub async fn webhook_deliveries(
         "accountLogin": row.try_get::<Option<String>,_>("account_login").ok().flatten(), "repository": row.try_get::<Option<String>,_>("full_name").ok().flatten(),
         "canRetry": row.get::<bool,_>("can_retry"),
     })).collect::<Vec<_>>();
-    Ok(Json(json!({ "authenticated": true, "items": items })))
+    Ok(paginated_page(&items, total, page, per_page))
 }
 
 pub async fn audit_events(
     State(state): State<AppState>,
+    Query(query): Query<PaginationQuery>,
     OptionalAuth(user): OptionalAuth,
 ) -> ApiResult<Json<Value>> {
+    let (requested_page, per_page) = pagination(query.page, query.per_page);
     let Some(user) = user else {
-        return Ok(empty_page());
+        return Ok(empty_paginated_page(requested_page, per_page));
     };
+    let total = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM audit_events WHERE actor_user_id=? OR actor_label='system'",
+    )
+    .bind(&user.id)
+    .fetch_one(&state.database)
+    .await?;
+    let (page, offset) = bounded_pagination(requested_page, total, per_page);
     let rows = sqlx::query(
         r#"SELECT id,actor_label,action,target_type,target_id,metadata,ip_address,created_at
         FROM audit_events WHERE actor_user_id=? OR actor_label='system'
-        ORDER BY created_at DESC LIMIT 500"#,
+        ORDER BY created_at DESC LIMIT ? OFFSET ?"#,
     )
     .bind(&user.id)
+    .bind(per_page)
+    .bind(offset)
     .fetch_all(&state.database)
     .await?;
     let items = rows.iter().map(|row| json!({
@@ -903,50 +975,65 @@ pub async fn audit_events(
         "metadata": row.get::<String,_>("metadata"), "ipAddress": row.try_get::<Option<String>,_>("ip_address").ok().flatten(),
         "createdAt": iso(row.get::<i64,_>("created_at")),
     })).collect::<Vec<_>>();
-    Ok(Json(json!({ "authenticated": true, "items": items })))
+    Ok(paginated_page(&items, total, page, per_page))
 }
 
 pub async fn log_targets(
     State(state): State<AppState>,
+    Query(query): Query<PaginationQuery>,
     OptionalAuth(user): OptionalAuth,
 ) -> ApiResult<Json<Value>> {
+    let (requested_page, per_page) = pagination(query.page, query.per_page);
     let Some(user) = user else {
-        return Ok(empty_page());
+        return Ok(empty_paginated_page(requested_page, per_page));
     };
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"SELECT
+          (SELECT COUNT(*) FROM runners r JOIN runner_pools p ON p.id=r.pool_id
+            JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
+            WHERE r.deleted_at IS NULL AND r.container_id IS NOT NULL)
+          +
+          (SELECT COUNT(*) FROM log_streams ls JOIN user_installations ui
+            ON ui.installation_id=ls.installation_id AND ui.user_id=? WHERE ls.complete=1)"#,
+    )
+    .bind(&user.id)
+    .bind(&user.id)
+    .fetch_one(&state.database)
+    .await?;
+    let (page, offset) = bounded_pagination(requested_page, total, per_page);
     let rows = sqlx::query(
-        r#"SELECT r.id,r.name,r.status,r.busy,r.container_id,r.updated_at,p.name AS pool_name,
-          repo.full_name FROM runners r JOIN runner_pools p ON p.id=r.pool_id
-        JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
-        LEFT JOIN repositories repo ON repo.id=p.repository_id
-        WHERE r.deleted_at IS NULL AND r.container_id IS NOT NULL ORDER BY r.busy DESC,r.updated_at DESC"#,
+        r#"SELECT id,runner_id,name,status,busy,container_id,updated_at,pool_name,repository,kind,size_bytes
+        FROM (
+          SELECT r.id,CAST(NULL AS TEXT) AS runner_id,r.name,r.status,r.busy,r.container_id,
+            r.updated_at,p.name AS pool_name,repo.full_name AS repository,'live' AS kind,
+            CAST(NULL AS INTEGER) AS size_bytes
+          FROM runners r JOIN runner_pools p ON p.id=r.pool_id
+          JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
+          LEFT JOIN repositories repo ON repo.id=p.repository_id
+          WHERE r.deleted_at IS NULL AND r.container_id IS NOT NULL
+          UNION ALL
+          SELECT ls.id,ls.runner_id,COALESCE(ls.runner_name,'Archived runner'),'archived',0,NULL,
+            ls.created_at,COALESCE(ls.pool_name,'Deleted pool'),ls.repository,'archive',ls.size_bytes
+          FROM log_streams ls JOIN user_installations ui
+            ON ui.installation_id=ls.installation_id AND ui.user_id=? WHERE ls.complete=1
+        ) targets ORDER BY CASE kind WHEN 'live' THEN 0 ELSE 1 END,busy DESC,updated_at DESC
+        LIMIT ? OFFSET ?"#,
     )
     .bind(&user.id)
-    .fetch_all(&state.database)
-    .await?;
-    let mut items = rows.iter().map(|row| json!({
-        "id": row.get::<String,_>("id"), "name": row.get::<String,_>("name"), "status": row.get::<String,_>("status"),
-        "busy": row.get::<bool,_>("busy"), "containerId": row.get::<String,_>("container_id"), "updatedAt": iso(row.get::<i64,_>("updated_at")),
-        "poolName": row.get::<String,_>("pool_name"), "repository": row.try_get::<Option<String>,_>("full_name").ok().flatten(), "kind": "live",
-    })).collect::<Vec<_>>();
-    let archives = sqlx::query(
-        r#"SELECT ls.id,ls.runner_id,ls.runner_name,ls.pool_name,ls.repository,ls.size_bytes,
-          ls.created_at FROM log_streams ls JOIN user_installations ui
-          ON ui.installation_id=ls.installation_id AND ui.user_id=?
-          WHERE ls.complete=1 ORDER BY ls.created_at DESC LIMIT 100"#,
-    )
     .bind(&user.id)
+    .bind(per_page)
+    .bind(offset)
     .fetch_all(&state.database)
     .await?;
-    items.extend(archives.iter().map(|row| json!({
+    let items = rows.iter().map(|row| json!({
         "id": row.get::<String,_>("id"), "runnerId": row.try_get::<Option<String>,_>("runner_id").ok().flatten(),
-        "name": row.try_get::<Option<String>,_>("runner_name").ok().flatten().unwrap_or_else(|| "Archived runner".into()),
-        "status": "archived", "busy": false, "containerId": null,
-        "updatedAt": iso(row.get::<i64,_>("created_at")),
-        "poolName": row.try_get::<Option<String>,_>("pool_name").ok().flatten().unwrap_or_else(|| "Deleted pool".into()),
+        "name": row.get::<String,_>("name"), "status": row.get::<String,_>("status"),
+        "busy": row.get::<bool,_>("busy"), "containerId": row.try_get::<Option<String>,_>("container_id").ok().flatten(),
+        "updatedAt": iso(row.get::<i64,_>("updated_at")), "poolName": row.get::<String,_>("pool_name"),
         "repository": row.try_get::<Option<String>,_>("repository").ok().flatten(),
-        "sizeBytes": row.get::<i64,_>("size_bytes"), "kind": "archive",
-    })));
-    Ok(Json(json!({ "authenticated": true, "items": items })))
+        "sizeBytes": row.try_get::<Option<i64>,_>("size_bytes").ok().flatten(), "kind": row.get::<String,_>("kind"),
+    })).collect::<Vec<_>>();
+    Ok(paginated_page(&items, total, page, per_page))
 }
 
 pub async fn runner_pool_options(
@@ -2241,8 +2328,37 @@ fn workflow_action_endpoint(action: &str) -> ApiResult<&'static str> {
     }
 }
 
-fn empty_page() -> Json<Value> {
-    Json(json!({ "authenticated": false, "items": [] }))
+fn empty_paginated_page(page: i64, per_page: i64) -> Json<Value> {
+    Json(json!({
+        "authenticated": false,
+        "items": [],
+        "total": 0,
+        "page": page,
+        "perPage": per_page,
+    }))
+}
+
+fn paginated_page(items: &[Value], total: i64, page: i64, per_page: i64) -> Json<Value> {
+    Json(json!({
+        "authenticated": true,
+        "items": items,
+        "total": total,
+        "page": page,
+        "perPage": per_page,
+    }))
+}
+
+fn pagination(page: Option<i64>, per_page: Option<i64>) -> (i64, i64) {
+    let page = query_page(page);
+    let per_page = per_page.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, 100);
+    (page, per_page)
+}
+
+fn bounded_pagination(requested_page: i64, total: i64, per_page: i64) -> (i64, i64) {
+    let total_pages = total.saturating_add(per_page - 1) / per_page;
+    let page = requested_page.min(total_pages.max(1));
+    let offset = page.saturating_sub(1).saturating_mul(per_page);
+    (page, offset)
 }
 
 fn query_page(page: Option<i64>) -> i64 {
@@ -2405,5 +2521,14 @@ mod tests {
         assert_eq!(query_page(Some(-4)), 1);
         assert_eq!(query_page(Some(7)), 7);
         assert_eq!(query_page(Some(i64::MAX)), 1_000_000);
+    }
+
+    #[test]
+    fn collection_pagination_is_bounded_and_uses_stable_offsets() {
+        assert_eq!(pagination(None, None), (1, DEFAULT_PAGE_SIZE));
+        assert_eq!(pagination(Some(3), Some(10)), (3, 10));
+        assert_eq!(pagination(Some(-1), Some(500)), (1, 100));
+        assert_eq!(bounded_pagination(9, 42, 10), (5, 40));
+        assert_eq!(bounded_pagination(3, 0, 25), (1, 0));
     }
 }

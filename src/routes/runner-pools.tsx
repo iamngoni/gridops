@@ -1,7 +1,8 @@
-import { Link, createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Boxes, Minus, Pause, Play, Plus, RefreshCw, Settings2, Trash2 } from "lucide-react";
 
 import { AsyncActionButton } from "~/components/async-action-button";
+import { ListPagination } from "~/components/list-pagination";
 import { ResourcePage } from "~/components/resource-page";
 import { StatusBadge } from "~/components/status-badge";
 import { Badge } from "~/components/ui/badge";
@@ -9,15 +10,19 @@ import { Card, CardContent } from "~/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
 import { getRunnerPoolsPage } from "~/features/operations/operations.functions";
 import { runnerPoolAction } from "~/features/runner-pools/runner-pools.functions";
+import { validatePageSearch } from "~/lib/pagination";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
 export const Route = createFileRoute("/runner-pools")({
-  loader: () => getRunnerPoolsPage(),
+  validateSearch: validatePageSearch,
+  loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
+  loader: ({ deps }) => getRunnerPoolsPage({ page: deps.page }),
   component: RunnerPoolsPage,
 });
 
 function RunnerPoolsPage() {
   const data = Route.useLoaderData();
+  const navigate = useNavigate({ from: Route.fullPath });
   useLiveRouteRefresh(5_000, data.authenticated);
   const control = runnerPoolAction;
 
@@ -119,6 +124,7 @@ function RunnerPoolsPage() {
                 ))}
               </TableBody>
             </Table>
+            <ListPagination itemCount={data.items.length} noun="runner pools" onPageChange={(page) => void navigate({ search: { page } })} page={data.page} perPage={data.perPage} total={data.total} />
           </CardContent>
         </Card>
       ) : undefined}

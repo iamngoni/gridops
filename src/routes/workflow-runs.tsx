@@ -1,7 +1,8 @@
-import { Link, createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ExternalLink, GitPullRequestArrow, OctagonX, RefreshCw, RotateCcw, Square } from "lucide-react";
 
 import { AsyncActionButton } from "~/components/async-action-button";
+import { ListPagination } from "~/components/list-pagination";
 import { ResourcePage } from "~/components/resource-page";
 import { StatusBadge } from "~/components/status-badge";
 import { Card, CardContent } from "~/components/ui/card";
@@ -9,14 +10,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~
 import { getWorkflowRunsPage, workflowRunAction } from "~/features/operations/operations.functions";
 import { formatDuration, formatRelativeTime } from "~/lib/utils";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
+import { validatePageSearch } from "~/lib/pagination";
 
 export const Route = createFileRoute("/workflow-runs")({
-  loader: () => getWorkflowRunsPage(),
+  validateSearch: validatePageSearch,
+  loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
+  loader: ({ deps }) => getWorkflowRunsPage({ page: deps.page }),
   component: WorkflowRunsPage,
 });
 
 function WorkflowRunsPage() {
   const data = Route.useLoaderData();
+  const navigate = useNavigate({ from: Route.fullPath });
   useLiveRouteRefresh(5_000, data.authenticated);
   const control = workflowRunAction;
 
@@ -57,6 +62,7 @@ function WorkflowRunsPage() {
               );
             })}</TableBody>
           </Table>
+          <ListPagination itemCount={data.items.length} noun="workflow runs" onPageChange={(page) => void navigate({ search: { page } })} page={data.page} perPage={data.perPage} total={data.total} />
         </CardContent></Card>
       ) : undefined}
     </ResourcePage>

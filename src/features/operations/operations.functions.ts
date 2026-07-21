@@ -2,10 +2,13 @@ import { api } from "~/lib/api";
 
 type Page<T> = { authenticated: boolean; items: T[] };
 
-export type RepositoryPage = Page<Repository> & {
+export type PaginatedPage<T> = Page<T> & {
   total: number;
   page: number;
   perPage: number;
+};
+
+export type RepositoryPage = PaginatedPage<Repository> & {
   query: string;
 };
 
@@ -79,14 +82,22 @@ export type SettingsPage = {
   };
 };
 
-export const getRunnerPoolsPage = () => api<Page<RunnerPool>>("/api/v1/runner-pools");
-export const getRunnersPage = () => api<Page<Runner>>("/api/v1/runners");
+const paginatedUrl = (path: string, page: number) => `${path}?page=${page}&perPage=25`;
+
+export const getRunnerPoolsPage = ({ page = 1 }: { page?: number } = {}) =>
+  api<PaginatedPage<RunnerPool>>(paginatedUrl("/api/v1/runner-pools", page));
+export const getRunnersPage = ({ page = 1 }: { page?: number } = {}) =>
+  api<PaginatedPage<Runner>>(paginatedUrl("/api/v1/runners", page));
 export const getRepositoriesPage = ({ query = "", page = 1 }: { query?: string; page?: number } = {}) =>
   api<RepositoryPage>(`/api/v1/repositories?q=${encodeURIComponent(query)}&page=${page}&perPage=50`);
-export const getWorkflowRunsPage = () => api<Page<WorkflowRun>>("/api/v1/workflow-runs");
-export const getWebhooksPage = () => api<Page<WebhookDelivery>>("/api/v1/webhooks");
-export const getAuditLogPage = () => api<Page<AuditEvent>>("/api/v1/audit");
-export const getLiveLogsPage = () => api<Page<LogTarget>>("/api/v1/log-streams");
+export const getWorkflowRunsPage = ({ page = 1 }: { page?: number } = {}) =>
+  api<PaginatedPage<WorkflowRun>>(paginatedUrl("/api/v1/workflow-runs", page));
+export const getWebhooksPage = ({ page = 1 }: { page?: number } = {}) =>
+  api<PaginatedPage<WebhookDelivery>>(paginatedUrl("/api/v1/webhooks", page));
+export const getAuditLogPage = ({ page = 1 }: { page?: number } = {}) =>
+  api<PaginatedPage<AuditEvent>>(paginatedUrl("/api/v1/audit", page));
+export const getLiveLogsPage = ({ page = 1 }: { page?: number } = {}) =>
+  api<PaginatedPage<LogTarget>>(paginatedUrl("/api/v1/log-streams", page));
 export const getSettingsPage = () => api<SettingsPage>("/api/v1/settings");
 
 export const getWorkflowRunDetailAction = ({ data }: { data: { runId: number } }) =>

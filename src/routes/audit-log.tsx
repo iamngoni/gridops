@@ -1,20 +1,25 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FileClock } from "lucide-react";
 
 import { ResourcePage } from "~/components/resource-page";
+import { ListPagination } from "~/components/list-pagination";
 import { Badge } from "~/components/ui/badge";
 import { Card, CardContent } from "~/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
 import { getAuditLogPage } from "~/features/operations/operations.functions";
+import { validatePageSearch } from "~/lib/pagination";
 import { formatRelativeTime } from "~/lib/utils";
 
 export const Route = createFileRoute("/audit-log")({
-  loader: () => getAuditLogPage(),
+  validateSearch: validatePageSearch,
+  loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
+  loader: ({ deps }) => getAuditLogPage({ page: deps.page }),
   component: AuditLogPage,
 });
 
 function AuditLogPage() {
   const data = Route.useLoaderData();
+  const navigate = useNavigate({ from: Route.fullPath });
   return (
     <ResourcePage
       title="Audit log"
@@ -35,7 +40,7 @@ function AuditLogPage() {
               <TableCell><code className="block max-w-96 truncate text-[11px] text-muted-foreground" title={event.metadata}>{event.metadata === "{}" ? "—" : event.metadata}</code></TableCell>
             </TableRow>
           ))}</TableBody>
-        </Table></CardContent></Card>
+        </Table><ListPagination itemCount={data.items.length} noun="audit events" onPageChange={(page) => void navigate({ search: { page } })} page={data.page} perPage={data.perPage} total={data.total} /></CardContent></Card>
       ) : undefined}
     </ResourcePage>
   );
