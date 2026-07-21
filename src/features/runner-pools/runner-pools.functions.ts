@@ -12,6 +12,13 @@ type BaseOptions = {
   runnerGroups: Array<{ installationId: number; id: number; name: string; visibility: string; isDefault: boolean }>;
 };
 
+export type RunnerGroupOption = {
+  id: number;
+  name: string;
+  visibility: string;
+  isDefault: boolean;
+};
+
 export type RunnerPoolOptions = (BaseOptions & {
   authenticated: false;
   installUrl: null;
@@ -55,6 +62,8 @@ export type RunnerPoolDetail = {
 export const getCreateRunnerPoolOptions = () => api<RunnerPoolOptions>("/api/v1/runner-pools/options");
 export const getRunnerPoolAction = ({ data }: { data: { poolId: string } }) =>
   api<RunnerPoolDetail>(`/api/v1/runner-pools/${data.poolId}`);
+export const getInstallationRunnerGroups = (installationId: number, signal?: AbortSignal) =>
+  api<{ items: RunnerGroupOption[] }>(`/api/v1/installations/${installationId}/runner-groups`, { signal });
 
 export function createRunnerPoolAction({ data }: { data: CreateRunnerPoolInput }) {
   const input = createRunnerPoolSchema.parse(data);

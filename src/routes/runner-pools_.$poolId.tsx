@@ -1,6 +1,6 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, LoaderCircle, Save, Server, Settings2 } from "lucide-react";
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
 import { AppShell } from "~/components/app-shell";
 import { StatusBadge } from "~/components/status-badge";
@@ -10,31 +10,59 @@ import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { SearchableSelect } from "~/components/ui/searchable-select";
 import {
-  getCreateRunnerPoolOptions,
+  type RunnerGroupOption,
+  type RunnerPoolDetail,
+  getInstallationRunnerGroups,
   getRunnerPoolAction,
   updateRunnerPoolAction,
 } from "~/features/runner-pools/runner-pools.functions";
 import { cn } from "~/lib/utils";
 
 export const Route = createFileRoute("/runner-pools_/$poolId")({
-  loader: ({ params }) => Promise.all([
-    getRunnerPoolAction({ data: { poolId: params.poolId } }),
-    getCreateRunnerPoolOptions(),
-  ]),
+  loader: ({ params }) => getRunnerPoolAction({ data: { poolId: params.poolId } }),
   component: EditRunnerPoolPage,
 });
 
 function EditRunnerPoolPage() {
-  const [pool, options] = Route.useLoaderData();
+  const pool = Route.useLoaderData();
+  return <RunnerPoolEditor key={pool.id} pool={pool} />;
+}
+
+type RunnerGroupLoadState =
+  | { status: "idle" | "loading"; items: RunnerGroupOption[]; error: null }
+  | { status: "ready"; items: RunnerGroupOption[]; error: null }
+  | { status: "error"; items: RunnerGroupOption[]; error: string };
+
+function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"ephemeral" | "persistent">(pool.mode);
   const [runnerGroupId, setRunnerGroupId] = useState(pool.runnerGroupId);
-  const runnerGroups = useMemo(
-    () => options.runnerGroups.filter((group) => group.installationId === pool.installationId),
-    [options.runnerGroups, pool.installationId],
+  const shouldLoadRunnerGroups = pool.canManage && pool.scope === "organization";
+  const [runnerGroupLoad, setRunnerGroupLoad] = useState<RunnerGroupLoadState>(
+    shouldLoadRunnerGroups
+      ? { status: "loading", items: [], error: null }
+      : { status: "idle", items: [], error: null },
   );
+
+  useEffect(() => {
+    if (!shouldLoadRunnerGroups) return;
+    const controller = new AbortController();
+    void getInstallationRunnerGroups(pool.installationId, controller.signal)
+      .then(({ items }) => setRunnerGroupLoad({ status: "ready", items, error: null }))
+      .catch((cause: unknown) => {
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setRunnerGroupLoad({
+          status: "error",
+          items: [],
+          error: cause instanceof Error ? cause.message : "Runner groups could not be loaded.",
+        });
+      });
+    return () => controller.abort();
+  }, [pool.installationId, shouldLoadRunnerGroups]);
+
+  const runnerGroups = runnerGroupLoad.items;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -130,8 +158,20 @@ function EditRunnerPoolPage() {
                 <Input defaultValue={pool.labels.join(", ")} name="labels" />
               </Field>
               {pool.scope === "organization" ? (
-                <Field label="Runner group" hint={runnerGroups.length ? "GitHub runner groups available to this installation." : "Enter the GitHub runner group ID."}>
-                  {runnerGroups.length ? (
+                <Field
+                  label="Runner group"
+                  hint={runnerGroupLoad.status === "loading"
+                    ? "Loading runner groups from GitHub…"
+                    : runnerGroups.length
+                      ? "GitHub runner groups available to this installation."
+                      : "Enter the GitHub runner group ID."}
+                >
+                  {runnerGroupLoad.status === "loading" ? (
+                    <div className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm text-muted-foreground" role="status">
+                      <LoaderCircle className="size-4 animate-spin" />
+                      Loading runner groups…
+                    </div>
+                  ) : runnerGroups.length ? (
                     <SearchableSelect
                       ariaLabel="GitHub runner group"
                       onValueChange={(nextRunnerGroupId) => setRunnerGroupId(nextRunnerGroupId ?? pool.runnerGroupId)}
@@ -145,7 +185,21 @@ function EditRunnerPoolPage() {
                       value={runnerGroupId}
                     />
                   ) : (
-                    <Input defaultValue={pool.runnerGroupId} min="1" name="runnerGroupId" required type="number" />
+                    <>
+                      <Input
+                        min="1"
+                        name="runnerGroupId"
+                        onChange={(event) => setRunnerGroupId(Number(event.target.value))}
+                        required
+                        type="number"
+                        value={runnerGroupId}
+                      />
+                      {runnerGroupLoad.status === "error" ? (
+                        <span className="block text-[11px] leading-4 text-destructive">
+                          {runnerGroupLoad.error} Enter the group ID manually.
+                        </span>
+                      ) : null}
+                    </>
                   )}
                 </Field>
               ) : null}

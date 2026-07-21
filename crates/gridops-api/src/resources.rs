@@ -1104,6 +1104,45 @@ pub async fn runner_pool_options(
     })))
 }
 
+pub async fn installation_runner_groups(
+    State(state): State<AppState>,
+    Path(installation_id): Path<i64>,
+    user: AuthUser,
+) -> ApiResult<Json<Value>> {
+    assert_installation_admin(&state, &user, installation_id).await?;
+    let installation = sqlx::query(
+        "SELECT account_login,account_type FROM installations WHERE id=? AND suspended_at IS NULL",
+    )
+    .bind(installation_id)
+    .fetch_optional(&state.database)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("GitHub installation does not exist.".into()))?;
+    let account_login = installation.get::<String, _>("account_login");
+    let account_type = installation.get::<String, _>("account_type");
+    if account_type != "Organization" {
+        return Ok(Json(json!({ "items": [] })));
+    }
+
+    let token = control_token(&state, &user.id, installation_id).await?;
+    let groups = state
+        .github
+        .runner_groups(&account_login, &token)
+        .await
+        .map_err(ApiError::Internal)?;
+    let items = groups
+        .into_iter()
+        .map(|group| {
+            json!({
+                "id": group.id,
+                "name": group.name,
+                "visibility": group.visibility,
+                "isDefault": group.is_default,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({ "items": items })))
+}
+
 pub async fn create_runner_pool(
     State(state): State<AppState>,
     headers: HeaderMap,

@@ -99,6 +99,10 @@ async fn main() -> Result<()> {
             get(resources::runner_pool_options),
         )
         .route(
+            "/api/v1/installations/{installation_id}/runner-groups",
+            get(resources::installation_runner_groups),
+        )
+        .route(
             "/api/v1/runner-pools/{pool_id}",
             get(resources::runner_pool)
                 .put(resources::update_runner_pool)
