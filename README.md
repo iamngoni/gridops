@@ -69,18 +69,6 @@ For local credentials already stored in `.env.local`:
 GRIDOPS_ENV_FILE=.env.local docker compose --env-file .env.local up --build
 ```
 
-### `ops.antonlabs.cc`
-
-The private Anton Labs deployment uses `compose.ops.yaml` to attach the Rust API/UI container to the existing `media-server_default` ingress network. Its `.env.local` keeps `GRIDOPS_BASE_URL=https://ops.antonlabs.cc` on Tailscale while setting `GRIDOPS_GITHUB_WEBHOOK_ACTIVE=true` and `GRIDOPS_GITHUB_WEBHOOK_URL=https://hooks.antonlabs.cc/api/webhooks/github` for signed GitHub deliveries. It also sets `GRIDOPS_BIND_ADDRESS=127.0.0.1` and `GRIDOPS_PORT=3002`.
-
-```sh
-GRIDOPS_ENV_FILE=.env.local \
-  docker compose --env-file .env.local \
-  -f compose.yaml -f compose.ops.yaml up --build -d
-```
-
-Install `deploy/traefik/ops.antonlabs.cc.yml` in the host Traefik file-provider directory. The `ops.antonlabs.cc` record remains an unproxied `A` record to the Mac mini's Tailscale IP. The separate `hooks.antonlabs.cc` hostname is published through Cloudflare Tunnel with an exact `/api/webhooks/github` path rule; its catch-all remains `404`, so the dashboard is not exposed.
-
 Only `manager` receives `/var/run/docker.sock`. Runner containers do not receive it. The API and reconciler share the `gridops-data` volume for SQLite and retained logs.
 
 ## Develop
