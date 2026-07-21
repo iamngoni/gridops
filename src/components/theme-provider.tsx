@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
-import { resolveTheme, THEME_STORAGE_KEY, type Theme } from "~/lib/theme";
+import { applyTheme, readThemePreference, resolveTheme, THEME_STORAGE_KEY, type Theme } from "~/lib/theme";
 
 type ThemeContextValue = {
   theme: Theme;
@@ -9,19 +9,15 @@ type ThemeContextValue = {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-function applyTheme(theme: Theme) {
-  const root = document.documentElement;
-  root.classList.toggle("dark", theme === "dark");
-  root.dataset.theme = theme;
-
-  document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", theme);
-  document
-    .querySelector('meta[name="theme-color"]')
-    ?.setAttribute("content", theme === "dark" ? "#0d120f" : "#f7faf8");
+function initialTheme(): Theme {
+  if (document.documentElement.dataset.theme) {
+    return resolveTheme(document.documentElement.dataset.theme);
+  }
+  return readThemePreference(window.localStorage);
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setTheme] = useState<Theme>(() => resolveTheme(document.documentElement.dataset.theme));
+  const [theme, setTheme] = useState<Theme>(initialTheme);
 
   useEffect(() => {
     applyTheme(theme);

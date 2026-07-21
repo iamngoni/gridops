@@ -3,22 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#09090b" />
+    <meta name="theme-color" content="#0d120f" />
     <meta name="color-scheme" content="dark" />
-    <script>
-      (() => {
-        let theme = "dark";
-        try {
-          if (localStorage.getItem("gridops-theme") === "light") theme = "light";
-        } catch {
-          // The dark default remains available when storage is blocked.
-        }
-        document.documentElement.classList.toggle("dark", theme === "dark");
-        document.documentElement.dataset.theme = theme;
-        document.querySelector('meta[name="color-scheme"]').content = theme;
-        document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#0d120f" : "#f7faf8";
-      })();
-    </script>
+    <script type="module" src="/src/theme-init.ts"></script>
     <meta name="application-name" content="GridOps" />
     <meta name="apple-mobile-web-app-title" content="GridOps" />
     <meta name="description" content="Provision, autoscale, operate, and observe self-hosted GitHub Actions runners from one control plane." />
