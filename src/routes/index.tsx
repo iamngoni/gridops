@@ -115,7 +115,7 @@ function OverviewPage() {
           />
         </section>
 
-        <section className="grid gap-4 2xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.8fr)]">
+        <section className="grid items-start gap-4 2xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.8fr)]">
           <CapacityPanel data={data} />
           <ActivityPanel data={data} />
         </section>
@@ -203,6 +203,7 @@ function CapacityPanel({ data }: { data: DashboardOverview }) {
   const [history, setHistory] = useState<CapacityHistory["points"]>([]);
   const [loading, setLoading] = useState(data.installations > 0);
   const [error, setError] = useState<string | null>(null);
+  const current = history.at(-1);
 
   useEffect(() => {
     if (data.installations === 0) {
@@ -236,9 +237,9 @@ function CapacityPanel({ data }: { data: DashboardOverview }) {
         <div>
           <CardTitle>Runner capacity</CardTitle>
           <div className="mt-3 flex items-center gap-4 text-[11px] text-muted-foreground">
-            <Legend color="bg-emerald-400" label="Available" />
-            <Legend color="bg-blue-400" label="Busy" />
-            <Legend color="bg-amber-400" label="Queued" />
+            <Legend color="bg-emerald-400" label="Available" value={current?.available} />
+            <Legend color="bg-blue-400" label="Busy" value={current?.busy} />
+            <Legend color="bg-amber-400" label="Queued" value={current?.queued} />
           </div>
         </div>
         <div className="flex gap-1">
@@ -291,8 +292,8 @@ function formatCapacityTick(value: string, window: CapacityWindow) {
     : date.toLocaleDateString([], { day: "numeric", month: "short" });
 }
 
-function Legend({ color, label }: { color: string; label: string }) {
-  return <span className="flex items-center gap-1.5"><span className={`size-1.5 rounded-full ${color}`} />{label}</span>;
+function Legend({ color, label, value }: { color: string; label: string; value?: number }) {
+  return <span className="flex items-center gap-1.5"><span className={`size-1.5 rounded-full ${color}`} /><span>{label}</span><span className="font-semibold tabular-nums text-foreground">{value ?? "—"}</span></span>;
 }
 
 function ActivityPanel({ data }: { data: DashboardOverview }) {
