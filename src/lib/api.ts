@@ -5,7 +5,7 @@ export type Viewer = {
   name: string | null;
   email: string | null;
   avatarUrl: string | null;
-  alerts: { failedRunners: number; failedWebhooks: number; queuedJobs: number };
+  alerts: { failedRunners: number; failedWebhooks: number; queuedJobs: number; deferredRunnerCleanup: number };
 };
 
 type ApiOptions = Omit<RequestInit, "body"> & { body?: unknown };

@@ -21,6 +21,7 @@ function LiveLogsPage() {
   const search = Route.useSearch();
   const getLogs = runnerLogsAction;
   const getArchive = archivedLogsAction;
+  const [targets, setTargets] = useState(data.items);
   const [runnerId, setRunnerId] = useState(
     data.items.some((item) => item.id === search.target) ? String(search.target) : (data.items[0]?.id ?? ""),
   );
@@ -28,15 +29,53 @@ function LiveLogsPage() {
   const [streaming, setStreaming] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const selected = data.items.find((item) => item.id === runnerId);
+  const selected = targets.find((item) => item.id === runnerId) ?? targets[0];
+  const selectedId = selected?.id;
+  const selectedKind = selected?.kind;
+
+  useEffect(() => {
+    if (!data.authenticated) return undefined;
+    let cancelled = false;
+    let refreshing = false;
+
+    async function refreshTargets() {
+      if (cancelled || refreshing || document.visibilityState === "hidden") return;
+      refreshing = true;
+      try {
+        const page = await getLiveLogsPage();
+        if (!cancelled) {
+          setTargets(page.items);
+          setRunnerId((current) => page.items.some((item) => item.id === current)
+            ? current
+            : (page.items[0]?.id ?? ""));
+        }
+      } catch {
+        // Keep the last known target list; the active stream has its own error state.
+      } finally {
+        refreshing = false;
+      }
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") void refreshTargets();
+    }
+
+    const interval = window.setInterval(() => void refreshTargets(), 5_000);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [data.authenticated]);
 
   const refresh = useCallback(async () => {
-    if (!selected) return;
+    if (!selectedId || !selectedKind) return;
     setLoading(true);
     try {
-      const response = selected.kind === "archive"
-        ? await getArchive({ data: { streamId: selected.id } })
-        : await getLogs({ data: { runnerId: selected.id } });
+      const response = selectedKind === "archive"
+        ? await getArchive({ data: { streamId: selectedId } })
+        : await getLogs({ data: { runnerId: selectedId } });
       setLogs(response.logs || "No container output yet.");
       setError(null);
     } catch (cause) {
@@ -44,11 +83,11 @@ function LiveLogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [getArchive, getLogs, selected]);
+  }, [getArchive, getLogs, selectedId, selectedKind]);
 
   useEffect(() => {
-    if (!selected) return undefined;
-    if (selected.kind === "archive" || !streaming) {
+    if (!selectedId || !selectedKind) return undefined;
+    if (selectedKind === "archive" || !streaming) {
       const initial = window.setTimeout(() => void refresh(), 0);
       return () => window.clearTimeout(initial);
     }
@@ -65,7 +104,7 @@ function LiveLogsPage() {
       while (!cancelled) {
         controller = new AbortController();
         try {
-          const response = await fetch(`/api/v1/runners/${encodeURIComponent(selected.id)}/logs/stream?tail=${tail}`, {
+          const response = await fetch(`/api/v1/runners/${encodeURIComponent(selectedId)}/logs/stream?tail=${tail}`, {
             credentials: "same-origin",
             signal: controller.signal,
           });
@@ -97,7 +136,7 @@ function LiveLogsPage() {
       cancelled = true;
       controller?.abort();
     };
-  }, [refresh, selected, streaming]);
+  }, [refresh, selectedId, selectedKind, streaming]);
 
   return (
     <ResourcePage
@@ -109,11 +148,11 @@ function LiveLogsPage() {
       action="Manage runners"
       actionHref="/runners"
     >
-      {data.items.length > 0 ? (
+      {targets.length > 0 ? (
         <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
           <Card><CardHeader><CardTitle>Managed streams</CardTitle></CardHeader><CardContent className="space-y-2">
-            {data.items.map((runner) => (
-              <button className={`w-full rounded-md border p-3 text-left transition-colors ${runner.id === runnerId ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"}`} key={runner.id} onClick={() => setRunnerId(runner.id)} type="button">
+            {targets.map((runner) => (
+              <button className={`w-full rounded-md border p-3 text-left transition-colors ${runner.id === selectedId ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"}`} key={runner.id} onClick={() => setRunnerId(runner.id)} type="button">
                 <div className="flex items-center justify-between gap-2"><span className="truncate font-mono text-xs font-medium">{runner.name}</span><StatusBadge status={runner.busy ? "busy" : String(runner.status)} /></div>
                 <div className="mt-2 truncate text-[11px] text-muted-foreground">{runner.poolName} · {runner.repository ?? "organization"}</div>
               </button>

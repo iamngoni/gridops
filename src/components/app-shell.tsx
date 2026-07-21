@@ -72,7 +72,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [query, search, viewer]);
 
   const alertCount = viewer
-    ? viewer.alerts.failedRunners + viewer.alerts.failedWebhooks + viewer.alerts.queuedJobs
+    ? viewer.alerts.failedRunners + viewer.alerts.failedWebhooks + viewer.alerts.queuedJobs + viewer.alerts.deferredRunnerCleanup
     : 0;
 
   return (
@@ -179,7 +179,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <summary className="relative inline-flex size-9 cursor-pointer list-none items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><Bell className="size-4" />{alertCount > 0 ? <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-red-400" /> : null}<span className="sr-only">Notifications</span></summary>
               <div className="absolute right-0 top-11 z-50 w-72 rounded-md border border-border bg-popover p-3 shadow-2xl">
                 <div className="text-xs font-medium">Operational notifications</div>
-                {viewer ? <div className="mt-3 space-y-2 text-xs"><AlertRow href="/runners" label="Failed runners" value={viewer.alerts.failedRunners} /><AlertRow href="/webhooks" label="Failed webhooks" value={viewer.alerts.failedWebhooks} /><AlertRow href="/workflow-runs" label="Queued jobs" value={viewer.alerts.queuedJobs} /></div> : <p className="mt-2 text-xs text-muted-foreground">Connect GitHub to see operational alerts.</p>}
+                {viewer ? <div className="mt-3 space-y-2 text-xs"><AlertRow href="/runners" label="Failed runners" value={viewer.alerts.failedRunners} /><AlertRow href="/webhooks" label="Failed webhooks" value={viewer.alerts.failedWebhooks} /><AlertRow href="/workflow-runs" label="Queued jobs" value={viewer.alerts.queuedJobs} /><AlertRow href="/audit-log" label="Deferred GitHub cleanup" value={viewer.alerts.deferredRunnerCleanup} /></div> : <p className="mt-2 text-xs text-muted-foreground">Connect GitHub to see operational alerts.</p>}
               </div>
             </details>
             {viewer ? (
