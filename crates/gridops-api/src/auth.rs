@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{FromRequestParts, State},
+    extract::{FromRequestParts, Path, State},
     http::{HeaderMap, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
 };
@@ -10,7 +10,8 @@ use gridops_core::{
     now_millis,
 };
 use rand::RngExt as _;
-use sqlx::Row as _;
+use serde::Deserialize;
+use sqlx::{Row as _, SqlitePool};
 
 use crate::{
     error::{ApiError, ApiResult},
@@ -29,6 +30,11 @@ pub struct AuthUser {
 }
 
 pub struct OptionalAuth(pub Option<AuthUser>);
+
+#[derive(Deserialize)]
+pub struct UserRoleInput {
+    role: String,
+}
 
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = ApiError;
@@ -160,6 +166,10 @@ fn can_administer_installation(system_role: &str, installation_permission: &str)
     system_role == "admin" || installation_permission == "admin"
 }
 
+fn valid_system_role(role: &str) -> bool {
+    matches!(role, "admin" | "member")
+}
+
 pub async fn logout(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -195,6 +205,85 @@ pub async fn logout(
     )
     .await?;
     Ok(response)
+}
+
+pub async fn update_user_role(
+    State(state): State<AppState>,
+    Path(target_user_id): Path<String>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(input): Json<UserRoleInput>,
+) -> ApiResult<Json<serde_json::Value>> {
+    assert_same_origin(&state, &headers)?;
+    require_system_admin(&user)?;
+    if !valid_system_role(&input.role) {
+        return Err(ApiError::BadRequest(
+            "A user role must be admin or member.".into(),
+        ));
+    }
+    let target = sqlx::query("SELECT login,role FROM users WHERE id=?")
+        .bind(&target_user_id)
+        .fetch_optional(&state.database)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("GridOps user does not exist.".into()))?;
+    let previous_role = target.get::<String, _>("role");
+    if previous_role == input.role {
+        return Ok(Json(serde_json::json!({ "ok": true })));
+    }
+
+    persist_user_role(
+        &state.database,
+        &target_user_id,
+        &previous_role,
+        &input.role,
+    )
+    .await?;
+    audit(
+        &state,
+        &user,
+        "user.role_updated",
+        "user",
+        Some(&target_user_id),
+        serde_json::json!({
+            "login": target.get::<String, _>("login"),
+            "previousRole": previous_role,
+            "role": input.role,
+        }),
+    )
+    .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn persist_user_role(
+    database: &SqlitePool,
+    target_user_id: &str,
+    previous_role: &str,
+    role: &str,
+) -> ApiResult<()> {
+    let result = if previous_role == "admin" && role == "member" {
+        sqlx::query(
+            r#"UPDATE users SET role='member',updated_at=?
+               WHERE id=? AND role='admin'
+                 AND (SELECT COUNT(*) FROM users WHERE role='admin') > 1"#,
+        )
+        .bind(now_millis())
+        .bind(target_user_id)
+        .execute(database)
+        .await?
+    } else {
+        sqlx::query("UPDATE users SET role=?,updated_at=? WHERE id=?")
+            .bind(role)
+            .bind(now_millis())
+            .bind(target_user_id)
+            .execute(database)
+            .await?
+    };
+    if result.rows_affected() != 1 {
+        return Err(ApiError::Conflict(
+            "GridOps must retain at least one system administrator.".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub async fn create_session(
@@ -278,6 +367,8 @@ pub async fn audit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gridops_core::connect_database_path;
+    use std::fs;
 
     fn user(role: &str) -> AuthUser {
         AuthUser {
@@ -302,5 +393,50 @@ mod tests {
         assert!(can_administer_installation("admin", "read"));
         assert!(can_administer_installation("member", "admin"));
         assert!(!can_administer_installation("member", "read"));
+    }
+
+    #[test]
+    fn system_roles_are_closed_to_known_values() {
+        assert!(valid_system_role("admin"));
+        assert!(valid_system_role("member"));
+        assert!(!valid_system_role("owner"));
+        assert!(!valid_system_role(""));
+    }
+
+    #[tokio::test]
+    async fn the_last_system_administrator_cannot_be_demoted() -> anyhow::Result<()> {
+        let directory =
+            std::env::temp_dir().join(format!("gridops-role-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory)?;
+        let database = connect_database_path(&directory.join("gridops.sqlite")).await?;
+        sqlx::query("INSERT INTO users (id,github_id,login,access_token,role,last_login_at,created_at,updated_at) VALUES ('admin-1',1,'octocat','sealed','admin',1,1,1)")
+            .execute(&database)
+            .await?;
+
+        assert!(matches!(
+            persist_user_role(&database, "admin-1", "admin", "member").await,
+            Err(ApiError::Conflict(_))
+        ));
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT role FROM users WHERE id='admin-1'")
+                .fetch_one(&database)
+                .await?,
+            "admin"
+        );
+
+        sqlx::query("INSERT INTO users (id,github_id,login,access_token,role,last_login_at,created_at,updated_at) VALUES ('admin-2',2,'hubot','sealed','admin',1,1,1)")
+            .execute(&database)
+            .await?;
+        persist_user_role(&database, "admin-1", "admin", "member").await?;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE role='admin'")
+                .fetch_one(&database)
+                .await?,
+            1
+        );
+
+        database.close().await;
+        fs::remove_dir_all(directory)?;
+        Ok(())
     }
 }

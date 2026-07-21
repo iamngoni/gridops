@@ -66,7 +66,9 @@ export type SettingsPage = {
     manager: { ok: boolean; dockerVersion?: string; apiVersion?: string; error?: string };
     settings: { logRetentionDays: number; webhookRetentionDays: number; auditRetentionDays: number;
       reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean };
-    user: { login: string; role: "admin" | "member" };
+    user: { id: string; login: string; role: "admin" | "member" };
+    users: Array<{ id: string; login: string; name: string | null; avatarUrl: string | null;
+      role: "admin" | "member"; lastLoginAt: string; canDemote: boolean }>;
   };
 };
 
@@ -82,7 +84,7 @@ export const getSettingsPage = () => api<SettingsPage>("/api/v1/settings");
 export const getWorkflowRunDetailAction = ({ data }: { data: { runId: number } }) =>
   api<WorkflowRunDetail>(`/api/v1/workflow-runs/${data.runId}`);
 export const syncGitHubAction = () => api<{ repositories: number }>("/api/v1/repositories/sync", { method: "POST" });
-export const workflowRunAction = ({ data }: { data: { runId: number; action: "cancel" | "rerun" | "rerun-failed" } }) =>
+export const workflowRunAction = ({ data }: { data: { runId: number; action: "cancel" | "force-cancel" | "rerun" | "rerun-failed" } }) =>
   api<{ ok: true }>(`/api/v1/workflow-runs/${data.runId}/action`, { method: "POST", body: { action: data.action } });
 export const runnerLogsAction = ({ data }: { data: { runnerId: string } }) =>
   api<{ runnerId: string; name: string; logs: string }>(`/api/v1/runners/${data.runnerId}/logs`);
@@ -96,6 +98,8 @@ export const saveSettingsAction = ({ data }: { data: {
   logRetentionDays: number; webhookRetentionDays: number; auditRetentionDays: number;
   reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean;
 } }) => api<{ ok: true }>("/api/v1/settings", { method: "PUT", body: data });
+export const updateUserRoleAction = ({ data }: { data: { userId: string; role: "admin" | "member" } }) =>
+  api<{ ok: true }>(`/api/v1/users/${encodeURIComponent(data.userId)}/role`, { method: "PUT", body: { role: data.role } });
 export const createGitHubAppManifestAction = ({ data }: { data: {
   ownerType: "user" | "organization"; organization?: string; name?: string;
 } }) => api<{ action: string; state: string; manifest: string; webhookActive: boolean }>(

@@ -1210,12 +1210,7 @@ pub async fn workflow_run_action(
         WHERE wr.id=? AND ui.user_id=?"#,
     ).bind(run_id).bind(&user.id).fetch_optional(&state.database).await?
         .ok_or_else(|| ApiError::NotFound("Workflow run does not exist or is not accessible.".into()))?;
-    let endpoint = match input.action.as_str() {
-        "cancel" => "cancel",
-        "rerun" => "rerun",
-        "rerun-failed" => "rerun-failed-jobs",
-        _ => return Err(ApiError::BadRequest("Workflow action is invalid.".into())),
-    };
+    let endpoint = workflow_action_endpoint(&input.action)?;
     assert_installation_admin(&state, &user, run.get("installation_id")).await?;
     let token = control_token(&state, &user.id, run.get("installation_id")).await?;
     state
@@ -1323,6 +1318,31 @@ pub async fn settings(
         }
         Err(error) => json!({ "ok": false, "error": error.to_string() }),
     };
+    let users = if user.role == "admin" {
+        let admin_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE role='admin'")
+                .fetch_one(&state.database)
+                .await?;
+        sqlx::query("SELECT id,login,name,avatar_url,role,last_login_at FROM users ORDER BY login")
+            .fetch_all(&state.database)
+            .await?
+            .iter()
+            .map(|row| {
+                let role = row.get::<String, _>("role");
+                json!({
+                    "id": row.get::<String, _>("id"),
+                    "login": row.get::<String, _>("login"),
+                    "name": row.try_get::<Option<String>, _>("name").ok().flatten(),
+                    "avatarUrl": row.try_get::<Option<String>, _>("avatar_url").ok().flatten(),
+                    "role": role,
+                    "lastLoginAt": iso(row.get::<i64, _>("last_login_at")),
+                    "canDemote": role != "admin" || admin_count > 1,
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     Ok(Json(json!({ "authenticated": true, "data": {
         "configuration": configuration(&state).await?, "manager": manager,
         "settings": {
@@ -1332,7 +1352,7 @@ pub async fn settings(
             "reconcileIntervalSeconds": stored_i64(&stored, "reconcileIntervalSeconds", 30),
             "githubSyncIntervalSeconds": stored_i64(&stored, "githubSyncIntervalSeconds", 60),
             "autoUpdateImages": stored.get("autoUpdateImages").and_then(Value::as_bool).unwrap_or(false),
-        }, "user": { "login": user.login, "role": user.role }
+        }, "user": { "id": user.id, "login": user.login, "role": user.role }, "users": users
     }})))
 }
 
@@ -2067,6 +2087,16 @@ fn workflow_run_json(row: &sqlx::sqlite::SqliteRow, system_admin: bool) -> Value
     })
 }
 
+fn workflow_action_endpoint(action: &str) -> ApiResult<&'static str> {
+    match action {
+        "cancel" => Ok("cancel"),
+        "force-cancel" => Ok("force-cancel"),
+        "rerun" => Ok("rerun"),
+        "rerun-failed" => Ok("rerun-failed-jobs"),
+        _ => Err(ApiError::BadRequest("Workflow action is invalid.".into())),
+    }
+}
+
 fn empty_page() -> Json<Value> {
     Json(json!({ "authenticated": false, "items": [] }))
 }
@@ -2174,5 +2204,20 @@ mod tests {
             .map(|index| format!("label-{index}"))
             .collect::<Vec<_>>();
         assert!(normalized_pool_labels("linux", &too_many).is_err());
+    }
+
+    #[test]
+    fn workflow_actions_include_force_cancellation() {
+        assert_eq!(workflow_action_endpoint("cancel").ok(), Some("cancel"));
+        assert_eq!(
+            workflow_action_endpoint("force-cancel").ok(),
+            Some("force-cancel")
+        );
+        assert_eq!(workflow_action_endpoint("rerun").ok(), Some("rerun"));
+        assert_eq!(
+            workflow_action_endpoint("rerun-failed").ok(),
+            Some("rerun-failed-jobs")
+        );
+        assert!(workflow_action_endpoint("delete").is_err());
     }
 }

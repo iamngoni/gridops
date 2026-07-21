@@ -604,11 +604,14 @@ fn runner_command(input: &ProvisionRunner) -> Result<(Vec<String>, Vec<String>),
             vec![
                 "/bin/bash".into(),
                 "-lc".into(),
-                r#"set -euo pipefail
+                instrumented_runner_script(
+                    r#"set -euo pipefail
 IFS= read -r GRIDOPS_BOOTSTRAP_SECRET
 [ -n "$GRIDOPS_BOOTSTRAP_SECRET" ]
-exec /home/runner/run.sh --jitconfig "$GRIDOPS_BOOTSTRAP_SECRET""#
-                    .into(),
+runner_args=(--jitconfig "$GRIDOPS_BOOTSTRAP_SECRET")
+unset GRIDOPS_BOOTSTRAP_SECRET"#,
+                    r#"/home/runner/run.sh "${runner_args[@]}""#,
+                ),
             ],
             vec!["ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1".into()],
         )),
@@ -617,16 +620,20 @@ exec /home/runner/run.sh --jitconfig "$GRIDOPS_BOOTSTRAP_SECRET""#
                 ManagerError::BadRequest("Runner registration URL is required.".into())
             })?;
             let script = r#"set -euo pipefail
-if [ -f .runner ]; then exec ./run.sh; fi
+if [ ! -f .runner ]; then
 IFS= read -r GRIDOPS_BOOTSTRAP_SECRET
 [ -n "$GRIDOPS_BOOTSTRAP_SECRET" ]
 args=(--unattended --url "$GRIDOPS_REGISTRATION_URL" --token "$GRIDOPS_BOOTSTRAP_SECRET" --name "$GRIDOPS_RUNNER_NAME" --labels "$GRIDOPS_RUNNER_LABELS" --work _work --replace --disableupdate)
 if [ -n "${GRIDOPS_RUNNER_GROUP:-}" ]; then args+=(--runnergroup "$GRIDOPS_RUNNER_GROUP"); fi
 ./config.sh "${args[@]}"
 unset GRIDOPS_BOOTSTRAP_SECRET
-exec ./run.sh"#;
+fi"#;
             Ok((
-                vec!["/bin/bash".into(), "-lc".into(), script.into()],
+                vec![
+                    "/bin/bash".into(),
+                    "-lc".into(),
+                    instrumented_runner_script(script, "./run.sh"),
+                ],
                 vec![
                     format!("GRIDOPS_REGISTRATION_URL={registration_url}"),
                     format!("GRIDOPS_RUNNER_NAME={}", input.name),
@@ -641,6 +648,56 @@ exec ./run.sh"#;
         }
         _ => Err(ManagerError::BadRequest("Runner mode is invalid.".into())),
     }
+}
+
+fn instrumented_runner_script(setup: &str, launch: &str) -> String {
+    format!(
+        r#"{setup}
+{launch} &
+runner_pid=$!
+trap 'kill -TERM "$runner_pid" 2>/dev/null || true' TERM INT
+
+# GitHub's runner writes the actual step console stream to rotating files under
+# _diag/pages. Mirror every page to container stdout so GridOps can stream job
+# output while it is still running, while retaining the runner's secret masking.
+runner_root=${{GRIDOPS_RUNNER_ROOT:-/home/runner}}
+forwarded_state=/tmp/gridops-forwarded-job-state
+rm -rf "$forwarded_state"
+mkdir -p "$forwarded_state"
+
+flush_job_logs() {{
+  for job_log in "$runner_root"/_diag/pages/*.log; do
+    [ -f "$job_log" ] || continue
+    state_file="$forwarded_state/$(basename "$job_log").offset"
+    offset=0
+    if [ -f "$state_file" ]; then read -r offset < "$state_file" || offset=0; fi
+    size=$(wc -c < "$job_log" 2>/dev/null) || continue
+    if [ "$size" -gt "$offset" ]; then
+      if [ "$offset" -eq 0 ]; then
+        printf '\n[GRIDOPS JOB LOG %s]\n' "$(basename "$job_log")"
+      fi
+      head -c "$size" "$job_log" 2>/dev/null | tail -c "+$((offset + 1))" || true
+      printf '%s\n' "$size" > "$state_file"
+    fi
+  done
+}}
+
+(
+  while kill -0 "$runner_pid" 2>/dev/null; do
+    flush_job_logs
+    sleep 0.1
+  done
+  flush_job_logs
+) &
+forwarder_pid=$!
+
+set +e
+wait "$runner_pid"
+runner_status=$?
+set -e
+wait "$forwarder_pid" 2>/dev/null || true
+exit "$runner_status""#
+    )
 }
 
 fn take_bootstrap_secret(input: &mut ProvisionRunner) -> Result<SecretString, ManagerError> {
@@ -789,6 +846,8 @@ mod tests {
         assert!(input.jit_config.is_none());
         assert!(!metadata.contains(secret.expose_secret()));
         assert!(metadata.contains("read -r GRIDOPS_BOOTSTRAP_SECRET"));
+        assert!(metadata.contains("_diag/pages/*.log"));
+        assert!(metadata.contains("GRIDOPS JOB LOG"));
         Ok(())
     }
 
@@ -803,7 +862,57 @@ mod tests {
         assert_eq!(secret.expose_secret(), "fake-registration-123456");
         assert!(input.registration_token.is_none());
         assert!(!metadata.contains(secret.expose_secret()));
-        assert!(metadata.contains("if [ -f .runner ]"));
+        assert!(metadata.contains("if [ ! -f .runner ]"));
+        assert!(metadata.contains("_diag/pages/*.log"));
+        assert!(metadata.contains("GRIDOPS JOB LOG"));
+        Ok(())
+    }
+
+    #[test]
+    fn generated_runner_shell_scripts_are_valid_bash() -> Result<(), ManagerError> {
+        for mode in ["ephemeral", "persistent"] {
+            let (command, _) = runner_command(&provision_request(mode))?;
+            let Some(script) = command.get(2) else {
+                return Err(ManagerError::Internal(anyhow::anyhow!(
+                    "runner command should include an inline script"
+                )));
+            };
+            let status = std::process::Command::new("bash")
+                .args(["-n", "-c", script])
+                .status()
+                .map_err(|error| ManagerError::Internal(error.into()))?;
+            assert!(
+                status.success(),
+                "generated {mode} runner script is invalid"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn job_console_pages_are_forwarded_to_runner_stdout() -> Result<(), ManagerError> {
+        let directory =
+            std::env::temp_dir().join(format!("gridops-runner-log-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(directory.join("_diag/pages"))
+            .map_err(|error| ManagerError::Internal(error.into()))?;
+        let script = instrumented_runner_script(
+            "set -euo pipefail",
+            r#"/bin/bash -lc 'sleep 0.2; printf "secret-masked job output\n" > "$GRIDOPS_RUNNER_ROOT/_diag/pages/job.log"; sleep 0.5'"#,
+        );
+        let output = std::process::Command::new("bash")
+            .args(["-c", &script])
+            .env("GRIDOPS_RUNNER_ROOT", &directory)
+            .output()
+            .map_err(|error| ManagerError::Internal(error.into()))?;
+        std::fs::remove_dir_all(&directory)
+            .map_err(|error| ManagerError::Internal(error.into()))?;
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("GRIDOPS JOB LOG job.log"));
+        assert!(
+            stdout.contains("secret-masked job output"),
+            "forwarded stdout was: {stdout}"
+        );
         Ok(())
     }
 }

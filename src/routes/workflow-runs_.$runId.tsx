@@ -1,13 +1,14 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { ExternalLink, FileArchive, GitBranch, GitPullRequestArrow, Terminal } from "lucide-react";
+import { ExternalLink, FileArchive, GitBranch, GitPullRequestArrow, OctagonX, RefreshCw, RotateCcw, Square, Terminal } from "lucide-react";
 
 import { AppShell } from "~/components/app-shell";
+import { AsyncActionButton } from "~/components/async-action-button";
 import { StatusBadge } from "~/components/status-badge";
 import { Badge } from "~/components/ui/badge";
 import { buttonVariants } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
-import { getWorkflowRunDetailAction } from "~/features/operations/operations.functions";
+import { getWorkflowRunDetailAction, workflowRunAction } from "~/features/operations/operations.functions";
 import { formatDuration, formatRelativeTime } from "~/lib/utils";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
@@ -18,6 +19,8 @@ export const Route = createFileRoute("/workflow-runs_/$runId")({
 
 function WorkflowRunDetailPage() {
   const run = Route.useLoaderData();
+  const control = workflowRunAction;
+  const active = run.status === "queued" || run.status === "in_progress";
   useLiveRouteRefresh(3_000, run.status === "queued" || run.status === "in_progress");
   return (
     <AppShell>
@@ -25,7 +28,14 @@ function WorkflowRunDetailPage() {
         <Link className="text-sm text-muted-foreground hover:text-foreground" to="/workflow-runs">← Workflow runs</Link>
         <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
           <div><div className="flex items-center gap-2"><GitPullRequestArrow className="size-5 text-primary" /><h1 className="text-2xl font-semibold tracking-tight">{run.workflowName}</h1><StatusBadge status={run.conclusion ?? run.status} /></div><p className="mt-2 text-sm text-muted-foreground">{run.repository} · run #{run.runNumber} · attempt {run.runAttempt}</p></div>
-          <div className="flex gap-2"><a className={buttonVariants({ variant: "outline" })} href={`/api/workflow-runs/${run.id}/logs`}><FileArchive />Download logs</a><a className={buttonVariants()} href={run.htmlUrl} rel="noreferrer" target="_blank"><ExternalLink />Open on GitHub</a></div>
+          <div className="flex flex-wrap gap-2">
+            {run.canManage && active ? <AsyncActionButton action={() => control({ data: { runId: run.id, action: "cancel" } })} confirm={`Cancel ${run.workflowName} #${run.runNumber}?`} icon={<Square />} success="Cancellation requested.">Cancel</AsyncActionButton> : null}
+            {run.canManage && active ? <AsyncActionButton action={() => control({ data: { runId: run.id, action: "force-cancel" } })} confirm={`Force-cancel ${run.workflowName} #${run.runNumber}? Use this only when normal cancellation is blocked.`} icon={<OctagonX />} success="Force cancellation requested." variant="destructive">Force cancel</AsyncActionButton> : null}
+            {run.canManage && !active ? <AsyncActionButton action={() => control({ data: { runId: run.id, action: "rerun" } })} icon={<RotateCcw />} success="Workflow rerun requested.">Rerun</AsyncActionButton> : null}
+            {run.canManage && run.conclusion === "failure" ? <AsyncActionButton action={() => control({ data: { runId: run.id, action: "rerun-failed" } })} icon={<RefreshCw />} success="Failed jobs rerun requested.">Rerun failed</AsyncActionButton> : null}
+            <a className={buttonVariants({ variant: "outline" })} href={`/api/workflow-runs/${run.id}/logs`}><FileArchive />Download logs</a>
+            <a className={buttonVariants()} href={run.htmlUrl} rel="noreferrer" target="_blank"><ExternalLink />Open on GitHub</a>
+          </div>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

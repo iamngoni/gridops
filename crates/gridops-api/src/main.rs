@@ -55,6 +55,10 @@ async fn main() -> Result<()> {
         .route("/api/v1/auth/github", get(oauth::begin))
         .route("/api/v1/auth/github/callback", get(oauth::callback))
         .route("/api/v1/auth/logout", post(auth::logout))
+        .route(
+            "/api/v1/users/{user_id}/role",
+            axum::routing::put(auth::update_user_role),
+        )
         .route("/api/v1/webhooks/github", post(webhooks::receive))
         .route("/auth/github", get(oauth::begin))
         .route("/auth/github/callback", get(oauth::callback))

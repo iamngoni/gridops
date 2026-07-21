@@ -1,14 +1,17 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { CheckCircle2, CircleX, DatabaseBackup, Github, LoaderCircle, Save, Settings, ShieldCheck } from "lucide-react";
+import { CheckCircle2, CircleX, DatabaseBackup, Github, LoaderCircle, Save, Settings, Shield, ShieldCheck, UserRound, UsersRound } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { AsyncActionButton } from "~/components/async-action-button";
 import { ResourcePage } from "~/components/resource-page";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
-import { createGitHubAppManifestAction, getSettingsPage, saveSettingsAction } from "~/features/operations/operations.functions";
+import { createGitHubAppManifestAction, getSettingsPage, saveSettingsAction, updateUserRoleAction } from "~/features/operations/operations.functions";
+import type { SettingsPage } from "~/features/operations/operations.functions";
+import { formatRelativeTime } from "~/lib/utils";
 
 export const Route = createFileRoute("/settings")({
   loader: () => getSettingsPage(),
@@ -24,7 +27,7 @@ function SettingsPage() {
   return <AuthenticatedSettings data={page.data} />;
 }
 
-function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<typeof Route.useLoaderData>, { authenticated: true }>['data']> }) {
+function AuthenticatedSettings({ data }: { data: NonNullable<SettingsPage["data"]> }) {
   const isAdmin = data.user.role === "admin";
   const save = saveSettingsAction;
   const router = useRouter();
@@ -173,6 +176,22 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
           </CardContent>
         </Card>
       </form> : <Card className="mt-4"><CardHeader><div><CardTitle>Retention and reconciliation</CardTitle><p className="mt-1 text-xs text-muted-foreground">System policy is visible to members and editable by administrators.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><InfoRow label="Runner logs" value={`${data.settings.logRetentionDays} days`} /><InfoRow label="Webhooks" value={`${data.settings.webhookRetentionDays} days`} /><InfoRow label="Audit" value={`${data.settings.auditRetentionDays} days`} /><InfoRow label="Reconcile" value={`${data.settings.reconcileIntervalSeconds} seconds`} /><InfoRow label="GitHub polling" value={`${data.settings.githubSyncIntervalSeconds} seconds`} /></CardContent></Card>}
+
+      {isAdmin ? <Card className="mt-4">
+        <CardHeader><div><CardTitle>Users and access</CardTitle><p className="mt-1 text-xs text-muted-foreground">System administrators manage credentials, backups, policy, and every installation they can access. Members retain read-only visibility unless they administer an individual GitHub installation.</p></div><UsersRound className="size-5 text-primary" /></CardHeader>
+        <CardContent className="divide-y divide-border px-0 py-0">
+          {data.users.map((gridopsUser) => {
+            const nextRole = gridopsUser.role === "admin" ? "member" : "admin";
+            return <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center" key={gridopsUser.id}>
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                {gridopsUser.avatarUrl ? <img alt="" className="size-9 rounded-full" src={gridopsUser.avatarUrl} /> : <div className="grid size-9 place-items-center rounded-full bg-muted text-muted-foreground"><UserRound className="size-4" /></div>}
+                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="truncate text-sm font-medium">{gridopsUser.name ?? gridopsUser.login}</span><Badge variant={gridopsUser.role === "admin" ? "success" : "outline"}>{gridopsUser.role}</Badge>{gridopsUser.id === data.user.id ? <Badge variant="secondary">you</Badge> : null}</div><p className="mt-1 truncate text-[11px] text-muted-foreground">@{gridopsUser.login} · signed in {formatRelativeTime(gridopsUser.lastLoginAt)}</p></div>
+              </div>
+              <AsyncActionButton action={() => updateUserRoleAction({ data: { userId: gridopsUser.id, role: nextRole } })} confirm={nextRole === "member" ? `Remove system administrator access from @${gridopsUser.login}?` : `Grant @${gridopsUser.login} system administrator access?`} disabled={nextRole === "member" && !gridopsUser.canDemote} icon={<Shield />} success={`@${gridopsUser.login} is now a ${nextRole}.`} variant={nextRole === "admin" ? "default" : "outline"}>{nextRole === "admin" ? "Make admin" : "Make member"}</AsyncActionButton>
+            </div>;
+          })}
+        </CardContent>
+      </Card> : null}
     </ResourcePage>
   );
 }
