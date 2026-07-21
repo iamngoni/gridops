@@ -1013,11 +1013,7 @@ pub async fn runner_pool_options(
     Ok(Json(json!({
         "authenticated": true, "installations": installations, "repositories": repositories, "runnerGroups": runner_groups,
         "installUrl": format!("https://github.com/apps/{app_slug}/installations/new"),
-        "defaults": {
-            "image": state.config.runner_image(), "labels": ["gridops"], "cpuLimit": 2,
-            "memoryLimitMb": 4096, "desiredCount": 0, "minCount": 0, "maxCount": 10,
-            "autoscalingEnabled": true, "queueScaleFactor": 1, "idleTimeoutMinutes": 5, "runnerGroupId": 1,
-        }
+        "defaults": runner_pool_defaults(state.config.runner_image())
     })))
 }
 
@@ -2278,6 +2274,15 @@ fn normalized_pool_labels(name: &str, additional: &[String]) -> ApiResult<Vec<St
     Ok(labels)
 }
 
+fn runner_pool_defaults(image: &str) -> Value {
+    json!({
+        "image": image, "labels": ["gridops"], "cpuLimit": 2,
+        "memoryLimitMb": 4096, "desiredCount": 1, "minCount": 0, "maxCount": 10,
+        "autoscalingEnabled": true, "queueScaleFactor": 1, "idleTimeoutMinutes": 5,
+        "runnerGroupId": 1,
+    })
+}
+
 fn capacity_window(window: &str) -> Option<(i64, i64)> {
     match window {
         "24h" => Some((86_400_000, 5 * 60_000)),
@@ -2364,6 +2369,14 @@ mod tests {
             .map(|index| format!("label-{index}"))
             .collect::<Vec<_>>();
         assert!(normalized_pool_labels("linux", &too_many).is_err());
+    }
+
+    #[test]
+    fn new_runner_pools_start_with_one_runner_but_can_scale_to_zero() {
+        let defaults = runner_pool_defaults("runner:latest");
+
+        assert_eq!(defaults["desiredCount"], 1);
+        assert_eq!(defaults["minCount"], 0);
     }
 
     #[test]

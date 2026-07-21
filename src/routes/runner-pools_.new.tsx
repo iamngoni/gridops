@@ -296,7 +296,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
           <Card>
             <CardHeader><CardTitle>Capacity and limits</CardTitle></CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-              <Field label="Desired"><Input defaultValue={options.defaults.desiredCount} min="0" max="100" name="desiredCount" type="number" required /></Field>
+              <Field label="Desired" hint="Starts at one runner by default; idle autoscaling may return it to the minimum."><Input defaultValue={options.defaults.desiredCount} min="0" max="100" name="desiredCount" type="number" required /></Field>
               <Field label="Minimum"><Input defaultValue={options.defaults.minCount} min="0" max="100" name="minCount" type="number" required /></Field>
               <Field label="Maximum"><Input defaultValue={options.defaults.maxCount} min="1" max="100" name="maxCount" type="number" required /></Field>
               <Field label="CPU cores"><Input defaultValue={options.defaults.cpuLimit} min="0.25" max="64" step="0.25" name="cpuLimit" type="number" required /></Field>
