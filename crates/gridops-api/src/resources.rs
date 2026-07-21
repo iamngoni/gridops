@@ -38,6 +38,7 @@ use crate::{
 const MAX_ARCHIVED_LOG_BYTES: i64 = 100 * 1_024 * 1_024;
 const MAX_ARCHIVED_LOG_VIEW_BYTES: u64 = 1_000_000;
 const DEFAULT_PAGE_SIZE: i64 = 25;
+const FALLBACK_MANAGER_CPU_LIMIT: i64 = 64;
 
 #[derive(Debug, FromRow)]
 struct PoolAccess {
@@ -687,6 +688,7 @@ pub async fn runner_pool(
         .iter()
         .filter_map(|repository| repository.get("id").and_then(Value::as_i64))
         .collect::<Vec<_>>();
+    let max_cpu_limit = manager_cpu_capacity(&state).await;
     Ok(Json(json!({
         "id": pool_id,
         "installationId": pool.installation_id,
@@ -711,6 +713,7 @@ pub async fn runner_pool(
         "autoscalingEnabled": pool.autoscaling_enabled,
         "queueScaleFactor": pool.queue_scale_factor,
         "idleTimeoutMinutes": pool.idle_timeout_minutes,
+        "maxCpuLimit": max_cpu_limit,
         "configurationVersion": pool.configuration_version,
         "canManage": user.role == "admin" || pool.installation_permission == "admin",
     })))
@@ -727,6 +730,12 @@ pub async fn update_runner_pool(
     input.validate().map_err(ApiError::BadRequest)?;
     let pool = pool_access(&state, &user, &pool_id).await?;
     assert_installation_admin(&state, &user, pool.installation_id).await?;
+    let max_cpu_limit = manager_cpu_capacity(&state).await;
+    if input.cpu_limit > max_cpu_limit as f64 {
+        return Err(ApiError::BadRequest(format!(
+            "CPU limit cannot exceed host CPU capacity ({max_cpu_limit})."
+        )));
+    }
     let existing_repository_ids = sqlx::query_scalar::<_, i64>(
         "SELECT repository_id FROM runner_pool_repositories WHERE pool_id=? ORDER BY created_at,repository_id",
     )
@@ -1187,10 +1196,11 @@ pub async fn runner_pool_options(
         })
         .collect::<Vec<_>>();
     let app_slug = state.github_app_slug().await.map_err(ApiError::Internal)?;
+    let max_cpu_limit = manager_cpu_capacity(&state).await;
     Ok(Json(json!({
         "authenticated": true, "installations": installations, "repositories": [], "runnerGroups": [],
         "installUrl": format!("https://github.com/apps/{app_slug}/installations/new"),
-        "defaults": runner_pool_defaults(state.config.runner_image())
+        "defaults": runner_pool_defaults(state.config.runner_image(), max_cpu_limit)
     })))
 }
 
@@ -1274,6 +1284,12 @@ pub async fn create_runner_pool(
     assert_same_origin(&state, &headers)?;
     input.validate().map_err(ApiError::BadRequest)?;
     assert_installation_admin(&state, &user, input.installation_id).await?;
+    let max_cpu_limit = manager_cpu_capacity(&state).await;
+    if input.cpu_limit > max_cpu_limit as f64 {
+        return Err(ApiError::BadRequest(format!(
+            "CPU limit cannot exceed host CPU capacity ({max_cpu_limit})."
+        )));
+    }
     let repository_ids = input.selected_repository_ids();
     if !repository_ids.is_empty() {
         let installation = available_installations(&state, &user, true)
@@ -1725,7 +1741,12 @@ pub async fn settings(
         .collect::<HashMap<_, _>>();
     let manager = match manager_json(&state, Method::GET, "v1/health", None).await {
         Ok(value) => {
-            json!({ "ok": true, "dockerVersion": value.get("dockerVersion"), "apiVersion": value.get("apiVersion") })
+            json!({
+                "ok": true,
+                "dockerVersion": value.get("dockerVersion"),
+                "apiVersion": value.get("apiVersion"),
+                "availableCpus": value.get("availableCpus"),
+            })
         }
         Err(error) => json!({ "ok": false, "error": error.to_string() }),
     };
@@ -2624,13 +2645,27 @@ fn normalized_pool_labels(name: &str, additional: &[String]) -> ApiResult<Vec<St
     Ok(labels)
 }
 
-fn runner_pool_defaults(image: &str) -> Value {
+fn runner_pool_defaults(image: &str, max_cpu_limit: i64) -> Value {
     json!({
         "image": image, "labels": ["gridops"], "cpuLimit": 2,
         "memoryLimitMb": 4096, "desiredCount": 1, "minCount": 0, "maxCount": 10,
         "autoscalingEnabled": true, "queueScaleFactor": 1, "idleTimeoutMinutes": 5,
-        "runnerGroupId": 1,
+        "runnerGroupId": 1, "maxCpuLimit": max_cpu_limit,
     })
+}
+
+async fn manager_cpu_capacity(state: &AppState) -> i64 {
+    let available = manager_json(state, Method::GET, "v1/health", None)
+        .await
+        .ok()
+        .and_then(|value| {
+            value
+                .get("availableCpus")
+                .and_then(Value::as_i64)
+                .filter(|cpus| *cpus > 0)
+        })
+        .unwrap_or(FALLBACK_MANAGER_CPU_LIMIT);
+    available.clamp(1, FALLBACK_MANAGER_CPU_LIMIT)
 }
 
 fn capacity_window(window: &str) -> Option<(i64, i64)> {
@@ -2726,7 +2761,7 @@ mod tests {
 
     #[test]
     fn new_runner_pools_start_with_one_runner_but_can_scale_to_zero() {
-        let defaults = runner_pool_defaults("runner:latest");
+        let defaults = runner_pool_defaults("runner:latest", 64);
 
         assert_eq!(defaults["desiredCount"], 1);
         assert_eq!(defaults["minCount"], 0);

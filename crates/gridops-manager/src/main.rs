@@ -254,10 +254,12 @@ async fn health(
 ) -> Result<Json<Value>, ManagerError> {
     state.docker.ping().await?;
     let version = state.docker.version().await?;
+    let info = state.docker.info().await?;
     Ok(Json(json!({
         "status": "ok",
         "dockerVersion": version.version,
         "apiVersion": version.api_version,
+        "availableCpus": info.ncpu,
     })))
 }
 

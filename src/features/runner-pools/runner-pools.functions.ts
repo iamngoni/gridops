@@ -36,6 +36,7 @@ export type RunnerPoolOptions = (BaseOptions & {
     image: string; labels: string[]; cpuLimit: number; memoryLimitMb: number;
     desiredCount: number; minCount: number; maxCount: number; autoscalingEnabled: boolean;
     queueScaleFactor: number; idleTimeoutMinutes: number; runnerGroupId: number;
+    maxCpuLimit: number;
   };
 });
 
@@ -57,6 +58,7 @@ export type RunnerPoolDetail = {
   maxCount: number;
   cpuLimit: number;
   memoryLimitMb: number;
+  maxCpuLimit?: number;
   runnerGroupId: number;
   paused: boolean;
   state: string;
