@@ -14,7 +14,10 @@ use crate::{
     error::{ApiError, ApiResult},
     state::AppState,
 };
-use gridops_core::{associate_runner_with_job, now_millis};
+use gridops_core::{
+    assigned_queued_jobs, associate_runner_with_job, now_millis, runner_supports_system_label,
+    scale_up_target,
+};
 
 const MAX_WEBHOOK_BYTES: usize = 25 * 1024 * 1024;
 
@@ -562,30 +565,21 @@ async fn scale_for_queued_job(
         .filter_map(Value::as_str)
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    let default_labels = [
-        "self-hosted",
-        "linux",
-        "windows",
-        "macos",
-        "x64",
-        "x86",
-        "arm",
-        "arm64",
-    ];
     let custom_labels = requested_labels
         .iter()
-        .filter(|label| !default_labels.contains(&label.to_lowercase().as_str()))
+        .filter(|label| !runner_supports_system_label(label))
         .collect::<Vec<_>>();
     let candidates = sqlx::query(
         r#"SELECT p.id,p.labels,p.desired_count,p.max_count,p.queue_scale_factor,
-          COUNT(CASE WHEN r.deleted_at IS NULL AND r.status IN ('starting','online','idle','busy','paused') THEN 1 END) AS active_count
+          COUNT(CASE WHEN r.deleted_at IS NULL AND r.busy=1
+            AND r.status IN ('online','idle','busy') THEN 1 END) AS busy_count
         FROM runner_pools p JOIN repositories event_repo ON event_repo.id=?
         LEFT JOIN runners r ON r.pool_id=p.id
         WHERE p.autoscaling_enabled=1 AND p.paused=0 AND (
           p.repository_id=event_repo.id OR
           (p.scope='organization' AND p.installation_id=event_repo.installation_id)
         ) GROUP BY p.id
-        ORDER BY CASE WHEN p.repository_id=event_repo.id THEN 0 ELSE 1 END,p.created_at"#,
+        ORDER BY CASE WHEN p.repository_id=event_repo.id THEN 0 ELSE 1 END,p.created_at,p.id"#,
     )
     .bind(repository_id)
     .fetch_all(database)
@@ -600,15 +594,16 @@ async fn scale_for_queued_job(
         }) {
             continue;
         }
+        let pool_id = candidate.get::<String, _>("id");
         let desired = candidate.get::<i64, _>("desired_count");
         let maximum = candidate.get::<i64, _>("max_count");
-        let active = candidate.get::<i64, _>("active_count");
+        let busy = candidate.get::<i64, _>("busy_count");
+        let queued = assigned_queued_jobs(database, &pool_id).await?;
         let factor = candidate.get::<i64, _>("queue_scale_factor");
-        let target = maximum.min(desired.max(active + factor));
+        let target = scale_up_target(desired, busy, queued, factor, maximum);
         if target <= desired {
             return Ok(());
         }
-        let pool_id = candidate.get::<String, _>("id");
         sqlx::query(
             "UPDATE runner_pools SET desired_count=?,state='scaling',updated_at=? WHERE id=?",
         )
@@ -844,6 +839,7 @@ mod tests {
             .as_object()
             .ok_or_else(|| anyhow::anyhow!("test payload is not an object"))?;
         process_workflow_job(&database, Some("queued"), queued).await?;
+        process_workflow_job(&database, Some("queued"), queued).await?;
         let desired = sqlx::query_scalar::<_, i64>(
             "SELECT desired_count FROM runner_pools WHERE id='pool-1'",
         )
@@ -854,7 +850,7 @@ mod tests {
         )
         .fetch_one(&database)
         .await?;
-        assert_eq!(desired, 3);
+        assert_eq!(desired, 2);
         assert_eq!(associated_events, 2);
 
         let out_of_order = json!({

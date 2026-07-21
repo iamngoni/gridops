@@ -1,9 +1,14 @@
+pub mod autoscaling;
 pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod github;
 pub mod models;
 
+pub use autoscaling::{
+    assigned_queued_jobs, effective_runner_labels, runner_arch_label, runner_supports_system_label,
+    runner_system_labels, scale_up_target,
+};
 pub use config::Config;
 pub use crypto::Vault;
 pub use db::{associate_runner_with_job, connect_database, connect_database_path, now_millis};

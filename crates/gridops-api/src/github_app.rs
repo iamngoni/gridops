@@ -96,6 +96,7 @@ pub async fn create_manifest(
     let (manifest, webhook_active) = build_manifest(
         name,
         state.config.base_url(),
+        state.config.github_webhook_url(),
         state.config.github_webhook_active(),
     )
     .map_err(ApiError::Internal)?;
@@ -246,12 +247,15 @@ fn valid_slug(value: &str) -> bool {
 fn build_manifest(
     name: &str,
     base_url: &url::Url,
+    webhook_url_override: Option<&url::Url>,
     webhook_active_override: Option<bool>,
 ) -> anyhow::Result<(Value, bool)> {
     let callback_url = base_url.join("/auth/github/callback")?;
     let manifest_callback_url = base_url.join("/auth/github-app/manifest/callback")?;
     let setup_url = oauth_start_url(base_url, "/runner-pools/new?installationUpdated=1")?;
-    let webhook_url = base_url.join("/api/webhooks/github")?;
+    let webhook_url = webhook_url_override
+        .cloned()
+        .map_or_else(|| base_url.join("/api/webhooks/github"), Ok)?;
     let webhook_active = webhook_active_override.unwrap_or_else(|| {
         webhook_url.scheme() == "https"
             && !matches!(
@@ -321,7 +325,7 @@ mod tests {
     fn manifest_contains_runner_permissions_and_safe_local_webhook_defaults() -> anyhow::Result<()>
     {
         let base_url = url::Url::parse("http://localhost:3100")?;
-        let (manifest, webhook_active) = build_manifest("GridOps Test", &base_url, None)?;
+        let (manifest, webhook_active) = build_manifest("GridOps Test", &base_url, None, None)?;
         assert!(!webhook_active);
         assert_eq!(
             manifest["default_permissions"]["organization_self_hosted_runners"],
@@ -360,7 +364,7 @@ mod tests {
     #[test]
     fn manifest_enables_webhooks_for_public_https_origins() -> anyhow::Result<()> {
         let base_url = url::Url::parse("https://gridops.example.com")?;
-        let (manifest, webhook_active) = build_manifest("GridOps Test", &base_url, None)?;
+        let (manifest, webhook_active) = build_manifest("GridOps Test", &base_url, None, None)?;
         assert!(webhook_active);
         assert_eq!(manifest["hook_attributes"]["active"], true);
         assert_eq!(
@@ -373,9 +377,25 @@ mod tests {
     #[test]
     fn manifest_can_disable_webhooks_for_private_https_origins() -> anyhow::Result<()> {
         let base_url = url::Url::parse("https://ops.antonlabs.cc")?;
-        let (manifest, webhook_active) = build_manifest("GridOps Test", &base_url, Some(false))?;
+        let (manifest, webhook_active) =
+            build_manifest("GridOps Test", &base_url, None, Some(false))?;
         assert!(!webhook_active);
         assert_eq!(manifest["hook_attributes"]["active"], false);
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_supports_a_public_webhook_with_a_private_dashboard() -> anyhow::Result<()> {
+        let base_url = url::Url::parse("https://ops.antonlabs.cc")?;
+        let webhook_url = url::Url::parse("https://hooks.antonlabs.cc/api/webhooks/github")?;
+        let (manifest, webhook_active) =
+            build_manifest("GridOps Test", &base_url, Some(&webhook_url), Some(true))?;
+        assert!(webhook_active);
+        assert_eq!(manifest["url"], "https://ops.antonlabs.cc/");
+        assert_eq!(
+            manifest["hook_attributes"]["url"],
+            "https://hooks.antonlabs.cc/api/webhooks/github"
+        );
         Ok(())
     }
 }

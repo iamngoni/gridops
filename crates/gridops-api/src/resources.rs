@@ -16,7 +16,7 @@ use chrono::{SecondsFormat, Utc};
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use gridops_core::{
     ConfigurationState, CreateRunnerPool, GitHubRepository, JitRequest, RepositoryPage,
-    RunnerTarget, UpdateRunnerPool, now_millis,
+    RunnerTarget, UpdateRunnerPool, effective_runner_labels, now_millis,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -1608,14 +1608,14 @@ async fn provision(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResul
         };
         let mut request = json!({
             "runnerId": runner_id, "poolId": pool_id, "name": runner_name, "image": pool.image,
-            "mode": pool.mode, "labels": labels, "cpuLimit": pool.cpu_limit,
+            "mode": pool.mode, "labels": &labels, "cpuLimit": pool.cpu_limit,
             "memoryLimitMb": pool.memory_limit_mb, "network": state.config.runner_network(),
             "pullImage": setting_bool(state, "autoUpdateImages", false).await,
         });
         let github_runner_id = if pool.ephemeral {
             let jit = state.github.generate_jit_config(target, &token, &JitRequest {
                 name: runner_name.clone(), runner_group_id: pool.runner_group_id,
-                labels: json_array(&pool.labels), work_folder: "_work".into(),
+                labels: effective_runner_labels(&labels), work_folder: "_work".into(),
             }).await.map_err(ApiError::Internal)?;
             request["jitConfig"] = Value::String(jit.encoded_jit_config);
             Some(jit.runner.id)

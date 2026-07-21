@@ -7,7 +7,8 @@ use anyhow::{Context as _, Result, bail};
 use futures_util::StreamExt as _;
 use gridops_core::{
     Config, GitHubClient, JitRequest, RunnerTarget, Vault, WorkflowJobPage, WorkflowRunPage,
-    associate_runner_with_job, connect_database, now_millis,
+    assigned_queued_jobs, associate_runner_with_job, connect_database, effective_runner_labels,
+    now_millis, scale_up_target,
 };
 use reqwest::{Method, StatusCode};
 use secrecy::ExposeSecret as _;
@@ -339,19 +340,24 @@ async fn maybe_scale_up(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Re
     if !pool.autoscaling_enabled || pool.paused {
         return Ok(());
     }
-    let queued = queued_jobs(&app.database, pool).await?;
+    let queued = assigned_queued_jobs(&app.database, &pool.id).await?;
     if queued == 0 {
         return Ok(());
     }
-    let active = i64::try_from(
+    let busy = i64::try_from(
         runners
             .iter()
-            .filter(|runner| active_status(&runner.status))
+            .filter(|runner| runner.busy && active_status(&runner.status))
             .count(),
     )
     .unwrap_or(i64::MAX);
-    let requested = active.saturating_add(queued.saturating_mul(pool.queue_scale_factor));
-    let target = pool.max_count.min(pool.desired_count.max(requested));
+    let target = scale_up_target(
+        pool.desired_count,
+        busy,
+        queued,
+        pool.queue_scale_factor,
+        pool.max_count,
+    );
     if target <= pool.desired_count {
         return Ok(());
     }
@@ -392,7 +398,7 @@ async fn maybe_scale_down(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> 
     if runners.iter().any(|runner| runner.busy) {
         return Ok(());
     }
-    let queued = queued_jobs(&app.database, pool).await?;
+    let queued = assigned_queued_jobs(&app.database, &pool.id).await?;
     if queued > 0 {
         return Ok(());
     }
@@ -419,36 +425,6 @@ async fn maybe_scale_down(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> 
     )
     .await?;
     Ok(())
-}
-
-async fn queued_jobs(database: &SqlitePool, pool: &Pool) -> Result<i64> {
-    Ok(sqlx::query(
-        r#"SELECT COUNT(*) AS count FROM workflow_jobs wj
-          JOIN workflow_runs wr ON wr.id=wj.run_id
-          JOIN repositories repo ON repo.id=wr.repository_id
-          WHERE wj.status='queued' AND ?=(
-            SELECT candidate.id FROM runner_pools candidate
-            WHERE candidate.autoscaling_enabled=1 AND candidate.paused=0 AND (
-              candidate.repository_id=repo.id OR
-              (candidate.scope='organization' AND candidate.installation_id=repo.installation_id)
-            ) AND NOT EXISTS (
-              SELECT 1 FROM json_each(wj.labels) requested
-              WHERE lower(CAST(requested.value AS TEXT)) NOT IN (
-                'self-hosted','linux','windows','macos','x64','x86','arm','arm64'
-              ) AND NOT EXISTS (
-                SELECT 1 FROM json_each(candidate.labels) assigned
-                WHERE lower(CAST(assigned.value AS TEXT))=lower(CAST(requested.value AS TEXT))
-              )
-            )
-            ORDER BY CASE WHEN candidate.repository_id IS NOT NULL THEN 0 ELSE 1 END,
-              candidate.created_at,candidate.id
-            LIMIT 1
-          )"#,
-    )
-    .bind(&pool.id)
-    .fetch_one(database)
-    .await?
-    .get::<i64, _>("count"))
 }
 
 async fn retry_github_runner_cleanup(app: &Reconciler) -> Result<()> {
@@ -547,7 +523,7 @@ async fn record_capacity_sample(app: &Reconciler, pool: &Pool, runners: &[Runner
         .count();
     let busy = runners.iter().filter(|runner| runner.busy).count();
     let available = online.saturating_sub(busy);
-    let queued = queued_jobs(&app.database, pool).await?;
+    let queued = assigned_queued_jobs(&app.database, &pool.id).await?;
     let recorded_at = now_millis().div_euclid(60_000) * 60_000;
     sqlx::query(
         r#"INSERT INTO capacity_samples (id,installation_id,pool_id,available,busy,queued,recorded_at)
@@ -802,7 +778,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
             "name": runner_name,
             "image": pool.image,
             "mode": pool.mode,
-            "labels": labels,
+            "labels": &labels,
             "cpuLimit": pool.cpu_limit,
             "memoryLimitMb": pool.memory_limit_mb,
             "network": app.config.runner_network(),
@@ -817,8 +793,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
                     &JitRequest {
                         name: runner_name.clone(),
                         runner_group_id: pool.runner_group_id,
-                        labels: serde_json::from_str::<Vec<String>>(&pool.labels)
-                            .unwrap_or_default(),
+                        labels: effective_runner_labels(&labels),
                         work_folder: "_work".into(),
                     },
                 )
@@ -1424,11 +1399,12 @@ mod tests {
               VALUES (20,10,'CI',1,'push','queued','abc123','https://github.com/octo-org/gridops/actions/runs/20',1,1,1,1);
             INSERT INTO workflow_jobs (id,run_id,name,status,labels,html_url,created_at,updated_at)
               VALUES
-              (30,20,'generic','queued','["self-hosted","linux","x64"]','https://github.com/octo-org/gridops/actions/runs/20/job/30',1,1),
+              (30,20,'generic','queued','["self-hosted","linux"]','https://github.com/octo-org/gridops/actions/runs/20/job/30',1,1),
               (31,20,'docker','queued','["self-hosted","docker"]','https://github.com/octo-org/gridops/actions/runs/20/job/31',1,1),
               (32,20,'gpu','queued','["self-hosted","pool-b"]','https://github.com/octo-org/gridops/actions/runs/20/job/32',1,1),
               (33,20,'org','queued','["self-hosted","org-only"]','https://github.com/octo-org/gridops/actions/runs/20/job/33',1,1),
-              (34,20,'unmatched','queued','["self-hosted","unmatched"]','https://github.com/octo-org/gridops/actions/runs/20/job/34',1,1);
+              (34,20,'unmatched','queued','["self-hosted","unmatched"]','https://github.com/octo-org/gridops/actions/runs/20/job/34',1,1),
+              (35,20,'wrong-os','queued','["self-hosted","windows"]','https://github.com/octo-org/gridops/actions/runs/20/job/35',1,1);
             "#,
         )
         .execute(&database)
@@ -1441,9 +1417,9 @@ mod tests {
         let mut pool_org = pool(1);
         pool_org.id = "pool-org".into();
 
-        assert_eq!(queued_jobs(&database, &pool_a).await?, 2);
-        assert_eq!(queued_jobs(&database, &pool_b).await?, 1);
-        assert_eq!(queued_jobs(&database, &pool_org).await?, 1);
+        assert_eq!(assigned_queued_jobs(&database, &pool_a.id).await?, 2);
+        assert_eq!(assigned_queued_jobs(&database, &pool_b.id).await?, 1);
+        assert_eq!(assigned_queued_jobs(&database, &pool_org.id).await?, 1);
 
         database.close().await;
         fs::remove_dir_all(directory)?;
