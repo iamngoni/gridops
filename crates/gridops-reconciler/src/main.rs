@@ -56,6 +56,7 @@ struct Runner {
     github_runner_id: Option<i64>,
     status: String,
     busy: bool,
+    last_job_id: Option<i64>,
     updated_at: i64,
 }
 
@@ -453,46 +454,51 @@ async fn delete_runner(app: &Reconciler, pool: &Pool, runner: &Runner) -> Result
     {
         tracing::warn!(runner_id = %runner.id, error = ?error, "could not archive runner logs");
     }
-    let token = installation_token(app, pool.installation_id)
-        .await?
-        .context("GitHub App credentials are required for autonomous reconciliation")?;
     let target = match (&pool.repository_owner, &pool.repository_name) {
         (Some(owner), Some(repository)) => RunnerTarget::Repository { owner, repository },
         _ => RunnerTarget::Organization {
             organization: &pool.account_login,
         },
     };
-    let github_runner_id = match runner.github_runner_id {
-        Some(id) => Some(id),
-        None => app
-            .github
-            .runner_by_name(target, &token, &runner.name)
-            .await?
-            .map(|runner| runner.id),
-    };
-    if let Some(github_runner_id) = github_runner_id {
-        let path = match (&pool.repository_owner, &pool.repository_name) {
-            (Some(owner), Some(repository)) => {
-                format!("/repos/{owner}/{repository}/actions/runners/{github_runner_id}")
+    match installation_token(app, pool.installation_id).await {
+        Ok(Some(token)) => {
+            let github_cleanup = async {
+                let github_runner_id = match runner.github_runner_id {
+                    Some(id) => Some(id),
+                    None => app
+                        .github
+                        .runner_by_name(target, &token, &runner.name)
+                        .await?
+                        .map(|runner| runner.id),
+                };
+                if let Some(github_runner_id) = github_runner_id {
+                    let path = match (&pool.repository_owner, &pool.repository_name) {
+                        (Some(owner), Some(repository)) => format!(
+                            "/repos/{owner}/{repository}/actions/runners/{github_runner_id}"
+                        ),
+                        _ => format!(
+                            "/orgs/{}/actions/runners/{github_runner_id}",
+                            pool.account_login
+                        ),
+                    };
+                    app.github.delete(&path, &token).await?;
+                }
+                Result::<()>::Ok(())
             }
-            _ => format!(
-                "/orgs/{}/actions/runners/{github_runner_id}",
-                pool.account_login
-            ),
-        };
-        app.github.delete(&path, &token).await?;
+            .await;
+            if let Err(error) = github_cleanup {
+                tracing::warn!(runner_id = %runner.id, error = ?error, "could not remove GitHub runner registration");
+            }
+        }
+        Ok(None) => {
+            tracing::warn!(runner_id = %runner.id, "GitHub App credentials unavailable during runner cleanup");
+        }
+        Err(error) => {
+            tracing::warn!(runner_id = %runner.id, error = ?error, "GitHub installation unavailable during runner cleanup");
+        }
     }
     if let Some(container_id) = &runner.container_id {
-        let result = manager_request::<Value>(
-            app,
-            Method::DELETE,
-            &format!("v1/runners/{container_id}"),
-            None,
-        )
-        .await;
-        if let Err(error) = result {
-            tracing::warn!(container_id, error = ?error, "could not remove runner container");
-        }
+        remove_manager_container(app, container_id).await?;
     }
     let now = now_millis();
     sqlx::query("UPDATE runners SET status='deleted',busy=0,deleted_at=?,updated_at=? WHERE id=?")
@@ -512,9 +518,31 @@ async fn delete_runner(app: &Reconciler, pool: &Pool, runner: &Runner) -> Result
     Ok(())
 }
 
+async fn remove_manager_container(app: &Reconciler, container_id: &str) -> Result<()> {
+    let token = app
+        .config
+        .manager_token()
+        .context("GRIDOPS_MANAGER_TOKEN is required")?
+        .expose_secret();
+    let url = app
+        .config
+        .manager_url()
+        .join(&format!("v1/runners/{container_id}"))?;
+    let response = app.http.delete(url).bearer_auth(token).send().await?;
+    let status = response.status();
+    if status.is_success() || status == StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    let detail = response.text().await.unwrap_or_default();
+    bail!(
+        "runner manager deletion failed ({status}): {}",
+        detail.chars().take(500).collect::<String>()
+    )
+}
+
 async fn runners(app: &Reconciler, pool_id: &str) -> Result<Vec<Runner>> {
     Ok(sqlx::query_as::<_, Runner>(
-        r#"SELECT id,name,container_id,github_runner_id,status,busy,updated_at
+        r#"SELECT id,name,container_id,github_runner_id,status,busy,last_job_id,updated_at
            FROM runners WHERE pool_id=? AND deleted_at IS NULL ORDER BY created_at DESC"#,
     )
     .bind(pool_id)
@@ -634,12 +662,13 @@ async fn archive_runner_logs(app: &Reconciler, pool: &Pool, runner: &Runner) -> 
         .map(|(owner, repository)| format!("{owner}/{repository}"));
     let inserted = sqlx::query(
         r#"INSERT INTO log_streams (
-          id,runner_id,installation_id,runner_name,pool_name,repository,source,path,
+          id,runner_id,job_id,installation_id,runner_name,pool_name,repository,source,path,
           size_bytes,complete,checksum,expires_at,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,'docker',?, ?,1,?,?,?,?)"#,
+        ) VALUES (?,?,?,?,?,?,?,'docker',?, ?,1,?,?,?,?)"#,
     )
     .bind(&stream_id)
     .bind(&runner.id)
+    .bind(runner.last_job_id)
     .bind(pool.installation_id)
     .bind(&runner.name)
     .bind(&pool.name)

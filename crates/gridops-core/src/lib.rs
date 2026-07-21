@@ -9,6 +9,6 @@ pub use crypto::Vault;
 pub use db::{connect_database, connect_database_path, now_millis};
 pub use github::{
     GitHubClient, GitHubInstallation, GitHubRepository, GitHubUser, InstallationPage, JitRequest,
-    JitResponse, RepositoryPage, RunnerTarget,
+    JitResponse, RepositoryPage, RunnerTarget, WorkflowJobPage,
 };
 pub use models::{Alerts, ConfigurationState, CreateRunnerPool, Viewer};

@@ -166,6 +166,14 @@ mod tests {
                 .iter()
                 .any(|row| { row.get::<String, _>("name") == "autoscaling_enabled" })
         );
+        let runner_columns = sqlx::query("PRAGMA table_info(runners)")
+            .fetch_all(&pool)
+            .await?;
+        assert!(
+            runner_columns
+                .iter()
+                .any(|row| row.get::<String, _>("name") == "last_job_id")
+        );
         pool.close().await;
         fs::remove_dir_all(directory)?;
         Ok(())
@@ -215,7 +223,7 @@ mod tests {
             sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'legacy'")
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, 6);
         assert_eq!(preserved, "preserved");
         pool.close().await;
         fs::remove_dir_all(directory)?;

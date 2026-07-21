@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::{
     Json,
     extract::{Query, State},
@@ -7,7 +9,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use gridops_core::{
     GitHubInstallation, GitHubRepository, GitHubUser, InstallationPage, RepositoryPage,
-    crypto::hash_token, now_millis,
+    WorkflowJobPage, crypto::hash_token, now_millis,
 };
 use reqwest::Method;
 use serde::Deserialize;
@@ -455,19 +457,25 @@ async fn sync_user_installations(
         }
         for repository in &repositories {
             upsert_repository(state, installation.id, repository).await?;
-            if let Err(error) = sync_recent_runs(state, repository, access_token).await {
+            if !repository.archived
+                && let Err(error) = sync_recent_runs(state, repository, access_token).await
+            {
                 tracing::warn!(repository = %repository.full_name, error = ?error, "workflow sync failed");
             }
         }
+        archive_missing_repositories(state, installation.id, &repositories).await?;
         tracing::info!(installation = %account.login, repositories = repositories.len(), "GitHub installation synced");
     }
 
     let mut transaction = state.database.begin().await?;
     if installations.is_empty() {
-        sqlx::query("DELETE FROM user_installations WHERE user_id=?")
-            .bind(user_id)
-            .execute(&mut *transaction)
-            .await?;
+        sqlx::query(
+            r#"DELETE FROM user_installations WHERE user_id=? AND installation_id NOT IN
+               (SELECT id FROM installations WHERE suspended_at IS NOT NULL)"#,
+        )
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
     } else {
         let mut query =
             QueryBuilder::<Sqlite>::new("DELETE FROM user_installations WHERE user_id=");
@@ -478,7 +486,7 @@ async fn sync_user_installations(
         for installation in &installations {
             separated.push_bind(installation.id);
         }
-        separated.push_unseparated(")");
+        separated.push_unseparated(") AND installation_id NOT IN (SELECT id FROM installations WHERE suspended_at IS NOT NULL)");
         query.build().execute(&mut *transaction).await?;
     }
     transaction.commit().await?;
@@ -519,6 +527,13 @@ async fn upsert_installation(state: &AppState, installation: &GitHubInstallation
     .bind(now)
     .execute(&state.database)
     .await?;
+    if installation.suspended_at.is_some() {
+        sqlx::query("UPDATE runner_pools SET paused=1,state='draining',updated_at=? WHERE installation_id=?")
+            .bind(now)
+            .bind(installation.id)
+            .execute(&state.database)
+            .await?;
+    }
     Ok(())
 }
 
@@ -561,6 +576,57 @@ async fn upsert_repository(
     .bind(now)
     .execute(&state.database)
     .await?;
+    if repository.archived {
+        sqlx::query(
+            "UPDATE runner_pools SET paused=1,state='draining',updated_at=? WHERE repository_id=?",
+        )
+        .bind(now)
+        .bind(repository.id)
+        .execute(&state.database)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn archive_missing_repositories(
+    state: &AppState,
+    installation_id: i64,
+    repositories: &[GitHubRepository],
+) -> ApiResult<()> {
+    let now = now_millis();
+    let mut transaction = state.database.begin().await?;
+    if repositories.is_empty() {
+        sqlx::query("UPDATE repositories SET archived=1,updated_at=? WHERE installation_id=?")
+            .bind(now)
+            .bind(installation_id)
+            .execute(&mut *transaction)
+            .await?;
+    } else {
+        let mut query =
+            QueryBuilder::<Sqlite>::new("UPDATE repositories SET archived=1,updated_at=");
+        query
+            .push_bind(now)
+            .push(" WHERE installation_id=")
+            .push_bind(installation_id)
+            .push(" AND id NOT IN (");
+        let mut separated = query.separated(",");
+        for repository in repositories {
+            separated.push_bind(repository.id);
+        }
+        separated.push_unseparated(")");
+        query.build().execute(&mut *transaction).await?;
+    }
+    sqlx::query(
+        r#"UPDATE runner_pools SET paused=1,state='draining',updated_at=?
+           WHERE installation_id=? AND repository_id IN
+             (SELECT id FROM repositories WHERE installation_id=? AND archived=1)"#,
+    )
+    .bind(now)
+    .bind(installation_id)
+    .bind(installation_id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -581,6 +647,18 @@ async fn sync_recent_runs(
         .await
         .map_err(ApiError::Internal)?;
     let now = now_millis();
+    let mut job_run_ids = Vec::new();
+    let mut seen_run_ids = HashSet::new();
+    for run in response
+        .workflow_runs
+        .iter()
+        .filter(|run| matches!(run.status.as_str(), "queued" | "in_progress"))
+        .chain(response.workflow_runs.iter().take(5))
+    {
+        if seen_run_ids.insert(run.id) {
+            job_run_ids.push(run.id);
+        }
+    }
     let mut transaction = state.database.begin().await?;
     for run in response.workflow_runs {
         let updated_at = parse_date(Some(&run.updated_at)).unwrap_or(now);
@@ -590,9 +668,13 @@ async fn sync_recent_runs(
               conclusion,head_branch,head_sha,actor_login,html_url,started_at,completed_at,
               github_created_at,github_updated_at,created_at,updated_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(id) DO UPDATE SET workflow_name=excluded.workflow_name,
-              run_attempt=excluded.run_attempt,status=excluded.status,conclusion=excluded.conclusion,
+            ON CONFLICT(id) DO UPDATE SET repository_id=excluded.repository_id,
+              workflow_id=excluded.workflow_id,workflow_name=excluded.workflow_name,
+              run_number=excluded.run_number,run_attempt=excluded.run_attempt,event=excluded.event,
+              status=excluded.status,conclusion=excluded.conclusion,head_branch=excluded.head_branch,
+              head_sha=excluded.head_sha,actor_login=excluded.actor_login,html_url=excluded.html_url,
               started_at=excluded.started_at,completed_at=excluded.completed_at,
+              github_created_at=excluded.github_created_at,
               github_updated_at=excluded.github_updated_at,updated_at=excluded.updated_at"#,
         )
         .bind(run.id)
@@ -618,6 +700,85 @@ async fn sync_recent_runs(
         .await?;
     }
     transaction.commit().await?;
+    for run_id in job_run_ids {
+        if let Err(error) = sync_run_jobs(state, repository, run_id, access_token).await {
+            tracing::warn!(repository = %repository.full_name, run_id, error = ?error, "workflow job sync failed");
+        }
+    }
+    Ok(())
+}
+
+async fn sync_run_jobs(
+    state: &AppState,
+    repository: &GitHubRepository,
+    run_id: i64,
+    access_token: &str,
+) -> ApiResult<()> {
+    for page in 1..=100 {
+        let response: WorkflowJobPage = state
+            .github
+            .get(
+                &format!(
+                    "/repos/{}/{}/actions/runs/{run_id}/jobs?filter=latest&per_page=100&page={page}",
+                    repository.owner.login, repository.name
+                ),
+                access_token,
+            )
+            .await
+            .map_err(ApiError::Internal)?;
+        let final_page = response.jobs.len() < 100;
+        let now = now_millis();
+        let mut transaction = state.database.begin().await?;
+        for job in &response.jobs {
+            sqlx::query(
+                r#"INSERT INTO workflow_jobs (
+                  id,run_id,name,status,conclusion,runner_id,runner_name,runner_group_id,
+                  runner_group_name,labels,html_url,started_at,completed_at,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,name=excluded.name,
+                  status=excluded.status,conclusion=excluded.conclusion,runner_id=excluded.runner_id,
+                  runner_name=excluded.runner_name,runner_group_id=excluded.runner_group_id,
+                  runner_group_name=excluded.runner_group_name,labels=excluded.labels,
+                  html_url=excluded.html_url,started_at=excluded.started_at,
+                  completed_at=excluded.completed_at,updated_at=excluded.updated_at"#,
+            )
+            .bind(job.id)
+            .bind(job.run_id)
+            .bind(&job.name)
+            .bind(&job.status)
+            .bind(&job.conclusion)
+            .bind(job.runner_id)
+            .bind(&job.runner_name)
+            .bind(job.runner_group_id)
+            .bind(&job.runner_group_name)
+            .bind(
+                serde_json::to_string(&job.labels)
+                    .map_err(|error| ApiError::Internal(error.into()))?,
+            )
+            .bind(&job.html_url)
+            .bind(parse_date(job.started_at.as_deref()))
+            .bind(parse_date(job.completed_at.as_deref()))
+            .bind(parse_date(job.started_at.as_deref()).unwrap_or(now))
+            .bind(now)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        for job in &response.jobs {
+            crate::webhooks::associate_runner_with_job(
+                &state.database,
+                job.id,
+                &job.status,
+                job.runner_id,
+                job.runner_name.as_deref(),
+                now,
+            )
+            .await?;
+        }
+        if final_page {
+            break;
+        }
+    }
     Ok(())
 }
 

@@ -91,6 +91,22 @@ impl CreateRunnerPool {
         {
             return Err("Autoscaling settings are outside the supported range.".into());
         }
+        if self.labels.len() > 20
+            || self.labels.iter().any(|label| {
+                label.is_empty()
+                    || label.len() > 64
+                    || label.contains([',', '\n', '\r'])
+                    || label.trim() != label
+            })
+        {
+            return Err("Use at most 20 runner labels of 1-64 characters each.".into());
+        }
+        if self.image.trim() != self.image || self.image.is_empty() || self.image.len() > 300 {
+            return Err("Runner image must contain 1-300 non-padding characters.".into());
+        }
+        if self.runner_group_id <= 0 {
+            return Err("Runner group ID must be positive.".into());
+        }
         Ok(())
     }
 }
@@ -137,6 +153,14 @@ mod tests {
         assert!(invalid.validate().is_err());
         let mut invalid = pool();
         invalid.name = "Bad Pool".into();
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = pool();
+        invalid.labels = vec!["bad,label".into()];
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = pool();
+        invalid.image = " runner:latest".into();
         assert!(invalid.validate().is_err());
     }
 }

@@ -60,6 +60,7 @@ struct RunnerAccess {
     runner_status: String,
     busy: bool,
     ephemeral: bool,
+    last_job_id: Option<i64>,
     pool_id: String,
     pool_name: String,
     installation_id: i64,
@@ -453,8 +454,13 @@ pub async fn workflow_run(
         ApiError::NotFound("Workflow run does not exist or is not accessible.".into())
     })?;
     let jobs = sqlx::query(
-        r#"SELECT id,name,status,conclusion,runner_name,runner_group_name,labels,html_url,
-          started_at,completed_at FROM workflow_jobs WHERE run_id=? ORDER BY created_at"#,
+        r#"SELECT wj.id,wj.name,wj.status,wj.conclusion,wj.runner_name,wj.runner_group_name,
+          wj.labels,wj.html_url,wj.started_at,wj.completed_at,
+          (SELECT r.id FROM runners r WHERE r.current_job_id=wj.id AND r.deleted_at IS NULL
+            ORDER BY r.updated_at DESC LIMIT 1) AS live_runner_id,
+          (SELECT ls.id FROM log_streams ls WHERE ls.job_id=wj.id AND ls.complete=1
+            ORDER BY ls.created_at DESC LIMIT 1) AS archived_log_id
+          FROM workflow_jobs wj WHERE wj.run_id=? ORDER BY wj.created_at"#,
     )
     .bind(run_id)
     .fetch_all(&state.database)
@@ -465,6 +471,8 @@ pub async fn workflow_run(
         "runnerGroupName": row.try_get::<Option<String>,_>("runner_group_name").ok().flatten(), "labels": json_array(row.get::<&str,_>("labels")),
         "htmlUrl": row.get::<String,_>("html_url"), "startedAt": iso_optional(row.try_get::<Option<i64>,_>("started_at").ok().flatten()),
         "completedAt": iso_optional(row.try_get::<Option<i64>,_>("completed_at").ok().flatten()),
+        "liveRunnerId": row.try_get::<Option<String>,_>("live_runner_id").ok().flatten(),
+        "archivedLogId": row.try_get::<Option<String>,_>("archived_log_id").ok().flatten(),
     })).collect::<Vec<_>>();
     Ok(Json(json!({
         "id": run.get::<i64,_>("id"), "workflowName": run.get::<String,_>("workflow_name"), "runNumber": run.get::<i64,_>("run_number"),
@@ -579,12 +587,13 @@ pub async fn runner_pool_options(
 ) -> ApiResult<Json<Value>> {
     let Some(user) = user else {
         return Ok(Json(
-            json!({ "authenticated": false, "installations": [], "repositories": [], "installUrl": null, "defaults": null }),
+            json!({ "authenticated": false, "installations": [], "repositories": [], "runnerGroups": [], "installUrl": null, "defaults": null }),
         ));
     };
     let installation_rows = sqlx::query(
         r#"SELECT i.id,i.account_login,i.account_type FROM user_installations ui
-           JOIN installations i ON i.id=ui.installation_id WHERE ui.user_id=? ORDER BY i.account_login"#,
+           JOIN installations i ON i.id=ui.installation_id
+           WHERE ui.user_id=? AND i.suspended_at IS NULL ORDER BY i.account_login"#,
     )
     .bind(&user.id)
     .fetch_all(&state.database)
@@ -592,7 +601,8 @@ pub async fn runner_pool_options(
     let repository_rows = sqlx::query(
         r#"SELECT r.id,r.installation_id,r.full_name,r.private FROM repositories r
            JOIN user_installations ui ON ui.installation_id=r.installation_id
-           WHERE ui.user_id=? ORDER BY r.full_name"#,
+           JOIN installations i ON i.id=r.installation_id
+           WHERE ui.user_id=? AND r.archived=0 AND i.suspended_at IS NULL ORDER BY r.full_name"#,
     )
     .bind(&user.id)
     .fetch_all(&state.database)
@@ -604,9 +614,35 @@ pub async fn runner_pool_options(
         "id": row.get::<i64,_>("id"), "installationId": row.get::<i64,_>("installation_id"),
         "fullName": row.get::<String,_>("full_name"), "private": row.get::<bool,_>("private"),
     })).collect::<Vec<_>>();
+    let mut runner_groups = Vec::new();
+    for row in &installation_rows {
+        if row.get::<String, _>("account_type") != "Organization" {
+            continue;
+        }
+        let installation_id = row.get::<i64, _>("id");
+        let organization = row.get::<String, _>("account_login");
+        let token = match control_token(&state, &user.id, installation_id).await {
+            Ok(token) => token,
+            Err(error) => {
+                tracing::warn!(installation_id, organization, error = ?error, "could not authorize runner-group discovery");
+                continue;
+            }
+        };
+        match state.github.runner_groups(&organization, &token).await {
+            Ok(groups) => runner_groups.extend(groups.into_iter().map(|group| {
+                json!({
+                    "installationId": installation_id, "id": group.id, "name": group.name,
+                    "visibility": group.visibility, "isDefault": group.is_default,
+                })
+            })),
+            Err(error) => {
+                tracing::warn!(installation_id, organization, error = ?error, "could not load GitHub runner groups");
+            }
+        }
+    }
     let app_slug = state.github_app_slug().await.map_err(ApiError::Internal)?;
     Ok(Json(json!({
-        "authenticated": true, "installations": installations, "repositories": repositories,
+        "authenticated": true, "installations": installations, "repositories": repositories, "runnerGroups": runner_groups,
         "installUrl": format!("https://github.com/apps/{app_slug}/installations/new"),
         "defaults": {
             "image": state.config.runner_image(), "labels": ["gridops"], "cpuLimit": 2,
@@ -624,25 +660,29 @@ pub async fn create_runner_pool(
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     assert_same_origin(&state, &headers)?;
     input.validate().map_err(ApiError::BadRequest)?;
-    let allowed =
-        sqlx::query("SELECT 1 FROM user_installations WHERE user_id=? AND installation_id=?")
-            .bind(&user.id)
-            .bind(input.installation_id)
-            .fetch_optional(&state.database)
-            .await?;
+    let allowed = sqlx::query(
+        r#"SELECT 1 FROM user_installations ui JOIN installations i ON i.id=ui.installation_id
+           WHERE ui.user_id=? AND ui.installation_id=? AND i.suspended_at IS NULL"#,
+    )
+    .bind(&user.id)
+    .bind(input.installation_id)
+    .fetch_optional(&state.database)
+    .await?;
     if allowed.is_none() {
         return Err(ApiError::Forbidden);
     }
     if let Some(repository_id) = input.repository_id {
-        let repository = sqlx::query("SELECT installation_id FROM repositories WHERE id=?")
-            .bind(repository_id)
-            .fetch_optional(&state.database)
-            .await?;
-        if repository
-            .is_none_or(|row| row.get::<i64, _>("installation_id") != input.installation_id)
-        {
+        let repository =
+            sqlx::query("SELECT installation_id,archived FROM repositories WHERE id=?")
+                .bind(repository_id)
+                .fetch_optional(&state.database)
+                .await?;
+        if repository.is_none_or(|row| {
+            row.get::<i64, _>("installation_id") != input.installation_id
+                || row.get::<bool, _>("archived")
+        }) {
             return Err(ApiError::BadRequest(
-                "The selected repository is not part of this installation.".into(),
+                "The selected repository is unavailable for this installation.".into(),
             ));
         }
     }
@@ -1452,7 +1492,7 @@ async fn runner_access(
     runner_id: &str,
 ) -> ApiResult<RunnerAccess> {
     sqlx::query_as::<_, RunnerAccess>(r#"SELECT r.id AS runner_id,r.name AS runner_name,r.container_id,
-      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
+      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,r.last_job_id,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
       repo.owner AS repository_owner,repo.name AS repository_name FROM runners r
       JOIN runner_pools p ON p.id=r.pool_id JOIN user_installations ui ON ui.installation_id=p.installation_id
       JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=p.repository_id
@@ -1463,7 +1503,7 @@ async fn runner_access(
 
 async fn runners_for_pool(state: &AppState, pool_id: &str) -> ApiResult<Vec<RunnerAccess>> {
     Ok(sqlx::query_as::<_, RunnerAccess>(r#"SELECT r.id AS runner_id,r.name AS runner_name,r.container_id,
-      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
+      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,r.last_job_id,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
       repo.owner AS repository_owner,repo.name AS repository_name FROM runners r
       JOIN runner_pools p ON p.id=r.pool_id JOIN installations i ON i.id=p.installation_id
       LEFT JOIN repositories repo ON repo.id=p.repository_id WHERE p.id=? AND r.deleted_at IS NULL ORDER BY r.created_at DESC"#)
@@ -1603,12 +1643,13 @@ async fn archive_runner_logs(state: &AppState, runner: &RunnerAccess) -> ApiResu
         .map(|(owner, repository)| format!("{owner}/{repository}"));
     let inserted = sqlx::query(
         r#"INSERT INTO log_streams (
-          id,runner_id,installation_id,runner_name,pool_name,repository,source,path,
+          id,runner_id,job_id,installation_id,runner_name,pool_name,repository,source,path,
           size_bytes,complete,checksum,expires_at,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,'docker',?, ?,1,?,?,?,?)"#,
+        ) VALUES (?,?,?,?,?,?,?,'docker',?, ?,1,?,?,?,?)"#,
     )
     .bind(&stream_id)
     .bind(&runner.runner_id)
+    .bind(runner.last_job_id)
     .bind(runner.installation_id)
     .bind(&runner.runner_name)
     .bind(&runner.pool_name)

@@ -246,6 +246,24 @@ impl GitHubClient {
             .await?;
         Ok(group.name)
     }
+
+    pub async fn runner_groups(&self, organization: &str, token: &str) -> Result<Vec<RunnerGroup>> {
+        let mut groups = Vec::new();
+        for page in 1..=100 {
+            let response: RunnerGroupPage = self
+                .get(
+                    &format!("/orgs/{organization}/actions/runner-groups?per_page=100&page={page}"),
+                    token,
+                )
+                .await?;
+            let final_page = response.runner_groups.len() < 100;
+            groups.extend(response.runner_groups);
+            if final_page {
+                break;
+            }
+        }
+        Ok(groups)
+    }
 }
 
 #[derive(Deserialize)]
@@ -310,6 +328,29 @@ pub struct GitHubRepository {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct WorkflowJobPage {
+    pub jobs: Vec<GitHubWorkflowJob>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubWorkflowJob {
+    pub id: i64,
+    pub run_id: i64,
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub runner_id: Option<i64>,
+    pub runner_name: Option<String>,
+    pub runner_group_id: Option<i64>,
+    pub runner_group_name: Option<String>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    pub html_url: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct GitHubOwner {
     pub login: String,
 }
@@ -353,7 +394,16 @@ struct RunnerPage {
     runners: Vec<JitRunner>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunnerGroup {
+    pub id: i64,
+    pub name: String,
+    pub visibility: String,
+    #[serde(rename = "default")]
+    pub is_default: bool,
+}
+
 #[derive(Deserialize)]
-struct RunnerGroup {
-    name: String,
+struct RunnerGroupPage {
+    runner_groups: Vec<RunnerGroup>,
 }

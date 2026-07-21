@@ -7,7 +7,7 @@ use axum::{
 use hmac::{Hmac, Mac as _};
 use serde_json::{Map, Value, json};
 use sha2::Sha256;
-use sqlx::Row as _;
+use sqlx::{Row as _, SqlitePool};
 
 use crate::{
     auth::{AuthUser, assert_same_origin, audit},
@@ -187,7 +187,7 @@ async fn process(
         "installation" => process_installation(state, action, payload).await,
         "installation_repositories" => process_installation_repositories(state, payload).await,
         "workflow_run" => process_workflow_run(state, payload).await,
-        "workflow_job" => process_workflow_job(state, action, payload).await,
+        "workflow_job" => process_workflow_job(&state.database, action, payload).await,
         "github_app_authorization" if action == Some("revoked") => {
             if let Some(sender_id) = nested_i64(payload, "sender", "id") {
                 sqlx::query("DELETE FROM users WHERE github_id=?")
@@ -213,7 +213,15 @@ async fn process_installation(
         return Ok(());
     };
     if action == Some("deleted") {
-        sqlx::query("DELETE FROM installations WHERE id=?")
+        let now = now_millis();
+        sqlx::query("UPDATE installations SET suspended_at=COALESCE(suspended_at,?),updated_at=? WHERE id=?")
+            .bind(now)
+            .bind(now)
+            .bind(id)
+            .execute(&state.database)
+            .await?;
+        sqlx::query("UPDATE runner_pools SET paused=1,state='draining',updated_at=? WHERE installation_id=?")
+            .bind(now)
             .bind(id)
             .execute(&state.database)
             .await?;
@@ -259,6 +267,13 @@ async fn process_installation(
     .bind(now)
     .execute(&state.database)
     .await?;
+    if date_value(installation, "suspended_at").is_some() {
+        sqlx::query("UPDATE runner_pools SET paused=1,state='draining',updated_at=? WHERE installation_id=?")
+            .bind(now)
+            .bind(id)
+            .execute(&state.database)
+            .await?;
+    }
     Ok(())
 }
 
@@ -286,7 +301,9 @@ async fn process_installation_repositories(
               html_url,last_synced_at,created_at,updated_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET installation_id=excluded.installation_id,
-              full_name=excluded.full_name,private=excluded.private,
+              owner=excluded.owner,name=excluded.name,full_name=excluded.full_name,
+              private=excluded.private,archived=0,default_branch=excluded.default_branch,
+              html_url=excluded.html_url,
               last_synced_at=excluded.last_synced_at,updated_at=excluded.updated_at"#,
         )
         .bind(id)
@@ -310,7 +327,13 @@ async fn process_installation_repositories(
     }
     for value in array(payload, "repositories_removed") {
         if let Some(id) = value.as_object().and_then(|object| i64_value(object, "id")) {
-            sqlx::query("DELETE FROM repositories WHERE id=?")
+            sqlx::query("UPDATE repositories SET archived=1,updated_at=? WHERE id=?")
+                .bind(now)
+                .bind(id)
+                .execute(&state.database)
+                .await?;
+            sqlx::query("UPDATE runner_pools SET paused=1,state='draining',updated_at=? WHERE repository_id=?")
+                .bind(now)
                 .bind(id)
                 .execute(&state.database)
                 .await?;
@@ -347,9 +370,13 @@ async fn process_workflow_run(state: &AppState, payload: &Map<String, Value>) ->
           conclusion,head_branch,head_sha,actor_login,html_url,started_at,completed_at,
           github_created_at,github_updated_at,created_at,updated_at
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET workflow_name=excluded.workflow_name,
-          run_attempt=excluded.run_attempt,status=excluded.status,conclusion=excluded.conclusion,
+        ON CONFLICT(id) DO UPDATE SET repository_id=excluded.repository_id,
+          workflow_id=excluded.workflow_id,workflow_name=excluded.workflow_name,
+          run_number=excluded.run_number,run_attempt=excluded.run_attempt,event=excluded.event,
+          status=excluded.status,conclusion=excluded.conclusion,head_branch=excluded.head_branch,
+          head_sha=excluded.head_sha,actor_login=excluded.actor_login,html_url=excluded.html_url,
           started_at=excluded.started_at,completed_at=excluded.completed_at,
+          github_created_at=excluded.github_created_at,
           github_updated_at=excluded.github_updated_at,updated_at=excluded.updated_at"#,
     )
     .bind(id)
@@ -381,7 +408,7 @@ async fn process_workflow_run(state: &AppState, payload: &Map<String, Value>) ->
 }
 
 async fn process_workflow_job(
-    state: &AppState,
+    database: &SqlitePool,
     action: Option<&str>,
     payload: &Map<String, Value>,
 ) -> ApiResult<()> {
@@ -391,17 +418,15 @@ async fn process_workflow_job(
     let (Some(id), Some(run_id)) = (i64_value(job, "id"), i64_value(job, "run_id")) else {
         return Ok(());
     };
+    let now = now_millis();
     if sqlx::query("SELECT 1 FROM workflow_runs WHERE id=?")
         .bind(run_id)
-        .fetch_optional(&state.database)
+        .fetch_optional(database)
         .await?
         .is_none()
     {
-        return Err(ApiError::Conflict(format!(
-            "Workflow run {run_id} is not synced yet."
-        )));
+        insert_placeholder_run(database, payload, job, run_id, now).await?;
     }
-    let now = now_millis();
     let status = string(job, "status").or(action).unwrap_or("queued");
     sqlx::query(
         r#"INSERT INTO workflow_jobs (
@@ -429,59 +454,150 @@ async fn process_workflow_job(
     .bind(date_value(job, "completed_at"))
     .bind(now)
     .bind(now)
-    .execute(&state.database)
+    .execute(database)
+    .await?;
+    let runner = associate_runner_with_job(
+        database,
+        id,
+        status,
+        i64_value(job, "runner_id"),
+        string(job, "runner_name"),
+        now,
+    )
     .await?;
     sqlx::query(
-        "INSERT INTO runner_events (id,level,event,message,metadata,created_at) VALUES (?,'info',?,?,?,?)",
+        "INSERT INTO runner_events (id,runner_id,pool_id,level,event,message,metadata,created_at) VALUES (?,?,?,'info',?,?,?,?)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
+    .bind(runner.as_ref().map(|runner| &runner.0))
+    .bind(runner.as_ref().map(|runner| &runner.1))
     .bind(format!("Workflow job {}", action.unwrap_or(status)))
-    .bind(format!("{} · run {run_id}", string(job, "name").unwrap_or("Job")))
+    .bind(format!(
+        "{} · run {run_id}",
+        string(job, "name").unwrap_or("Job")
+    ))
     .bind(json!({ "jobId": id, "runId": run_id, "labels": job.get("labels") }).to_string())
     .bind(now)
-    .execute(&state.database)
+    .execute(database)
     .await?;
-
-    if let Some(runner_name) = string(job, "runner_name") {
-        match status {
-            "in_progress" => {
-                sqlx::query(
-                    r#"UPDATE runners SET busy=1,status='busy',current_job_id=?,
-                       github_runner_id=COALESCE(github_runner_id,?),
-                       last_heartbeat_at=?,updated_at=? WHERE name=? AND deleted_at IS NULL"#,
-                )
-                .bind(id)
-                .bind(i64_value(job, "runner_id"))
-                .bind(now)
-                .bind(now)
-                .bind(runner_name)
-                .execute(&state.database)
-                .await?;
-            }
-            "completed" => {
-                sqlx::query(
-                    r#"UPDATE runners SET busy=0,status='online',current_job_id=NULL,
-                       github_runner_id=COALESCE(github_runner_id,?),
-                       last_heartbeat_at=?,updated_at=? WHERE name=? AND deleted_at IS NULL"#,
-                )
-                .bind(i64_value(job, "runner_id"))
-                .bind(now)
-                .bind(now)
-                .bind(runner_name)
-                .execute(&state.database)
-                .await?;
-            }
-            _ => {}
-        }
-    }
     if status == "queued" {
-        scale_for_queued_job(state, payload, job, now).await?;
+        scale_for_queued_job(database, payload, job, now).await?;
     }
     Ok(())
 }
 
+async fn insert_placeholder_run(
+    database: &SqlitePool,
+    payload: &Map<String, Value>,
+    job: &Map<String, Value>,
+    run_id: i64,
+    now: i64,
+) -> ApiResult<()> {
+    let repository_id = nested_i64(payload, "repository", "id").ok_or_else(|| {
+        ApiError::Conflict(format!(
+            "Workflow run {run_id} arrived before its repository was synced."
+        ))
+    })?;
+    if sqlx::query("SELECT 1 FROM repositories WHERE id=?")
+        .bind(repository_id)
+        .fetch_optional(database)
+        .await?
+        .is_none()
+    {
+        return Err(ApiError::Conflict(format!(
+            "Repository {repository_id} is not synced yet."
+        )));
+    }
+    let status = string(job, "status").unwrap_or("queued");
+    let job_html_url = string(job, "html_url").unwrap_or("");
+    let run_html_url = job_html_url
+        .split_once("/job/")
+        .map_or(job_html_url, |(url, _)| url);
+    let created_at = date_value(job, "created_at").unwrap_or(now);
+    sqlx::query(
+        r#"INSERT INTO workflow_runs (
+          id,repository_id,workflow_name,run_number,run_attempt,event,status,conclusion,
+          head_branch,head_sha,actor_login,html_url,started_at,completed_at,
+          github_created_at,github_updated_at,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING"#,
+    )
+    .bind(run_id)
+    .bind(repository_id)
+    .bind(string(job, "workflow_name").unwrap_or("Workflow"))
+    .bind(i64_value(job, "run_number").unwrap_or_default())
+    .bind(i64_value(job, "run_attempt").unwrap_or(1))
+    .bind(string(job, "event").unwrap_or("unknown"))
+    .bind(status)
+    .bind(string(job, "conclusion"))
+    .bind(string(job, "head_branch"))
+    .bind(string(job, "head_sha").unwrap_or("unknown"))
+    .bind(nested_string(payload, "sender", "login"))
+    .bind(run_html_url)
+    .bind(date_value(job, "started_at"))
+    .bind(date_value(job, "completed_at"))
+    .bind(created_at)
+    .bind(now)
+    .bind(now)
+    .bind(now)
+    .execute(database)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn associate_runner_with_job(
+    database: &SqlitePool,
+    job_id: i64,
+    status: &str,
+    github_runner_id: Option<i64>,
+    runner_name: Option<&str>,
+    now: i64,
+) -> ApiResult<Option<(String, String)>> {
+    let Some(runner_name) = runner_name else {
+        return Ok(None);
+    };
+    match status {
+        "in_progress" => {
+            sqlx::query(
+                r#"UPDATE runners SET busy=1,status='busy',current_job_id=?,last_job_id=?,
+                   github_runner_id=COALESCE(github_runner_id,?),
+                   last_heartbeat_at=?,updated_at=? WHERE name=? AND deleted_at IS NULL"#,
+            )
+            .bind(job_id)
+            .bind(job_id)
+            .bind(github_runner_id)
+            .bind(now)
+            .bind(now)
+            .bind(runner_name)
+            .execute(database)
+            .await?;
+        }
+        "completed" => {
+            sqlx::query(
+                r#"UPDATE runners SET busy=0,status='online',current_job_id=NULL,last_job_id=?,
+                   github_runner_id=COALESCE(github_runner_id,?),
+                   last_heartbeat_at=?,updated_at=? WHERE name=? AND deleted_at IS NULL"#,
+            )
+            .bind(job_id)
+            .bind(github_runner_id)
+            .bind(now)
+            .bind(now)
+            .bind(runner_name)
+            .execute(database)
+            .await?;
+        }
+        _ => {}
+    }
+    Ok(
+        sqlx::query("SELECT id,pool_id FROM runners WHERE name=? AND deleted_at IS NULL")
+            .bind(runner_name)
+            .fetch_optional(database)
+            .await?
+            .map(|row| (row.get("id"), row.get("pool_id"))),
+    )
+}
+
 async fn scale_for_queued_job(
-    state: &AppState,
+    database: &SqlitePool,
     payload: &Map<String, Value>,
     job: &Map<String, Value>,
     now: i64,
@@ -520,7 +636,7 @@ async fn scale_for_queued_job(
         ORDER BY CASE WHEN p.repository_id=event_repo.id THEN 0 ELSE 1 END,p.created_at"#,
     )
     .bind(repository_id)
-    .fetch_all(&state.database)
+    .fetch_all(database)
     .await?;
     for candidate in candidates {
         let labels: Vec<String> =
@@ -547,7 +663,7 @@ async fn scale_for_queued_job(
         .bind(target)
         .bind(now)
         .bind(&pool_id)
-        .execute(&state.database)
+        .execute(database)
         .await?;
         sqlx::query(
             r#"INSERT INTO runner_events (id,pool_id,level,event,message,metadata,created_at)
@@ -558,7 +674,7 @@ async fn scale_for_queued_job(
         .bind(format!("Queued job raised desired capacity from {desired} to {target}"))
         .bind(json!({ "jobId": i64_value(job, "id"), "labels": requested_labels, "desiredCount": target }).to_string())
         .bind(now)
-        .execute(&state.database)
+        .execute(database)
         .await?;
         sqlx::query(
             r#"INSERT INTO audit_events (id,actor_label,action,target_type,target_id,metadata,created_at)
@@ -568,7 +684,7 @@ async fn scale_for_queued_job(
         .bind(&pool_id)
         .bind(json!({ "jobId": i64_value(job, "id"), "desiredCount": target }).to_string())
         .bind(now)
-        .execute(&state.database)
+        .execute(database)
         .await?;
         return Ok(());
     }
@@ -659,6 +775,8 @@ fn array<'a>(object: &'a Map<String, Value>, key: &str) -> &'a [Value] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gridops_core::connect_database_path;
+    use std::fs;
 
     #[test]
     fn payload_helpers_reject_wrong_types() -> Result<(), &'static str> {
@@ -688,6 +806,134 @@ mod tests {
             &signature,
             "test-secret"
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn workflow_jobs_track_runners_and_drive_autoscaling() -> anyhow::Result<()> {
+        let directory =
+            std::env::temp_dir().join(format!("gridops-webhook-test-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("gridops.sqlite");
+        let database = connect_database_path(&path).await?;
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO installations (id,account_id,account_login,account_type,target_type,repository_selection,created_at,updated_at)
+              VALUES (1,1,'iamngoni','User','User','all',1,1);
+            INSERT INTO repositories (id,installation_id,owner,name,full_name,private,default_branch,html_url,last_synced_at,created_at,updated_at)
+              VALUES (10,1,'iamngoni','gridops','iamngoni/gridops',0,'master','https://github.com/iamngoni/gridops',1,1,1);
+            INSERT INTO runner_pools (id,installation_id,repository_id,name,scope,labels,image,desired_count,max_count,queue_scale_factor,created_at,updated_at)
+              VALUES ('pool-1',1,10,'pool-a','repository','["pool-a"]','runner:latest',1,10,2,1,1);
+            INSERT INTO workflow_runs (id,repository_id,workflow_name,run_number,event,status,head_sha,html_url,github_created_at,github_updated_at,created_at,updated_at)
+              VALUES (20,10,'CI',1,'push','in_progress','abc123','https://github.com/iamngoni/gridops/actions/runs/20',1,1,1,1);
+            INSERT INTO runners (id,pool_id,name,status,created_at,updated_at)
+              VALUES ('runner-1','pool-1','pool-a-12345678','online',1,1);
+            "#,
+        )
+        .execute(&database)
+        .await?;
+
+        let in_progress = json!({
+            "repository": { "id": 10 },
+            "workflow_job": {
+                "id": 30, "run_id": 20, "name": "build", "status": "in_progress",
+                "runner_id": 40, "runner_name": "pool-a-12345678", "runner_group_id": 1,
+                "runner_group_name": "Default", "labels": ["self-hosted", "pool-a"],
+                "html_url": "https://github.com/iamngoni/gridops/actions/runs/20/job/30",
+                "started_at": "2026-07-21T00:00:00Z"
+            }
+        });
+        let in_progress = in_progress
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("test payload is not an object"))?;
+        process_workflow_job(&database, Some("in_progress"), in_progress).await?;
+
+        let runner = sqlx::query(
+            "SELECT busy,current_job_id,last_job_id,github_runner_id FROM runners WHERE id='runner-1'",
+        )
+        .fetch_one(&database)
+        .await?;
+        assert!(runner.get::<bool, _>("busy"));
+        assert_eq!(runner.get::<i64, _>("current_job_id"), 30);
+        assert_eq!(runner.get::<i64, _>("last_job_id"), 30);
+        assert_eq!(runner.get::<i64, _>("github_runner_id"), 40);
+
+        let completed = json!({
+            "repository": { "id": 10 },
+            "workflow_job": {
+                "id": 30, "run_id": 20, "name": "build", "status": "completed",
+                "conclusion": "success", "runner_id": 40, "runner_name": "pool-a-12345678",
+                "runner_group_id": 1, "runner_group_name": "Default",
+                "labels": ["self-hosted", "pool-a"],
+                "html_url": "https://github.com/iamngoni/gridops/actions/runs/20/job/30",
+                "started_at": "2026-07-21T00:00:00Z", "completed_at": "2026-07-21T00:01:00Z"
+            }
+        });
+        let completed = completed
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("test payload is not an object"))?;
+        process_workflow_job(&database, Some("completed"), completed).await?;
+        let runner =
+            sqlx::query("SELECT busy,current_job_id,last_job_id FROM runners WHERE id='runner-1'")
+                .fetch_one(&database)
+                .await?;
+        assert!(!runner.get::<bool, _>("busy"));
+        assert_eq!(runner.try_get::<Option<i64>, _>("current_job_id")?, None);
+        assert_eq!(runner.get::<i64, _>("last_job_id"), 30);
+
+        let queued = json!({
+            "repository": { "id": 10 },
+            "workflow_job": {
+                "id": 31, "run_id": 20, "name": "test", "status": "queued",
+                "labels": ["self-hosted", "pool-a"],
+                "html_url": "https://github.com/iamngoni/gridops/actions/runs/20/job/31"
+            }
+        });
+        let queued = queued
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("test payload is not an object"))?;
+        process_workflow_job(&database, Some("queued"), queued).await?;
+        let desired = sqlx::query_scalar::<_, i64>(
+            "SELECT desired_count FROM runner_pools WHERE id='pool-1'",
+        )
+        .fetch_one(&database)
+        .await?;
+        let associated_events = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM runner_events WHERE runner_id='runner-1' AND pool_id='pool-1'",
+        )
+        .fetch_one(&database)
+        .await?;
+        assert_eq!(desired, 3);
+        assert_eq!(associated_events, 2);
+
+        let out_of_order = json!({
+            "repository": { "id": 10 }, "sender": { "login": "iamngoni" },
+            "workflow_job": {
+                "id": 32, "run_id": 21, "run_attempt": 1, "workflow_name": "Release",
+                "name": "publish", "status": "queued", "head_branch": "master", "head_sha": "def456",
+                "labels": ["self-hosted", "unmatched"],
+                "html_url": "https://github.com/iamngoni/gridops/actions/runs/21/job/32",
+                "created_at": "2026-07-21T00:02:00Z"
+            }
+        });
+        let out_of_order = out_of_order
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("test payload is not an object"))?;
+        process_workflow_job(&database, Some("queued"), out_of_order).await?;
+        let placeholder = sqlx::query(
+            "SELECT workflow_name,head_branch,head_sha,html_url FROM workflow_runs WHERE id=21",
+        )
+        .fetch_one(&database)
+        .await?;
+        assert_eq!(placeholder.get::<String, _>("workflow_name"), "Release");
+        assert_eq!(placeholder.get::<String, _>("head_branch"), "master");
+        assert_eq!(placeholder.get::<String, _>("head_sha"), "def456");
+        assert_eq!(
+            placeholder.get::<String, _>("html_url"),
+            "https://github.com/iamngoni/gridops/actions/runs/21"
+        );
+
+        database.close().await;
+        fs::remove_dir_all(directory)?;
         Ok(())
     }
 }
