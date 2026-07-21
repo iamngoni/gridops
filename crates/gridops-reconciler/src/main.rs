@@ -581,7 +581,10 @@ async fn maybe_sync_github(app: &Reconciler) -> Result<()> {
     let repositories = sqlx::query_as::<_, Repository>(
         r#"SELECT repo.id,repo.installation_id,repo.owner,repo.name,repo.full_name
            FROM repositories repo JOIN installations i ON i.id=repo.installation_id
-           WHERE repo.archived=0 AND i.suspended_at IS NULL ORDER BY repo.id"#,
+           WHERE repo.archived=0 AND i.suspended_at IS NULL
+             AND (EXISTS (SELECT 1 FROM runner_pools p WHERE p.repository_id=repo.id)
+               OR EXISTS (SELECT 1 FROM workflow_runs wr WHERE wr.repository_id=repo.id))
+           ORDER BY repo.id"#,
     )
     .fetch_all(&app.database)
     .await?;

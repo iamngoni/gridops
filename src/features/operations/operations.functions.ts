@@ -2,9 +2,16 @@ import { api } from "~/lib/api";
 
 type Page<T> = { authenticated: boolean; items: T[] };
 
+export type RepositoryPage = Page<Repository> & {
+  total: number;
+  page: number;
+  perPage: number;
+  query: string;
+};
+
 export type Repository = {
   id: number; fullName: string; private: boolean; archived: boolean; defaultBranch: string;
-  htmlUrl: string; permission: string | null; lastSyncedAt: string; installationId: number;
+  htmlUrl: string; permission: string | null; connected: boolean; lastSyncedAt: string; installationId: number;
   accountLogin: string; accountType: string; repositorySelection: string; poolCount: number;
   runCount: number; lastRunAt: string | null;
 };
@@ -74,7 +81,8 @@ export type SettingsPage = {
 
 export const getRunnerPoolsPage = () => api<Page<RunnerPool>>("/api/v1/runner-pools");
 export const getRunnersPage = () => api<Page<Runner>>("/api/v1/runners");
-export const getRepositoriesPage = () => api<Page<Repository>>("/api/v1/repositories");
+export const getRepositoriesPage = ({ query = "", page = 1 }: { query?: string; page?: number } = {}) =>
+  api<RepositoryPage>(`/api/v1/repositories?q=${encodeURIComponent(query)}&page=${page}&perPage=50`);
 export const getWorkflowRunsPage = () => api<Page<WorkflowRun>>("/api/v1/workflow-runs");
 export const getWebhooksPage = () => api<Page<WebhookDelivery>>("/api/v1/webhooks");
 export const getAuditLogPage = () => api<Page<AuditEvent>>("/api/v1/audit");

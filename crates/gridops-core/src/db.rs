@@ -302,7 +302,7 @@ mod tests {
             sqlx::query_scalar::<_, String>("SELECT role FROM users WHERE id='legacy-user'")
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(migration_count, 10);
+        assert_eq!(migration_count, 11);
         assert_eq!(preserved, "preserved");
         assert_eq!(migrated_role, "admin");
         pool.close().await;

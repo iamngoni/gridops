@@ -1,5 +1,5 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Github, LoaderCircle, Server } from "lucide-react";
+import { ArrowLeft, Github, LoaderCircle, Search, Server } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -112,10 +112,18 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
   const [error, setError] = useState<string | null>(null);
   const [scope, setScope] = useState<"repository" | "organization">("repository");
   const [installationId, setInstallationId] = useState(options.installations[0]?.id ?? 0);
+  const [repositoryId, setRepositoryId] = useState(0);
+  const [repositoryQuery, setRepositoryQuery] = useState("");
   const repositories = useMemo(
     () => options.repositories.filter((repository) => repository.installationId === installationId),
     [installationId, options.repositories],
   );
+  const filteredRepositories = useMemo(() => {
+    const query = repositoryQuery.trim().toLocaleLowerCase();
+    if (!query) return repositories;
+    return repositories.filter((repository) =>
+      repository.id === repositoryId || repository.fullName.toLocaleLowerCase().includes(query));
+  }, [repositories, repositoryId, repositoryQuery]);
   const runnerGroups = useMemo(
     () => options.runnerGroups.filter((group) => group.installationId === installationId),
     [installationId, options.runnerGroups],
@@ -133,7 +141,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
         data: {
           installationId,
           repositoryId:
-            scope === "repository" ? Number(form.get("repositoryId")) || null : null,
+            scope === "repository" ? repositoryId || null : null,
           name: String(form.get("name") ?? ""),
           scope,
           mode: String(form.get("mode")) as "ephemeral" | "persistent",
@@ -182,7 +190,11 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
             <CardHeader><CardTitle>GitHub destination</CardTitle></CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2">
               <Field label="Installation">
-                <select className="gridops-select" value={installationId} onChange={(event) => setInstallationId(Number(event.target.value))}>
+                <select className="gridops-select" value={installationId} onChange={(event) => {
+                  setInstallationId(Number(event.target.value));
+                  setRepositoryId(0);
+                  setRepositoryQuery("");
+                }}>
                   {options.installations.map((installation) => (
                     <option key={installation.id} value={installation.id}>{installation.accountLogin} · {installation.accountType}</option>
                   ))}
@@ -195,10 +207,20 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                 </select>
               </Field>
               {scope === "repository" && (
-                <Field className="md:col-span-2" label="Repository">
-                  <select className="gridops-select" name="repositoryId" required>
+                <Field className="md:col-span-2" label="Repository" hint={`${filteredRepositories.length} of ${repositories.length} repositories shown`}>
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      aria-label="Search repositories for this runner pool"
+                      className="pl-9"
+                      onChange={(event) => setRepositoryQuery(event.target.value)}
+                      placeholder="Search by owner or repository name…"
+                      value={repositoryQuery}
+                    />
+                  </div>
+                  <select className="gridops-select" name="repositoryId" onChange={(event) => setRepositoryId(Number(event.target.value))} required value={repositoryId || ""}>
                     <option value="">Choose repository…</option>
-                    {repositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.fullName}{repository.private ? " · Private" : ""}</option>)}
+                    {filteredRepositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.fullName}{repository.private ? " · Private" : ""}</option>)}
                   </select>
                 </Field>
               )}

@@ -63,7 +63,7 @@ function OverviewPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {data.authenticated ? <AsyncActionButton action={() => syncGitHub()} icon={<RefreshCw />} success="GitHub installations and repositories synced.">Sync GitHub</AsyncActionButton> : <a className={buttonVariants({ variant: "outline" })} href="/auth/github"><Github />Connect GitHub</a>}
+            {data.authenticated ? <AsyncActionButton action={() => syncGitHub()} icon={<RefreshCw />} success="GitHub installation access refreshed.">Refresh GitHub access</AsyncActionButton> : <a className={buttonVariants({ variant: "outline" })} href="/auth/github"><Github />Connect GitHub</a>}
             <Link className={buttonVariants()} to="/runner-pools/new"><Server />Provision runners</Link>
           </div>
         </div>

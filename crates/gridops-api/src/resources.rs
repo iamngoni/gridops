@@ -15,7 +15,8 @@ use axum::{
 use chrono::{SecondsFormat, Utc};
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use gridops_core::{
-    ConfigurationState, CreateRunnerPool, JitRequest, RunnerTarget, UpdateRunnerPool, now_millis,
+    ConfigurationState, CreateRunnerPool, GitHubRepository, JitRequest, RepositoryPage,
+    RunnerTarget, UpdateRunnerPool, now_millis,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -29,7 +30,7 @@ use crate::{
         require_system_admin,
     },
     error::{ApiError, ApiResult},
-    oauth::control_token,
+    oauth::{control_token, upsert_repository},
     state::AppState,
 };
 
@@ -103,6 +104,34 @@ pub(crate) struct WorkflowAction {
 #[derive(Deserialize)]
 pub(crate) struct SearchQuery {
     q: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RepositoryQuery {
+    q: Option<String>,
+    page: Option<i64>,
+    #[serde(rename = "perPage")]
+    per_page: Option<i64>,
+}
+
+#[derive(Clone)]
+struct InstallationAccess {
+    id: i64,
+    account_login: String,
+    account_type: String,
+    repository_selection: String,
+}
+
+struct AvailableRepository {
+    installation: InstallationAccess,
+    repository: GitHubRepository,
+}
+
+struct RepositoryStats {
+    last_synced_at: i64,
+    pool_count: i64,
+    run_count: i64,
+    last_run_at: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -320,37 +349,162 @@ pub async fn capacity_history(
 
 pub async fn repositories(
     State(state): State<AppState>,
+    Query(query): Query<RepositoryQuery>,
     OptionalAuth(user): OptionalAuth,
 ) -> ApiResult<Json<Value>> {
+    let page = query_page(query.page);
+    let per_page = query.per_page.unwrap_or(50).clamp(1, 100);
+    let query = query.q.unwrap_or_default().trim().to_owned();
+    if query.len() > 100 {
+        return Err(ApiError::BadRequest(
+            "Repository search is limited to 100 characters.".into(),
+        ));
+    }
     let Some(user) = user else {
-        return Ok(empty_page());
+        return Ok(Json(json!({
+            "authenticated": false, "items": [], "total": 0, "page": page,
+            "perPage": per_page, "query": query,
+        })));
     };
-    let rows = sqlx::query(
-        r#"SELECT repo.id,repo.full_name,repo.private,repo.archived,repo.default_branch,
-          repo.html_url,repo.permission,repo.last_synced_at,i.id AS installation_id,
-          i.account_login,i.account_type,i.repository_selection,
-          COUNT(DISTINCT p.id) AS pool_count,COUNT(DISTINCT wr.id) AS run_count,
-          MAX(wr.github_updated_at) AS last_run_at
+    let (_, mut available) = available_repositories(&state, &user, false).await?;
+    if !query.is_empty() {
+        let needle = query.to_lowercase();
+        available.retain(|item| item.repository.full_name.to_lowercase().contains(&needle));
+    }
+    available.sort_by(|left, right| {
+        left.repository
+            .full_name
+            .to_lowercase()
+            .cmp(&right.repository.full_name.to_lowercase())
+    });
+    let total = i64::try_from(available.len()).unwrap_or(i64::MAX);
+    let offset =
+        usize::try_from(page.saturating_sub(1).saturating_mul(per_page)).unwrap_or(usize::MAX);
+    let limit = usize::try_from(per_page).unwrap_or(100);
+    let stored_rows = sqlx::query(
+        r#"SELECT repo.id,repo.last_synced_at,COUNT(DISTINCT p.id) AS pool_count,
+          COUNT(DISTINCT wr.id) AS run_count,MAX(wr.github_updated_at) AS last_run_at
         FROM repositories repo JOIN user_installations ui ON ui.installation_id=repo.installation_id
-        JOIN installations i ON i.id=repo.installation_id
-        LEFT JOIN runner_pools p ON p.repository_id=repo.id LEFT JOIN workflow_runs wr ON wr.repository_id=repo.id
-        WHERE ui.user_id=? GROUP BY repo.id ORDER BY repo.full_name"#,
+        LEFT JOIN runner_pools p ON p.repository_id=repo.id
+        LEFT JOIN workflow_runs wr ON wr.repository_id=repo.id
+        WHERE ui.user_id=? GROUP BY repo.id"#,
     )
     .bind(&user.id)
     .fetch_all(&state.database)
     .await?;
-    let items = rows.iter().map(|row| json!({
-        "id": row.get::<i64,_>("id"), "fullName": row.get::<String,_>("full_name"),
-        "private": row.get::<bool,_>("private"), "archived": row.get::<bool,_>("archived"),
-        "defaultBranch": row.get::<String,_>("default_branch"), "htmlUrl": row.get::<String,_>("html_url"),
-        "permission": row.try_get::<Option<String>,_>("permission").ok().flatten(),
-        "lastSyncedAt": iso(row.get::<i64,_>("last_synced_at")),
-        "installationId": row.get::<i64,_>("installation_id"), "accountLogin": row.get::<String,_>("account_login"),
-        "accountType": row.get::<String,_>("account_type"), "repositorySelection": row.get::<String,_>("repository_selection"),
-        "poolCount": row.get::<i64,_>("pool_count"), "runCount": row.get::<i64,_>("run_count"),
-        "lastRunAt": iso_optional(row.try_get::<Option<i64>,_>("last_run_at").ok().flatten()),
-    })).collect::<Vec<_>>();
-    Ok(Json(json!({ "authenticated": true, "items": items })))
+    let stored = stored_rows
+        .iter()
+        .map(|row| {
+            (
+                row.get::<i64, _>("id"),
+                RepositoryStats {
+                    last_synced_at: row.get::<i64, _>("last_synced_at"),
+                    pool_count: row.get::<i64, _>("pool_count"),
+                    run_count: row.get::<i64, _>("run_count"),
+                    last_run_at: row.try_get::<Option<i64>, _>("last_run_at").ok().flatten(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let fetched_at = now_millis();
+    let items = available
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|item| {
+            let repository = item.repository;
+            let stats = stored.get(&repository.id);
+            let permission = repository.permissions.as_ref().and_then(|permissions| {
+                permissions
+                    .iter()
+                    .find_map(|(name, allowed)| allowed.then_some(name))
+            });
+            json!({
+                "id": repository.id, "fullName": repository.full_name,
+                "private": repository.private, "archived": repository.archived,
+                "defaultBranch": repository.default_branch, "htmlUrl": repository.html_url,
+                "permission": permission, "connected": stats.is_some(),
+                "lastSyncedAt": iso(stats.map_or(fetched_at, |value| value.last_synced_at)),
+                "installationId": item.installation.id, "accountLogin": item.installation.account_login,
+                "accountType": item.installation.account_type,
+                "repositorySelection": item.installation.repository_selection,
+                "poolCount": stats.map_or(0, |value| value.pool_count),
+                "runCount": stats.map_or(0, |value| value.run_count),
+                "lastRunAt": iso_optional(stats.and_then(|value| value.last_run_at)),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "authenticated": true, "items": items, "total": total, "page": page,
+        "perPage": per_page, "query": query,
+    })))
+}
+
+async fn available_repositories(
+    state: &AppState,
+    user: &AuthUser,
+    require_admin: bool,
+) -> ApiResult<(Vec<InstallationAccess>, Vec<AvailableRepository>)> {
+    let rows = sqlx::query(
+        r#"SELECT i.id,i.account_login,i.account_type,i.repository_selection
+           FROM user_installations ui JOIN installations i ON i.id=ui.installation_id
+           WHERE ui.user_id=? AND i.suspended_at IS NULL
+             AND (?=0 OR ui.permission='admin' OR ?='admin')
+           ORDER BY i.account_login"#,
+    )
+    .bind(&user.id)
+    .bind(require_admin)
+    .bind(&user.role)
+    .fetch_all(&state.database)
+    .await?;
+    let installations = rows
+        .iter()
+        .map(|row| InstallationAccess {
+            id: row.get::<i64, _>("id"),
+            account_login: row.get::<String, _>("account_login"),
+            account_type: row.get::<String, _>("account_type"),
+            repository_selection: row.get::<String, _>("repository_selection"),
+        })
+        .collect::<Vec<_>>();
+    let mut available = Vec::new();
+    for installation in &installations {
+        let token = control_token(state, &user.id, installation.id).await?;
+        let mut repositories = Vec::new();
+        let mut expected_total = 0_i64;
+        for page in 1..=100 {
+            let response: RepositoryPage = state
+                .github
+                .get(
+                    &format!("/installation/repositories?per_page=100&page={page}"),
+                    &token,
+                )
+                .await
+                .map_err(ApiError::Internal)?;
+            expected_total = response.total_count;
+            let page_count = response.repositories.len();
+            repositories.extend(response.repositories);
+            let loaded = i64::try_from(repositories.len()).unwrap_or(i64::MAX);
+            if page_count == 0 || loaded >= expected_total {
+                break;
+            }
+        }
+        let loaded = i64::try_from(repositories.len()).unwrap_or(i64::MAX);
+        if loaded < expected_total {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "GitHub returned {loaded} of {expected_total} repositories for installation {}",
+                installation.id
+            )));
+        }
+        available.extend(
+            repositories
+                .into_iter()
+                .map(|repository| AvailableRepository {
+                    installation: installation.clone(),
+                    repository,
+                }),
+        );
+    }
+    Ok((installations, available))
 }
 
 pub async fn search(
@@ -364,11 +518,7 @@ pub async fn search(
             "Search requires 2-100 characters.".into(),
         ));
     }
-    let escaped = query
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    let pattern = format!("%{escaped}%");
+    let pattern = like_pattern(query);
     let rows = sqlx::query(
         r#"SELECT kind,id,title,subtitle,href FROM (
           SELECT 'repository' AS kind,CAST(repo.id AS TEXT) AS id,repo.full_name AS title,
@@ -808,41 +958,38 @@ pub async fn runner_pool_options(
             json!({ "authenticated": false, "installations": [], "repositories": [], "runnerGroups": [], "installUrl": null, "defaults": null }),
         ));
     };
-    let installation_rows = sqlx::query(
-        r#"SELECT i.id,i.account_login,i.account_type FROM user_installations ui
-           JOIN installations i ON i.id=ui.installation_id
-           WHERE ui.user_id=? AND i.suspended_at IS NULL
-             AND (ui.permission='admin' OR ?='admin') ORDER BY i.account_login"#,
-    )
-    .bind(&user.id)
-    .bind(&user.role)
-    .fetch_all(&state.database)
-    .await?;
-    let repository_rows = sqlx::query(
-        r#"SELECT r.id,r.installation_id,r.full_name,r.private FROM repositories r
-           JOIN user_installations ui ON ui.installation_id=r.installation_id
-           JOIN installations i ON i.id=r.installation_id
-           WHERE ui.user_id=? AND r.archived=0 AND i.suspended_at IS NULL
-             AND (ui.permission='admin' OR ?='admin') ORDER BY r.full_name"#,
-    )
-    .bind(&user.id)
-    .bind(&user.role)
-    .fetch_all(&state.database)
-    .await?;
-    let installations = installation_rows.iter().map(|row| json!({
-        "id": row.get::<i64,_>("id"), "accountLogin": row.get::<String,_>("account_login"), "accountType": row.get::<String,_>("account_type"),
-    })).collect::<Vec<_>>();
-    let repositories = repository_rows.iter().map(|row| json!({
-        "id": row.get::<i64,_>("id"), "installationId": row.get::<i64,_>("installation_id"),
-        "fullName": row.get::<String,_>("full_name"), "private": row.get::<bool,_>("private"),
-    })).collect::<Vec<_>>();
+    let (installation_access, mut available) = available_repositories(&state, &user, true).await?;
+    available.sort_by(|left, right| {
+        left.repository
+            .full_name
+            .to_lowercase()
+            .cmp(&right.repository.full_name.to_lowercase())
+    });
+    let installations = installation_access
+        .iter()
+        .map(|installation| {
+            json!({
+                "id": installation.id, "accountLogin": installation.account_login,
+                "accountType": installation.account_type,
+            })
+        })
+        .collect::<Vec<_>>();
+    let repositories = available
+        .iter()
+        .map(|item| {
+            json!({
+                "id": item.repository.id, "installationId": item.installation.id,
+                "fullName": item.repository.full_name, "private": item.repository.private,
+            })
+        })
+        .collect::<Vec<_>>();
     let mut runner_groups = Vec::new();
-    for row in &installation_rows {
-        if row.get::<String, _>("account_type") != "Organization" {
+    for installation in &installation_access {
+        if installation.account_type != "Organization" {
             continue;
         }
-        let installation_id = row.get::<i64, _>("id");
-        let organization = row.get::<String, _>("account_login");
+        let installation_id = installation.id;
+        let organization = &installation.account_login;
         let token = match control_token(&state, &user.id, installation_id).await {
             Ok(token) => token,
             Err(error) => {
@@ -850,7 +997,7 @@ pub async fn runner_pool_options(
                 continue;
             }
         };
-        match state.github.runner_groups(&organization, &token).await {
+        match state.github.runner_groups(organization, &token).await {
             Ok(groups) => runner_groups.extend(groups.into_iter().map(|group| {
                 json!({
                     "installationId": installation_id, "id": group.id, "name": group.name,
@@ -884,19 +1031,18 @@ pub async fn create_runner_pool(
     input.validate().map_err(ApiError::BadRequest)?;
     assert_installation_admin(&state, &user, input.installation_id).await?;
     if let Some(repository_id) = input.repository_id {
-        let repository =
-            sqlx::query("SELECT installation_id,archived FROM repositories WHERE id=?")
-                .bind(repository_id)
-                .fetch_optional(&state.database)
-                .await?;
-        if repository.is_none_or(|row| {
-            row.get::<i64, _>("installation_id") != input.installation_id
-                || row.get::<bool, _>("archived")
-        }) {
+        let (_, available) = available_repositories(&state, &user, true).await?;
+        let selected = available.into_iter().find(|item| {
+            item.installation.id == input.installation_id
+                && item.repository.id == repository_id
+                && !item.repository.archived
+        });
+        let Some(selected) = selected else {
             return Err(ApiError::BadRequest(
                 "The selected repository is unavailable for this installation.".into(),
             ));
-        }
+        };
+        upsert_repository(&state, input.installation_id, &selected.repository).await?;
     }
     let pool_id = uuid::Uuid::new_v4().to_string();
     let labels = normalized_pool_labels(&input.name, &input.labels)?;
@@ -2102,6 +2248,18 @@ fn empty_page() -> Json<Value> {
     Json(json!({ "authenticated": false, "items": [] }))
 }
 
+fn query_page(page: Option<i64>) -> i64 {
+    page.unwrap_or(1).clamp(1, 1_000_000)
+}
+
+fn like_pattern(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
 fn json_array(value: &str) -> Vec<String> {
     serde_json::from_str(value).unwrap_or_default()
 }
@@ -2220,5 +2378,18 @@ mod tests {
             Some("rerun-failed-jobs")
         );
         assert!(workflow_action_endpoint("delete").is_err());
+    }
+
+    #[test]
+    fn repository_search_escapes_like_wildcards() {
+        assert_eq!(like_pattern(r"a%b_c\d"), r"%a\%b\_c\\d%");
+    }
+
+    #[test]
+    fn repository_pages_are_one_based_and_bounded() {
+        assert_eq!(query_page(None), 1);
+        assert_eq!(query_page(Some(-4)), 1);
+        assert_eq!(query_page(Some(7)), 7);
+        assert_eq!(query_page(Some(i64::MAX)), 1_000_000);
     }
 }

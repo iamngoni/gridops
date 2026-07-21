@@ -332,6 +332,7 @@ pub struct GitHubOrganizationMembership {
 
 #[derive(Debug, Deserialize)]
 pub struct RepositoryPage {
+    pub total_count: i64,
     pub repositories: Vec<GitHubRepository>,
 }
 
