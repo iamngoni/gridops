@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~
 import { getRunnersPage } from "~/features/operations/operations.functions";
 import { runnerAction } from "~/features/runner-pools/runner-pools.functions";
 import { formatRelativeTime } from "~/lib/utils";
+import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
 export const Route = createFileRoute("/runners")({
   loader: () => getRunnersPage(),
@@ -18,6 +19,7 @@ export const Route = createFileRoute("/runners")({
 
 function RunnersPage() {
   const data = Route.useLoaderData();
+  useLiveRouteRefresh(5_000, data.authenticated);
   const control = runnerAction;
 
   return (

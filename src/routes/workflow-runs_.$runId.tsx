@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
 import { getWorkflowRunDetailAction } from "~/features/operations/operations.functions";
 import { formatDuration, formatRelativeTime } from "~/lib/utils";
+import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
 export const Route = createFileRoute("/workflow-runs_/$runId")({
   loader: ({ params }) => getWorkflowRunDetailAction({ data: { runId: Number(params.runId) } }),
@@ -17,6 +18,7 @@ export const Route = createFileRoute("/workflow-runs_/$runId")({
 
 function WorkflowRunDetailPage() {
   const run = Route.useLoaderData();
+  useLiveRouteRefresh(3_000, run.status === "queued" || run.status === "in_progress");
   return (
     <AppShell>
       <div className="space-y-5">

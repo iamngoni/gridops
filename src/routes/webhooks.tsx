@@ -9,6 +9,7 @@ import { Card, CardContent } from "~/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
 import { getWebhooksPage, retryWebhookAction } from "~/features/operations/operations.functions";
 import { formatRelativeTime } from "~/lib/utils";
+import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
 export const Route = createFileRoute("/webhooks")({
   loader: () => getWebhooksPage(),
@@ -17,6 +18,7 @@ export const Route = createFileRoute("/webhooks")({
 
 function WebhooksPage() {
   const data = Route.useLoaderData();
+  useLiveRouteRefresh(10_000, data.authenticated);
   const retry = retryWebhookAction;
   return (
     <ResourcePage

@@ -8,6 +8,7 @@ import { Card, CardContent } from "~/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
 import { getWorkflowRunsPage, workflowRunAction } from "~/features/operations/operations.functions";
 import { formatDuration, formatRelativeTime } from "~/lib/utils";
+import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
 export const Route = createFileRoute("/workflow-runs")({
   loader: () => getWorkflowRunsPage(),
@@ -16,6 +17,7 @@ export const Route = createFileRoute("/workflow-runs")({
 
 function WorkflowRunsPage() {
   const data = Route.useLoaderData();
+  useLiveRouteRefresh(5_000, data.authenticated);
   const control = workflowRunAction;
 
   return (

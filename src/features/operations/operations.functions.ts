@@ -65,7 +65,7 @@ export type SettingsPage = {
     };
     manager: { ok: boolean; dockerVersion?: string; apiVersion?: string; error?: string };
     settings: { logRetentionDays: number; webhookRetentionDays: number; auditRetentionDays: number;
-      reconcileIntervalSeconds: number; autoUpdateImages: boolean };
+      reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean };
     user: { login: string };
   };
 };
@@ -94,7 +94,7 @@ export const retryWebhookAction = ({ data }: { data: { deliveryId: string } }) =
   api<{ ok: true }>(`/api/v1/webhooks/${data.deliveryId}/retry`, { method: "POST" });
 export const saveSettingsAction = ({ data }: { data: {
   logRetentionDays: number; webhookRetentionDays: number; auditRetentionDays: number;
-  reconcileIntervalSeconds: number; autoUpdateImages: boolean;
+  reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean;
 } }) => api<{ ok: true }>("/api/v1/settings", { method: "PUT", body: data });
 export const createGitHubAppManifestAction = ({ data }: { data: {
   ownerType: "user" | "organization"; organization?: string; name?: string;

@@ -77,6 +77,7 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
         webhookRetentionDays: Number(form.get("webhookRetentionDays")),
         auditRetentionDays: Number(form.get("auditRetentionDays")),
         reconcileIntervalSeconds: Number(form.get("reconcileIntervalSeconds")),
+        githubSyncIntervalSeconds: Number(form.get("githubSyncIntervalSeconds")),
         autoUpdateImages: form.get("autoUpdateImages") === "on",
       } });
       toast.success("GridOps policy saved.");
@@ -155,11 +156,12 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
         <Card>
           <CardHeader><div><CardTitle>Retention and reconciliation</CardTitle><p className="mt-1 text-xs text-muted-foreground">Durable system policy stored in SQLite and included in backups.</p></div></CardHeader>
           <CardContent>
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <NumberField defaultValue={data.settings.logRetentionDays} label="Runner log retention" name="logRetentionDays" suffix="days" />
-              <NumberField defaultValue={data.settings.webhookRetentionDays} label="Webhook retention" name="webhookRetentionDays" suffix="days" />
-              <NumberField defaultValue={data.settings.auditRetentionDays} label="Audit retention" name="auditRetentionDays" suffix="days" />
-              <NumberField defaultValue={data.settings.reconcileIntervalSeconds} label="Reconcile interval" name="reconcileIntervalSeconds" suffix="seconds" />
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+              <NumberField defaultValue={data.settings.logRetentionDays} label="Runner log retention" max={3650} name="logRetentionDays" suffix="days" />
+              <NumberField defaultValue={data.settings.webhookRetentionDays} label="Webhook retention" max={3650} name="webhookRetentionDays" suffix="days" />
+              <NumberField defaultValue={data.settings.auditRetentionDays} label="Audit retention" max={3650} name="auditRetentionDays" suffix="days" />
+              <NumberField defaultValue={data.settings.reconcileIntervalSeconds} label="Reconcile interval" max={3600} min={5} name="reconcileIntervalSeconds" suffix="seconds" />
+              <NumberField defaultValue={data.settings.githubSyncIntervalSeconds} label="GitHub polling interval" max={3600} min={30} name="githubSyncIntervalSeconds" suffix="seconds" />
             </div>
             <label className="mt-5 flex items-start gap-3 rounded-md border border-border p-3">
               <input className="mt-0.5 size-4 accent-emerald-500" defaultChecked={data.settings.autoUpdateImages} name="autoUpdateImages" type="checkbox" />
@@ -181,6 +183,6 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   return <div className="flex items-center justify-between gap-4 border-b border-border pb-3 last:border-0 last:pb-0"><span className="text-muted-foreground">{label}</span><span className="text-right font-medium">{value}</span></div>;
 }
 
-function NumberField({ label, name, defaultValue, suffix }: { label: string; name: string; defaultValue: number; suffix: string }) {
-  return <label className="space-y-2"><span className="block text-xs font-medium">{label}</span><div className="relative"><Input defaultValue={defaultValue} min="1" name={name} required type="number" /><span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] text-muted-foreground">{suffix}</span></div></label>;
+function NumberField({ label, name, defaultValue, suffix, min = 1, max }: { label: string; name: string; defaultValue: number; suffix: string; min?: number; max?: number }) {
+  return <label className="space-y-2"><span className="block text-xs font-medium">{label}</span><div className="relative"><Input defaultValue={defaultValue} max={max} min={min} name={name} required type="number" /><span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] text-muted-foreground">{suffix}</span></div></label>;
 }

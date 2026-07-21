@@ -9,6 +9,7 @@ import { Card, CardContent } from "~/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
 import { getRunnerPoolsPage } from "~/features/operations/operations.functions";
 import { runnerPoolAction } from "~/features/runner-pools/runner-pools.functions";
+import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
 export const Route = createFileRoute("/runner-pools")({
   loader: () => getRunnerPoolsPage(),
@@ -17,6 +18,7 @@ export const Route = createFileRoute("/runner-pools")({
 
 function RunnerPoolsPage() {
   const data = Route.useLoaderData();
+  useLiveRouteRefresh(5_000, data.authenticated);
   const control = runnerPoolAction;
 
   return (

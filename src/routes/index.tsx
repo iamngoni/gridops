@@ -34,6 +34,7 @@ import { getCapacityHistory, getDashboardOverview } from "~/features/dashboard/d
 import { syncGitHubAction } from "~/features/operations/operations.functions";
 import type { CapacityHistory, CapacityWindow, DashboardOverview } from "~/features/dashboard/types";
 import { formatDuration, formatRelativeTime } from "~/lib/utils";
+import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
 export const Route = createFileRoute("/")({
   loader: () => getDashboardOverview(),
@@ -42,6 +43,7 @@ export const Route = createFileRoute("/")({
 
 function OverviewPage() {
   const data = Route.useLoaderData();
+  useLiveRouteRefresh(10_000, data.authenticated);
   const syncGitHub = syncGitHubAction;
   const configurationComplete =
     data.configuration.githubOAuth &&
