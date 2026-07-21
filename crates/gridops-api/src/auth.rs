@@ -101,8 +101,9 @@ pub async fn me(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json
       SELECT
         (SELECT COUNT(*) FROM runners r JOIN runner_pools p ON p.id=r.pool_id JOIN user_installations ui ON ui.installation_id=p.installation_id WHERE ui.user_id=? AND r.deleted_at IS NULL AND r.status='failed') AS failed_runners,
         (SELECT COUNT(*) FROM webhook_deliveries wd WHERE wd.status IN ('failed','rejected') AND (wd.installation_id IS NULL OR EXISTS (SELECT 1 FROM user_installations ui WHERE ui.installation_id=wd.installation_id AND ui.user_id=?))) AS failed_webhooks,
-        (SELECT COUNT(*) FROM workflow_jobs wj JOIN workflow_runs wr ON wr.id=wj.run_id JOIN repositories repo ON repo.id=wr.repository_id JOIN user_installations ui ON ui.installation_id=repo.installation_id WHERE ui.user_id=? AND wj.status='queued') AS queued_jobs
-    "#).bind(&user.id).bind(&user.id).bind(&user.id).fetch_one(&state.database).await?;
+        (SELECT COUNT(*) FROM workflow_jobs wj JOIN workflow_runs wr ON wr.id=wj.run_id JOIN repositories repo ON repo.id=wr.repository_id JOIN user_installations ui ON ui.installation_id=repo.installation_id WHERE ui.user_id=? AND wj.status='queued') AS queued_jobs,
+        (SELECT COUNT(*) FROM github_runner_cleanup cleanup JOIN user_installations ui ON ui.installation_id=cleanup.installation_id WHERE ui.user_id=?) AS deferred_runner_cleanup
+    "#).bind(&user.id).bind(&user.id).bind(&user.id).bind(&user.id).fetch_one(&state.database).await?;
     Ok(Json(Viewer {
         id: user.id,
         github_id: user.github_id,
@@ -114,6 +115,7 @@ pub async fn me(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json
             failed_runners: alerts.get("failed_runners"),
             failed_webhooks: alerts.get("failed_webhooks"),
             queued_jobs: alerts.get("queued_jobs"),
+            deferred_runner_cleanup: alerts.get("deferred_runner_cleanup"),
         },
     }))
 }

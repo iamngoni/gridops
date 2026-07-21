@@ -1198,9 +1198,9 @@ pub async fn workflow_run_action(
         _ => return Err(ApiError::BadRequest("Workflow action is invalid.".into())),
     };
     let token = control_token(&state, &user.id, run.get("installation_id")).await?;
-    let _: Value = state
+    state
         .github
-        .post(
+        .post_empty(
             &format!(
                 "/repos/{}/{}/actions/runs/{run_id}/{endpoint}",
                 run.get::<String, _>("owner"),

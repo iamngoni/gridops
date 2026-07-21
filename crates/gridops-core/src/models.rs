@@ -18,6 +18,7 @@ pub struct Alerts {
     pub failed_runners: i64,
     pub failed_webhooks: i64,
     pub queued_jobs: i64,
+    pub deferred_runner_cleanup: i64,
 }
 
 #[derive(Debug, Serialize)]

@@ -53,6 +53,21 @@ impl GitHubClient {
         token: &str,
         body: Option<Value>,
     ) -> Result<T> {
+        let response = self.send(method, path, token, body).await?;
+        if response.status() == StatusCode::NO_CONTENT {
+            return serde_json::from_value(Value::Null)
+                .context("expected an empty GitHub response");
+        }
+        response.json().await.context("invalid GitHub response")
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        token: &str,
+        body: Option<Value>,
+    ) -> Result<reqwest::Response> {
         let mut request = self
             .http
             .request(method, format!("https://api.github.com{path}"))
@@ -71,11 +86,7 @@ impl GitHubClient {
                 details.chars().take(500).collect::<String>()
             );
         }
-        if response.status() == StatusCode::NO_CONTENT {
-            return serde_json::from_value(Value::Null)
-                .context("expected an empty GitHub response");
-        }
-        response.json().await.context("invalid GitHub response")
+        Ok(response)
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str, token: &str) -> Result<T> {
@@ -89,6 +100,11 @@ impl GitHubClient {
         body: Value,
     ) -> Result<T> {
         self.request(Method::POST, path, token, Some(body)).await
+    }
+
+    pub async fn post_empty(&self, path: &str, token: &str, body: Value) -> Result<()> {
+        self.send(Method::POST, path, token, Some(body)).await?;
+        Ok(())
     }
 
     pub async fn delete(&self, path: &str, token: &str) -> Result<()> {
