@@ -21,6 +21,9 @@ export type RunnerGroupOption = {
 
 export type RepositoryOption = {
   id: number;
+  installationId: number;
+  accountLogin: string;
+  accountType: string;
   fullName: string;
   private: boolean;
 };
@@ -76,6 +79,8 @@ export const getInstallationRunnerGroups = (installationId: number, signal?: Abo
   api<{ items: RunnerGroupOption[] }>(`/api/v1/installations/${installationId}/runner-groups`, { signal });
 export const getInstallationRepositories = (installationId: number, signal?: AbortSignal) =>
   api<{ items: RepositoryOption[] }>(`/api/v1/installations/${installationId}/repositories`, { signal });
+export const getRunnerPoolRepositories = (signal?: AbortSignal) =>
+  api<{ items: RepositoryOption[] }>("/api/v1/runner-pools/repositories", { signal });
 
 export function createRunnerPoolAction({ data }: { data: CreateRunnerPoolInput }) {
   const input = parseCreateRunnerPoolInput(data);

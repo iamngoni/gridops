@@ -209,7 +209,8 @@ mod tests {
         .fetch_one(&pool)
         .await?
         .get::<i64, _>("count");
-        assert_eq!(tables, 20);
+        assert_eq!(tables, 21);
+        assert!(table_exists(&pool, "runner_pool_installations").await?);
         let columns = sqlx::query("PRAGMA table_info(runner_pools)")
             .fetch_all(&pool)
             .await?;
@@ -332,7 +333,7 @@ mod tests {
             sqlx::query_scalar::<_, String>("SELECT role FROM users WHERE id='legacy-user'")
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(migration_count, 13);
+        assert_eq!(migration_count, 14);
         assert_eq!(preserved, "preserved");
         assert_eq!(migrated_role, "admin");
         pool.close().await;

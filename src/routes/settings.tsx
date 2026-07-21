@@ -1,5 +1,5 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { CheckCircle2, CircleX, DatabaseBackup, Github, LoaderCircle, Save, Settings, Shield, ShieldCheck, UserRound, UsersRound } from "lucide-react";
+import { Building2, CheckCircle2, CircleX, DatabaseBackup, ExternalLink, Github, LoaderCircle, Plus, RefreshCw, Save, Settings, Shield, ShieldCheck, UserRound, UsersRound } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -7,11 +7,11 @@ import { AsyncActionButton } from "~/components/async-action-button";
 import { ResourcePage } from "~/components/resource-page";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { Badge } from "~/components/ui/badge";
-import { Button } from "~/components/ui/button";
+import { Button, buttonVariants } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { SearchableSelect } from "~/components/ui/searchable-select";
-import { createGitHubAppManifestAction, getSettingsPage, saveSettingsAction, updateUserRoleAction } from "~/features/operations/operations.functions";
+import { createGitHubAppManifestAction, getSettingsPage, saveSettingsAction, syncGitHubAction, updateUserRoleAction } from "~/features/operations/operations.functions";
 import type { SettingsPage } from "~/features/operations/operations.functions";
 import { formatRelativeTime } from "~/lib/utils";
 
@@ -171,6 +171,36 @@ function AuthenticatedSettings({ data }: { data: NonNullable<SettingsPage["data"
           </CardContent>
         </Card>
       </div>
+
+      {data.githubApp ? <Card className="mt-4">
+        <CardHeader><div><CardTitle>GitHub App access</CardTitle><p className="mt-1 text-xs text-muted-foreground">Install GridOps on additional accounts and manage repository access for each installation.</p></div><Github className="size-5 text-primary" /></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col gap-4 rounded-lg border border-border bg-muted/15 p-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-sm font-medium">{data.githubApp.slug}</span><Badge variant="outline">{data.installations.length} {data.installations.length === 1 ? "installation" : "installations"}</Badge></div>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">Each account is installed separately; repository-scoped pools can combine repositories from all installations you administer.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <AsyncActionButton action={() => syncGitHubAction()} icon={<RefreshCw />} success="GitHub installations and repository access refreshed.">Refresh access</AsyncActionButton>
+              <a className={buttonVariants({ size: "sm" })} href={data.githubApp.installUrl} rel="noreferrer" target="_blank"><Plus />Install on another account<ExternalLink /></a>
+              {isAdmin ? <a className={buttonVariants({ size: "sm", variant: "outline" })} href={data.githubApp.appUrl} rel="noreferrer" target="_blank"><Settings />Manage GitHub App<ExternalLink /></a> : null}
+            </div>
+          </div>
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4 text-xs leading-5 text-amber-100">
+            <div className="font-medium">Adding a different GitHub account</div>
+            <p className="mt-1 text-amber-100/75">GridOps-created Apps start private. In Manage GitHub App, open <strong>Advanced</strong> and choose <strong>Make public</strong> once, then use Install on another account. Organization members can request access; an organization owner must approve the installation.</p>
+          </div>
+          {data.installations.length ? <div className="divide-y divide-border rounded-lg border border-border">
+            {data.installations.map((installation) => <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center" key={installation.id}>
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                {installation.accountAvatarUrl ? <img alt="" className="size-10 rounded-lg" src={installation.accountAvatarUrl} /> : <div className="grid size-10 place-items-center rounded-lg bg-muted text-muted-foreground">{installation.accountType === "Organization" ? <Building2 className="size-4" /> : <UserRound className="size-4" />}</div>}
+                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="truncate text-sm font-medium">{installation.accountLogin}</span><Badge variant="outline">{installation.accountType}</Badge>{installation.suspended ? <Badge variant="destructive">suspended</Badge> : <Badge variant="success">active</Badge>}</div><p className="mt-1 text-[11px] text-muted-foreground">{installation.repositorySelection === "all" ? "All repositories" : "Selected repositories"} · {installation.poolCount} {installation.poolCount === 1 ? "pool" : "pools"}{installation.lastSyncedAt ? ` · synced ${formatRelativeTime(installation.lastSyncedAt)}` : ""}</p></div>
+              </div>
+              {installation.permission === "admin" ? <a className={buttonVariants({ size: "sm", variant: "outline" })} href={installation.manageUrl} rel="noreferrer" target="_blank">Configure repositories<ExternalLink /></a> : <Badge variant="secondary">owner approval required</Badge>}
+            </div>)}
+          </div> : <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">No GitHub App installations are visible to @{data.user.login}.</div>}
+        </CardContent>
+      </Card> : null}
 
       {isAdmin ? <form className="mt-4" onSubmit={submit}>
         <Card>

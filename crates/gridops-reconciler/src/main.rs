@@ -58,6 +58,7 @@ struct Pool {
 #[derive(Debug, FromRow)]
 struct Runner {
     id: String,
+    installation_id: i64,
     name: String,
     container_id: Option<String>,
     github_runner_id: Option<i64>,
@@ -815,9 +816,6 @@ fn parse_github_date(value: Option<&str>) -> Option<i64> {
 }
 
 async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
-    let token = installation_token(app, pool.installation_id)
-        .await?
-        .context("GitHub App credentials are required for autonomous reconciliation")?;
     let runner_id = uuid::Uuid::new_v4().to_string();
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let runner_name = format!("{}-{suffix}", pool.name);
@@ -830,6 +828,14 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
     } else {
         None
     };
+    let target_installation_id = target_repository
+        .as_ref()
+        .map_or(pool.installation_id, |repository| {
+            repository.installation_id
+        });
+    let token = installation_token(app, target_installation_id)
+        .await?
+        .context("GitHub App credentials are required for autonomous reconciliation")?;
     let now = now_millis();
     sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,'starting',?,?,?,?)")
         .bind(&runner_id)
@@ -965,7 +971,7 @@ async fn delete_runner(app: &Reconciler, pool: &Pool, runner: &Runner) -> Result
             organization: &pool.account_login,
         },
     };
-    match installation_token(app, pool.installation_id).await {
+    match installation_token(app, runner.installation_id).await {
         Ok(Some(token)) => {
             let github_cleanup = async {
                 let github_runner_id = match runner.github_runner_id {
@@ -1047,10 +1053,12 @@ async fn remove_manager_container(app: &Reconciler, container_id: &str) -> Resul
 
 async fn runners(app: &Reconciler, pool_id: &str) -> Result<Vec<Runner>> {
     Ok(sqlx::query_as::<_, Runner>(
-        r#"SELECT runner.id,runner.name,runner.container_id,runner.github_runner_id,
+        r#"SELECT runner.id,COALESCE(repo.installation_id,pool.installation_id) AS installation_id,
+           runner.name,runner.container_id,runner.github_runner_id,
            runner.target_repository_id,repo.owner AS repository_owner,repo.name AS repository_name,
            runner.status,runner.busy,runner.last_job_id,runner.configuration_version,runner.updated_at
-           FROM runners runner LEFT JOIN repositories repo ON repo.id=runner.target_repository_id
+           FROM runners runner JOIN runner_pools pool ON pool.id=runner.pool_id
+           LEFT JOIN repositories repo ON repo.id=runner.target_repository_id
            WHERE runner.pool_id=? AND runner.deleted_at IS NULL ORDER BY runner.created_at DESC"#,
     )
     .bind(pool_id)
@@ -1182,7 +1190,7 @@ async fn archive_runner_logs(app: &Reconciler, pool: &Pool, runner: &Runner) -> 
     .bind(&stream_id)
     .bind(&runner.id)
     .bind(runner.last_job_id)
-    .bind(pool.installation_id)
+    .bind(runner.installation_id)
     .bind(&runner.name)
     .bind(&pool.name)
     .bind(repository)
@@ -1409,6 +1417,7 @@ mod tests {
     fn runner(configuration_version: i64) -> Runner {
         Runner {
             id: "runner-1".into(),
+            installation_id: 1,
             name: "linux-1234".into(),
             container_id: None,
             github_runner_id: None,
@@ -1483,11 +1492,13 @@ mod tests {
         sqlx::raw_sql(
             r#"
             INSERT INTO installations (id,account_id,account_login,account_type,target_type,repository_selection,created_at,updated_at)
-              VALUES (1,1,'octo-org','Organization','Organization','all',1,1);
+              VALUES
+              (1,1,'octo-org','Organization','Organization','all',1,1),
+              (2,2,'other-org','Organization','Organization','selected',1,1);
             INSERT INTO repositories (id,installation_id,owner,name,full_name,private,default_branch,html_url,last_synced_at,created_at,updated_at)
               VALUES
               (10,1,'octo-org','gridops','octo-org/gridops',0,'master','https://github.com/octo-org/gridops',1,1,1),
-              (11,1,'octo-org','other','octo-org/other',0,'master','https://github.com/octo-org/other',1,1,1);
+              (11,2,'other-org','other','other-org/other',0,'master','https://github.com/other-org/other',1,1,1);
             INSERT INTO runner_pools (id,installation_id,repository_id,name,scope,labels,image,autoscaling_enabled,created_at,updated_at)
               VALUES
               ('pool-a',1,10,'pool-a','repository','["docker","pool-a"]','runner:latest',1,1,1),
@@ -1532,6 +1543,15 @@ mod tests {
             .await?
             .context("multi-repository pool should have a target")?;
         assert_eq!(target.repository_id, 11);
+        assert_eq!(target.installation_id, 2);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM runner_pool_installations WHERE pool_id='pool-a'",
+            )
+            .fetch_one(&database)
+            .await?,
+            2
+        );
 
         database.close().await;
         fs::remove_dir_all(directory)?;

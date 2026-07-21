@@ -15,8 +15,8 @@ import {
   type RepositoryOption,
   type RunnerGroupOption,
   type RunnerPoolDetail,
-  getInstallationRepositories,
   getInstallationRunnerGroups,
+  getRunnerPoolRepositories,
   getRunnerPoolAction,
   updateRunnerPoolAction,
 } from "~/features/runner-pools/runner-pools.functions";
@@ -90,7 +90,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
   useEffect(() => {
     if (!shouldLoadRepositories) return;
     const controller = new AbortController();
-    void getInstallationRepositories(pool.installationId, controller.signal)
+    void getRunnerPoolRepositories(controller.signal)
       .then(({ items }) => setRepositoryLoad({ status: "ready", items, error: null }))
       .catch((cause: unknown) => {
         if (cause instanceof DOMException && cause.name === "AbortError") return;
@@ -101,9 +101,11 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
         });
       });
     return () => controller.abort();
-  }, [pool.installationId, pool.repositories, shouldLoadRepositories]);
+  }, [pool.repositories, shouldLoadRepositories]);
 
   const runnerGroups = runnerGroupLoad.items;
+  const selectedRepositories = repositoryLoad.items.filter((repository) => repositoryIds.includes(repository.id));
+  const selectedAccounts = [...new Set(selectedRepositories.map((repository) => repository.accountLogin))];
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -167,7 +169,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
           <Card>
             <CardHeader><CardTitle>GitHub destination</CardTitle></CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2">
-              <ReadOnly label="Installation" value={pool.accountLogin} />
+              <ReadOnly label={pool.scope === "repository" ? "GitHub accounts" : "Installation"} value={pool.scope === "repository" ? selectedAccounts.join(", ") || pool.accountLogin : pool.accountLogin} />
               <ReadOnly label="Scope" value={pool.scope === "repository" ? `${repositoryIds.length} repositories` : "Organization"} />
               {pool.scope === "repository" ? (
                 <Field className="sm:col-span-2" label="Repositories" hint={`${repositoryIds.length} selected · maximum ${maxCount}`}>
@@ -180,7 +182,8 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
                     options={repositoryLoad.items.map((repository) => ({
                       value: repository.id,
                       label: repository.fullName,
-                      description: repository.private ? "Private repository" : "Public repository",
+                      description: `${repository.accountLogin} · ${repository.private ? "Private repository" : "Public repository"}`,
+                      keywords: [repository.accountLogin, repository.accountType],
                     }))}
                     placeholder="Choose one or more repositories…"
                     searchPlaceholder="Search by owner or repository name…"

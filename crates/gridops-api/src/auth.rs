@@ -122,7 +122,14 @@ async fn load_viewer(state: &AppState, user: &AuthUser) -> ApiResult<Viewer> {
         .await?;
     let alerts = sqlx::query(r#"
       SELECT
-        (SELECT COUNT(*) FROM runners r JOIN runner_pools p ON p.id=r.pool_id JOIN user_installations ui ON ui.installation_id=p.installation_id WHERE ui.user_id=? AND r.deleted_at IS NULL AND r.status='failed') AS failed_runners,
+        (SELECT COUNT(*) FROM runners r JOIN runner_pools p ON p.id=r.pool_id
+          WHERE r.deleted_at IS NULL AND r.status='failed'
+            AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+            AND NOT EXISTS (
+              SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+                AND NOT EXISTS (SELECT 1 FROM user_installations access
+                  WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+            )) AS failed_runners,
         (SELECT COUNT(*) FROM webhook_deliveries wd WHERE wd.status IN ('failed','rejected') AND (wd.installation_id IS NULL OR EXISTS (SELECT 1 FROM user_installations ui WHERE ui.installation_id=wd.installation_id AND ui.user_id=?))) AS failed_webhooks,
         (SELECT COUNT(*) FROM workflow_jobs wj JOIN workflow_runs wr ON wr.id=wj.run_id JOIN repositories repo ON repo.id=wr.repository_id JOIN user_installations ui ON ui.installation_id=repo.installation_id WHERE ui.user_id=? AND wj.status='queued') AS queued_jobs,
         (SELECT COUNT(*) FROM github_runner_cleanup cleanup JOIN user_installations ui ON ui.installation_id=cleanup.installation_id WHERE ui.user_id=?) AS deferred_runner_cleanup
@@ -171,6 +178,35 @@ pub async fn assert_installation_admin(
         .as_deref()
         .is_some_and(|permission| can_administer_installation(&user.role, permission))
     {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden)
+    }
+}
+
+pub async fn assert_pool_admin(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResult<()> {
+    let inaccessible = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM runner_pool_installations pool_installation
+          JOIN installations installation ON installation.id=pool_installation.installation_id
+          LEFT JOIN user_installations access ON access.installation_id=pool_installation.installation_id
+            AND access.user_id=?
+          WHERE pool_installation.pool_id=? AND (
+            installation.suspended_at IS NOT NULL OR access.installation_id IS NULL OR
+            (?<>'admin' AND access.permission<>'admin')
+          )"#,
+    )
+    .bind(&user.id)
+    .bind(pool_id)
+    .bind(&user.role)
+    .fetch_one(&state.database)
+    .await?;
+    let installations = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM runner_pool_installations WHERE pool_id=?",
+    )
+    .bind(pool_id)
+    .fetch_one(&state.database)
+    .await?;
+    if installations > 0 && inaccessible == 0 {
         Ok(())
     } else {
         Err(ApiError::Forbidden)

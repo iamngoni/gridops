@@ -23,6 +23,7 @@ export type RunnerPool = {
   id: string; name: string; scope: string; mode: string; labels: string[]; image: string;
   desiredCount: number; minCount: number; maxCount: number; cpuLimit: number; memoryLimitMb: number;
   paused: boolean; state: string; accountLogin: string; repository: string | null; repositoryCount: number;
+  accountCount: number;
   totalRunners: number; onlineRunners: number; busyRunners: number; failedRunners: number;
   outdatedRunners: number; createdAt: string; canManage: boolean;
 };
@@ -78,6 +79,12 @@ export type SettingsPage = {
       secureStorage: boolean; runnerManager: boolean; installationTokens: boolean;
       callbackUrl: string; webhookUrl: string;
     };
+    githubApp: null | { slug: string; appUrl: string; installUrl: string };
+    installations: Array<{
+      id: number; accountLogin: string; accountType: string; accountAvatarUrl: string | null;
+      repositorySelection: string; permission: string; suspended: boolean; lastSyncedAt: string | null;
+      poolCount: number; manageUrl: string;
+    }>;
     manager: { ok: boolean; dockerVersion?: string; apiVersion?: string; availableCpus?: number; error?: string };
     settings: { logRetentionDays: number; webhookRetentionDays: number; auditRetentionDays: number;
       reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean };

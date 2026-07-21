@@ -227,11 +227,15 @@ async fn process_installation(
             .bind(id)
             .execute(&state.database)
             .await?;
-        sqlx::query("UPDATE runner_pools SET paused=1,state='draining',updated_at=? WHERE installation_id=?")
-            .bind(now)
-            .bind(id)
-            .execute(&state.database)
-            .await?;
+        sqlx::query(
+            r#"UPDATE runner_pools SET paused=1,state='draining',updated_at=?
+              WHERE EXISTS (SELECT 1 FROM runner_pool_installations mapped
+                WHERE mapped.pool_id=runner_pools.id AND mapped.installation_id=?)"#,
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&state.database)
+        .await?;
         return Ok(());
     }
     let Some(account) = nested_object(installation, "account") else {
@@ -275,11 +279,15 @@ async fn process_installation(
     .execute(&state.database)
     .await?;
     if date_value(installation, "suspended_at").is_some() {
-        sqlx::query("UPDATE runner_pools SET paused=1,state='draining',updated_at=? WHERE installation_id=?")
-            .bind(now)
-            .bind(id)
-            .execute(&state.database)
-            .await?;
+        sqlx::query(
+            r#"UPDATE runner_pools SET paused=1,state='draining',updated_at=?
+              WHERE EXISTS (SELECT 1 FROM runner_pool_installations mapped
+                WHERE mapped.pool_id=runner_pools.id AND mapped.installation_id=?)"#,
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&state.database)
+        .await?;
     }
     Ok(())
 }
@@ -347,6 +355,9 @@ async fn process_installation_repositories(
                 r#"UPDATE runner_pools SET
                    repository_id=(SELECT repository_id FROM runner_pool_repositories membership
                      WHERE membership.pool_id=runner_pools.id ORDER BY created_at,repository_id LIMIT 1),
+                   installation_id=COALESCE((SELECT repo.installation_id
+                     FROM runner_pool_repositories membership JOIN repositories repo ON repo.id=membership.repository_id
+                     WHERE membership.pool_id=runner_pools.id ORDER BY membership.created_at,repo.id LIMIT 1),installation_id),
                    paused=CASE WHEN NOT EXISTS (SELECT 1 FROM runner_pool_repositories membership
                      WHERE membership.pool_id=runner_pools.id) THEN 1 ELSE paused END,
                    state=CASE WHEN NOT EXISTS (SELECT 1 FROM runner_pool_repositories membership

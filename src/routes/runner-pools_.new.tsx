@@ -15,8 +15,8 @@ import {
   type RunnerGroupOption,
   createRunnerPoolAction,
   getCreateRunnerPoolOptions,
-  getInstallationRepositories,
   getInstallationRunnerGroups,
+  getRunnerPoolRepositories,
 } from "~/features/runner-pools/runner-pools.functions";
 import { cn } from "~/lib/utils";
 
@@ -148,14 +148,15 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
       : { status: "ready", items: [], error: null },
   );
   const repositories = repositoryLoad.items;
+  const selectedRepositories = repositories.filter((repository) => repositoryIds.includes(repository.id));
+  const selectedAccounts = [...new Set(selectedRepositories.map((repository) => repository.accountLogin))];
   const runnerGroups = runnerGroupLoad.items;
   const defaultRunnerGroup = runnerGroups.find((group) => group.isDefault) ?? runnerGroups[0];
   const [runnerGroupId, setRunnerGroupId] = useState(options.defaults.runnerGroupId);
 
   useEffect(() => {
-    if (!installationId) return;
     const controller = new AbortController();
-    void getInstallationRepositories(installationId, controller.signal)
+    void getRunnerPoolRepositories(controller.signal)
       .then(({ items }) => setRepositoryLoad({ status: "ready", items, error: null }))
       .catch((cause: unknown) => {
         if (cause instanceof DOMException && cause.name === "AbortError") return;
@@ -165,6 +166,12 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
           error: cause instanceof Error ? cause.message : "Repositories could not be loaded.",
         });
       });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (!installationId || scope !== "organization") return;
+    const controller = new AbortController();
     const installation = options.installations.find((candidate) => candidate.id === installationId);
     if (installation?.accountType === "Organization") {
       void getInstallationRunnerGroups(installationId, controller.signal)
@@ -182,7 +189,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
         });
     }
     return () => controller.abort();
-  }, [installationId, options.defaults.runnerGroupId, options.installations]);
+  }, [installationId, options.defaults.runnerGroupId, options.installations, scope]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -193,7 +200,9 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
     try {
       await createPool({
         data: {
-          installationId,
+          installationId: scope === "repository"
+            ? selectedRepositories[0]?.installationId ?? 0
+            : installationId,
           repositoryIds: scope === "repository" ? repositoryIds : [],
           name: String(form.get("name") ?? ""),
           scope,
@@ -242,15 +251,25 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
           <Card>
             <CardHeader><CardTitle>GitHub destination</CardTitle></CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2">
-              <Field label="Installation">
+              <Field label="Scope">
+                <SearchableSelect
+                  ariaLabel="Runner pool scope"
+                  onValueChange={(nextScope) => setScope(nextScope ?? "repository")}
+                  options={[
+                    { value: "repository", label: "Repositories", description: "Shared capacity across repositories and accounts" },
+                    { value: "organization", label: "Organization", description: "Shared runners across one organization" },
+                  ]}
+                  searchable={false}
+                  value={scope}
+                />
+              </Field>
+              {scope === "organization" ? <Field label="Installation">
                 <SearchableSelect
                   ariaLabel="GitHub installation"
                   onValueChange={(nextInstallationId) => {
                     const nextId = nextInstallationId ?? 0;
                     const nextInstallation = options.installations.find((installation) => installation.id === nextId);
                     setInstallationId(nextId);
-                    setRepositoryIds([]);
-                    setRepositoryLoad({ status: "loading", items: [], error: null });
                     setRunnerGroupLoad(
                       nextInstallation?.accountType === "Organization"
                         ? { status: "loading", items: [], error: null }
@@ -267,25 +286,13 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                   searchPlaceholder="Search installations…"
                   value={installationId}
                 />
-              </Field>
-              <Field label="Scope">
-                <SearchableSelect
-                  ariaLabel="Runner pool scope"
-                  onValueChange={(nextScope) => {
-                    const value = nextScope ?? "repository";
-                    setScope(value);
-                    if (value === "organization") setRepositoryIds([]);
-                  }}
-                  options={[
-                    { value: "repository", label: "Repositories", description: "Shared capacity across selected repositories" },
-                    { value: "organization", label: "Organization", description: "Shared runners across an organization" },
-                  ]}
-                  searchable={false}
-                  value={scope}
-                />
-              </Field>
+              </Field> : <div className="rounded-lg border border-border bg-muted/15 p-3">
+                <div className="text-xs font-medium">GitHub accounts</div>
+                <div className="mt-1 text-sm">{selectedAccounts.length ? selectedAccounts.join(", ") : `${options.installations.length} installations available`}</div>
+                <div className="mt-1 text-[11px] text-muted-foreground">Repository pools may span every installation you administer.</div>
+              </div>}
               {scope === "repository" && (
-                <Field className="md:col-span-2" label="Repositories" hint={`${repositoryIds.length} selected · maximum ${maxCount} · ${repositories.length} available`}>
+                <Field className="md:col-span-2" label="Repositories" hint={`${repositoryIds.length} selected across ${selectedAccounts.length} ${selectedAccounts.length === 1 ? "account" : "accounts"} · maximum ${maxCount} · ${repositories.length} available`}>
                   <SearchableMultiSelect
                     ariaLabel="Repositories"
                     emptyMessage="No repositories match this search"
@@ -295,8 +302,8 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                     options={repositories.map((repository) => ({
                       value: repository.id,
                       label: repository.fullName,
-                      description: repository.private ? "Private repository" : "Public repository",
-                      keywords: [repository.private ? "private" : "public"],
+                      description: `${repository.accountLogin} · ${repository.private ? "Private repository" : "Public repository"}`,
+                      keywords: [repository.accountLogin, repository.accountType, repository.private ? "private" : "public"],
                     }))}
                     placeholder="Choose one or more repositories…"
                     searchPlaceholder="Search by owner or repository name…"

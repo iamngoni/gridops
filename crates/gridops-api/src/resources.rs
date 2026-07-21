@@ -27,8 +27,8 @@ use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
 
 use crate::{
     auth::{
-        AuthUser, OptionalAuth, assert_installation_admin, assert_same_origin, audit,
-        require_system_admin,
+        AuthUser, OptionalAuth, assert_installation_admin, assert_pool_admin, assert_same_origin,
+        audit, require_system_admin,
     },
     error::{ApiError, ApiResult},
     oauth::{control_token, upsert_repository},
@@ -212,10 +212,14 @@ pub async fn overview(
           (SELECT COUNT(*) FROM workflow_runs wr JOIN repositories repo ON repo.id=wr.repository_id
             JOIN user_installations ui4 ON ui4.installation_id=repo.installation_id
             WHERE ui4.user_id=? AND wr.conclusion='success') AS successful_runs
-        FROM user_installations ui
-        LEFT JOIN runner_pools p ON p.installation_id=ui.installation_id
+        FROM runner_pools p
         LEFT JOIN runners r ON r.pool_id=p.id
-        WHERE ui.user_id=?"#,
+        WHERE EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations access
+                WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+          )"#,
     )
     .bind(&user.id)
     .bind(&user.id)
@@ -242,8 +246,13 @@ pub async fn overview(
               queued_repo.id=p.repository_id OR
               (p.scope='organization' AND queued_repo.installation_id=p.installation_id)
             )) AS queued
-        FROM runner_pools p JOIN user_installations ui ON ui.installation_id=p.installation_id
-        LEFT JOIN runners r ON r.pool_id=p.id WHERE ui.user_id=?
+        FROM runner_pools p LEFT JOIN runners r ON r.pool_id=p.id
+        WHERE EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations access
+                WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+          )
         GROUP BY p.id ORDER BY p.created_at DESC LIMIT 8"#,
     )
     .bind(&user.id)
@@ -287,8 +296,15 @@ pub async fn overview(
         .collect::<Vec<_>>();
     let activity_rows = sqlx::query(
         r#"SELECT re.id,re.level,re.event,re.message,re.runner_id,re.pool_id,re.created_at FROM runner_events re
-        WHERE EXISTS (SELECT 1 FROM runner_pools p JOIN user_installations ui
-          ON ui.installation_id=p.installation_id WHERE p.id=re.pool_id AND ui.user_id=?)
+        WHERE EXISTS (
+          SELECT 1 FROM runner_pools p WHERE p.id=re.pool_id
+            AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+            AND NOT EXISTS (
+              SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+                AND NOT EXISTS (SELECT 1 FROM user_installations access
+                  WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+            )
+        )
         ORDER BY re.created_at DESC LIMIT 8"#,
     )
     .bind(&user.id)
@@ -344,16 +360,21 @@ pub async fn capacity_history(
               CAST(ROUND(AVG(cs.available)) AS INTEGER) AS available,
               CAST(ROUND(AVG(cs.busy)) AS INTEGER) AS busy,
               CAST(ROUND(AVG(cs.queued)) AS INTEGER) AS queued
-            FROM capacity_samples cs
-            JOIN user_installations ui ON ui.installation_id=cs.installation_id
-            WHERE ui.user_id=? AND cs.recorded_at>=?
+            FROM capacity_samples cs JOIN runner_pools p ON p.id=cs.pool_id
+            WHERE cs.recorded_at>=?
+              AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+              AND NOT EXISTS (
+                SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+                  AND NOT EXISTS (SELECT 1 FROM user_installations access
+                    WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+              )
             GROUP BY cs.pool_id,bucket
           ) samples GROUP BY bucket ORDER BY bucket"#,
     )
     .bind(bucket_millis)
     .bind(bucket_millis)
-    .bind(&user.id)
     .bind(cutoff)
+    .bind(&user.id)
     .fetch_all(&state.database)
     .await?;
     let points = rows
@@ -470,17 +491,26 @@ async fn available_repositories(
     require_admin: bool,
 ) -> ApiResult<(Vec<InstallationAccess>, Vec<AvailableRepository>)> {
     let installations = available_installations(state, user, require_admin).await?;
+    let groups = stream::iter(installations.iter().cloned())
+        .map(|installation| async move {
+            let repositories =
+                available_repositories_for_installation(state, user, &installation).await?;
+            Ok::<Vec<AvailableRepository>, ApiError>(
+                repositories
+                    .into_iter()
+                    .map(|repository| AvailableRepository {
+                        installation: installation.clone(),
+                        repository,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .buffered(4)
+        .try_collect::<Vec<_>>()
+        .await?;
     let mut available = Vec::new();
-    for installation in &installations {
-        available.extend(
-            available_repositories_for_installation(state, user, installation)
-                .await?
-                .into_iter()
-                .map(|repository| AvailableRepository {
-                    installation: installation.clone(),
-                    repository,
-                }),
-        );
+    for group in groups {
+        available.extend(group);
     }
     Ok((installations, available))
 }
@@ -560,6 +590,27 @@ async fn available_repositories_for_installation(
     Ok(repositories)
 }
 
+async fn selected_available_repositories(
+    state: &AppState,
+    user: &AuthUser,
+    repository_ids: &[i64],
+) -> ApiResult<Vec<AvailableRepository>> {
+    let requested = repository_ids.iter().copied().collect::<HashSet<_>>();
+    let (_, available) = available_repositories(state, user, true).await?;
+    let mut selected = available
+        .into_iter()
+        .filter(|item| requested.contains(&item.repository.id) && !item.repository.archived)
+        .collect::<Vec<_>>();
+    if selected.len() != requested.len() {
+        return Err(ApiError::BadRequest(
+            "One or more selected repositories are unavailable or you cannot administer their GitHub App installation."
+                .into(),
+        ));
+    }
+    selected.sort_by_key(|item| item.repository.id);
+    Ok(selected)
+}
+
 pub async fn search(
     State(state): State<AppState>,
     Query(query): Query<SearchQuery>,
@@ -583,13 +634,24 @@ pub async fn search(
           SELECT 'runner pool',p.id,p.name,COALESCE(repo.full_name,i.account_login),
             '/runner-pools/' || p.id,p.name
           FROM runner_pools p JOIN installations i ON i.id=p.installation_id
-          JOIN user_installations ui ON ui.installation_id=p.installation_id
           LEFT JOIN repositories repo ON repo.id=p.repository_id
-          WHERE ui.user_id=? AND p.name LIKE ? ESCAPE '\'
+          WHERE p.name LIKE ? ESCAPE '\' AND EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+          ) AND NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations access
+                WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+          )
           UNION ALL
           SELECT 'runner',r.id,r.name,p.name,'/runners',r.name FROM runners r
-          JOIN runner_pools p ON p.id=r.pool_id JOIN user_installations ui ON ui.installation_id=p.installation_id
-          WHERE ui.user_id=? AND r.deleted_at IS NULL AND r.name LIKE ? ESCAPE '\'
+          JOIN runner_pools p ON p.id=r.pool_id
+          WHERE r.deleted_at IS NULL AND r.name LIKE ? ESCAPE '\' AND EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+          ) AND NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations access
+                WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+          )
           UNION ALL
           SELECT 'workflow run',CAST(wr.id AS TEXT),wr.workflow_name,repo.full_name,
             '/workflow-runs/' || wr.id,wr.workflow_name FROM workflow_runs wr
@@ -598,8 +660,8 @@ pub async fn search(
           WHERE ui.user_id=? AND (wr.workflow_name LIKE ? ESCAPE '\' OR repo.full_name LIKE ? ESCAPE '\')
         ) ORDER BY sort_value LIMIT 12"#,
     )
-    .bind(&user.id).bind(&pattern).bind(&user.id).bind(&pattern)
-    .bind(&user.id).bind(&pattern).bind(&user.id).bind(&pattern).bind(&pattern)
+    .bind(&user.id).bind(&pattern).bind(&pattern).bind(&user.id)
+    .bind(&pattern).bind(&user.id).bind(&user.id).bind(&pattern).bind(&pattern)
     .fetch_all(&state.database).await?;
     let items = rows
         .iter()
@@ -625,7 +687,12 @@ pub async fn runner_pools(
     };
     let total = sqlx::query_scalar::<_, i64>(
         r#"SELECT COUNT(*) FROM runner_pools p
-        JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?"#,
+        WHERE EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations access
+                WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+          )"#,
     )
     .bind(&user.id)
     .fetch_one(&state.database)
@@ -634,20 +701,33 @@ pub async fn runner_pools(
     let rows = sqlx::query(
         r#"SELECT p.id,p.name,p.scope,p.mode,p.labels,p.image,p.desired_count,p.min_count,
           p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,p.paused,p.state,i.account_login,
-          ui.permission AS installation_permission,
+          CASE WHEN NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations manage
+                WHERE manage.user_id=? AND manage.installation_id=mapped.installation_id
+                  AND manage.permission='admin')
+          ) THEN 'admin' ELSE 'read' END AS installation_permission,
           repo.full_name AS repository,
           (SELECT COUNT(*) FROM runner_pool_repositories membership WHERE membership.pool_id=p.id) AS repository_count,
+          (SELECT COUNT(*) FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id) AS account_count,
           COUNT(CASE WHEN r.deleted_at IS NULL THEN 1 END) AS total_runners,
           COUNT(CASE WHEN r.deleted_at IS NULL AND r.status IN ('online','idle','busy') THEN 1 END) AS online_runners,
           COUNT(CASE WHEN r.deleted_at IS NULL AND r.busy=1 THEN 1 END) AS busy_runners,
           COUNT(CASE WHEN r.deleted_at IS NULL AND r.status='failed' THEN 1 END) AS failed_runners,
           COUNT(CASE WHEN r.deleted_at IS NULL AND r.configuration_version < p.configuration_version THEN 1 END) AS outdated_runners,
           p.created_at FROM runner_pools p
-        JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
         JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=p.repository_id
-        LEFT JOIN runners r ON r.pool_id=p.id GROUP BY p.id ORDER BY p.created_at DESC
+        LEFT JOIN runners r ON r.pool_id=p.id
+        WHERE EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations access
+                WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+          )
+        GROUP BY p.id ORDER BY p.created_at DESC
         LIMIT ? OFFSET ?"#,
     )
+    .bind(&user.id)
     .bind(&user.id)
     .bind(per_page)
     .bind(offset)
@@ -659,7 +739,8 @@ pub async fn runner_pools(
         "desiredCount": row.get::<i64,_>("desired_count"), "minCount": row.get::<i64,_>("min_count"), "maxCount": row.get::<i64,_>("max_count"),
         "cpuLimit": row.get::<f64,_>("cpu_limit"), "memoryLimitMb": row.get::<i64,_>("memory_limit_mb"),
         "paused": row.get::<bool,_>("paused"), "state": row.get::<String,_>("state"), "accountLogin": row.get::<String,_>("account_login"),
-        "repository": row.try_get::<Option<String>,_>("repository").ok().flatten(), "repositoryCount": row.get::<i64,_>("repository_count"), "totalRunners": row.get::<i64,_>("total_runners"),
+        "repository": row.try_get::<Option<String>,_>("repository").ok().flatten(), "repositoryCount": row.get::<i64,_>("repository_count"),
+        "accountCount": row.get::<i64,_>("account_count"), "totalRunners": row.get::<i64,_>("total_runners"),
         "onlineRunners": row.get::<i64,_>("online_runners"), "busyRunners": row.get::<i64,_>("busy_runners"),
         "failedRunners": row.get::<i64,_>("failed_runners"), "outdatedRunners": row.get::<i64,_>("outdated_runners"),
         "canManage": user.role == "admin" || row.get::<String,_>("installation_permission") == "admin",
@@ -684,8 +765,11 @@ pub async fn runner_pool(
         .zip(pool.repository_name.as_ref())
         .map(|(owner, repository)| format!("{owner}/{repository}"));
     let mut repositories = sqlx::query(
-        r#"SELECT repo.id,repo.full_name,repo.private FROM runner_pool_repositories membership
+        r#"SELECT repo.id,repo.installation_id,repo.full_name,repo.private,
+          installation.account_login,installation.account_type
+          FROM runner_pool_repositories membership
            JOIN repositories repo ON repo.id=membership.repository_id
+           JOIN installations installation ON installation.id=repo.installation_id
            WHERE membership.pool_id=? ORDER BY membership.created_at,repo.id"#,
     )
     .bind(&pool_id)
@@ -695,6 +779,9 @@ pub async fn runner_pool(
     .map(|row| {
         json!({
             "id": row.get::<i64, _>("id"),
+            "installationId": row.get::<i64, _>("installation_id"),
+            "accountLogin": row.get::<String, _>("account_login"),
+            "accountType": row.get::<String, _>("account_type"),
             "fullName": row.get::<String, _>("full_name"),
             "private": row.get::<bool, _>("private"),
         })
@@ -704,7 +791,11 @@ pub async fn runner_pool(
         && let Some(repository_id) = pool.repository_id
         && let Some(repository) = &repository
     {
-        repositories.push(json!({ "id": repository_id, "fullName": repository, "private": false }));
+        repositories.push(json!({
+            "id": repository_id, "installationId": pool.installation_id,
+            "accountLogin": pool.account_login, "accountType": "Unknown",
+            "fullName": repository, "private": false
+        }));
     }
     let repository_ids = repositories
         .iter()
@@ -751,7 +842,7 @@ pub async fn update_runner_pool(
     assert_same_origin(&state, &headers)?;
     input.validate().map_err(ApiError::BadRequest)?;
     let pool = pool_access(&state, &user, &pool_id).await?;
-    assert_installation_admin(&state, &user, pool.installation_id).await?;
+    assert_pool_admin(&state, &user, &pool_id).await?;
     let max_cpu_limit = manager_cpu_capacity(&state).await;
     if input.cpu_limit > max_cpu_limit as f64 {
         return Err(ApiError::BadRequest(format!(
@@ -790,28 +881,17 @@ pub async fn update_runner_pool(
             "Organization pools use runner-group repository access.".into(),
         ));
     }
-    if input.repository_ids.is_some() {
-        let installation = available_installations(&state, &user, true)
-            .await?
-            .into_iter()
-            .find(|installation| installation.id == pool.installation_id)
-            .ok_or_else(|| ApiError::NotFound("GitHub installation does not exist.".into()))?;
-        let available =
-            available_repositories_for_installation(&state, &user, &installation).await?;
-        let requested = repository_ids.iter().copied().collect::<HashSet<_>>();
-        let selected = available
-            .into_iter()
-            .filter(|repository| requested.contains(&repository.id) && !repository.archived)
-            .collect::<Vec<_>>();
-        if selected.len() != requested.len() {
-            return Err(ApiError::BadRequest(
-                "One or more selected repositories are unavailable for this installation.".into(),
-            ));
-        }
-        for repository in &selected {
-            upsert_repository(&state, pool.installation_id, repository).await?;
-        }
+    let selected = if input.repository_ids.is_some() {
+        selected_available_repositories(&state, &user, &repository_ids).await?
+    } else {
+        Vec::new()
+    };
+    for item in &selected {
+        upsert_repository(&state, item.installation.id, &item.repository).await?;
     }
+    let primary_installation_id = selected
+        .first()
+        .map_or(pool.installation_id, |item| item.installation.id);
     let labels = normalized_pool_labels(&input.name, &input.labels)?;
     let encoded_labels =
         serde_json::to_string(&labels).map_err(|error| ApiError::Internal(error.into()))?;
@@ -835,13 +915,14 @@ pub async fn update_runner_pool(
     let now = now_millis();
     let mut transaction = state.database.begin().await?;
     let result = sqlx::query(
-        r#"UPDATE runner_pools SET name=?,mode=?,labels=?,image=?,desired_count=?,min_count=?,
+        r#"UPDATE runner_pools SET installation_id=?,name=?,mode=?,labels=?,image=?,desired_count=?,min_count=?,
           max_count=?,cpu_limit=?,memory_limit_mb=?,ephemeral=?,runner_group_id=?,
           autoscaling_enabled=?,queue_scale_factor=?,idle_timeout_minutes=?,
           repository_id=?,
           configuration_version=configuration_version+?,
           state=CASE WHEN ?=1 AND paused=0 THEN 'updating' ELSE state END,updated_at=? WHERE id=?"#,
     )
+    .bind(primary_installation_id)
     .bind(&input.name)
     .bind(&input.mode)
     .bind(&encoded_labels)
@@ -921,8 +1002,13 @@ pub async fn runners(
     };
     let total = sqlx::query_scalar::<_, i64>(
         r#"SELECT COUNT(*) FROM runners r JOIN runner_pools p ON p.id=r.pool_id
-        JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
-        WHERE r.deleted_at IS NULL"#,
+        WHERE r.deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations access
+                WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+          )"#,
     )
     .bind(&user.id)
     .fetch_one(&state.database)
@@ -931,15 +1017,30 @@ pub async fn runners(
     let rows = sqlx::query(
         r#"SELECT r.id,r.name,r.status,r.busy,r.ephemeral,r.os,r.architecture,r.container_id,
           r.github_runner_id,r.failure_reason,r.registered_at,r.last_heartbeat_at,r.created_at,
-          p.id AS pool_id,p.name AS pool_name,p.paused AS pool_paused,i.account_login,
-          ui.permission AS installation_permission,
+          p.id AS pool_id,p.name AS pool_name,p.paused AS pool_paused,
+          COALESCE(target_installation.account_login,primary_installation.account_login) AS account_login,
+          CASE WHEN NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations manage
+                WHERE manage.user_id=? AND manage.installation_id=mapped.installation_id
+                  AND manage.permission='admin')
+          ) THEN 'admin' ELSE 'read' END AS installation_permission,
           repo.full_name AS repository,wj.name AS current_job_name,wj.run_id AS current_run_id
         FROM runners r JOIN runner_pools p ON p.id=r.pool_id
-        JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
-        JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=r.target_repository_id
+        JOIN installations primary_installation ON primary_installation.id=p.installation_id
+        LEFT JOIN repositories repo ON repo.id=r.target_repository_id
+        LEFT JOIN installations target_installation ON target_installation.id=repo.installation_id
         LEFT JOIN workflow_jobs wj ON wj.id=r.current_job_id
-        WHERE r.deleted_at IS NULL ORDER BY r.created_at DESC LIMIT ? OFFSET ?"#,
+        WHERE r.deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations access
+                WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+          )
+        ORDER BY r.created_at DESC LIMIT ? OFFSET ?"#,
     )
+    .bind(&user.id)
     .bind(&user.id)
     .bind(per_page)
     .bind(offset)
@@ -1189,8 +1290,13 @@ pub async fn log_targets(
     let total = sqlx::query_scalar::<_, i64>(
         r#"SELECT
           (SELECT COUNT(*) FROM runners r JOIN runner_pools p ON p.id=r.pool_id
-            JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
-            WHERE r.deleted_at IS NULL AND r.container_id IS NOT NULL)
+            WHERE r.deleted_at IS NULL AND r.container_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+              AND NOT EXISTS (
+                SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+                  AND NOT EXISTS (SELECT 1 FROM user_installations access
+                    WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+              ))
           +
           (SELECT COUNT(*) FROM log_streams ls JOIN user_installations ui
             ON ui.installation_id=ls.installation_id AND ui.user_id=? WHERE ls.complete=1)"#,
@@ -1207,9 +1313,14 @@ pub async fn log_targets(
             r.updated_at,p.name AS pool_name,repo.full_name AS repository,'live' AS kind,
             CAST(NULL AS INTEGER) AS size_bytes
           FROM runners r JOIN runner_pools p ON p.id=r.pool_id
-          JOIN user_installations ui ON ui.installation_id=p.installation_id AND ui.user_id=?
           LEFT JOIN repositories repo ON repo.id=r.target_repository_id
           WHERE r.deleted_at IS NULL AND r.container_id IS NOT NULL
+            AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+            AND NOT EXISTS (
+              SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+                AND NOT EXISTS (SELECT 1 FROM user_installations access
+                  WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+            )
           UNION ALL
           SELECT ls.id,ls.runner_id,COALESCE(ls.runner_name,'Archived runner'),'archived',0,NULL,
             ls.created_at,COALESCE(ls.pool_name,'Deleted pool'),ls.repository,'archive',ls.size_bytes
@@ -1267,6 +1378,34 @@ pub async fn runner_pool_options(
     })))
 }
 
+pub async fn runner_pool_repository_options(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Value>> {
+    let (_, mut available) = available_repositories(&state, &user, true).await?;
+    available.retain(|item| !item.repository.archived);
+    available.sort_by(|left, right| {
+        left.repository
+            .full_name
+            .to_lowercase()
+            .cmp(&right.repository.full_name.to_lowercase())
+    });
+    let items = available
+        .into_iter()
+        .map(|item| {
+            json!({
+                "id": item.repository.id,
+                "installationId": item.installation.id,
+                "accountLogin": item.installation.account_login,
+                "accountType": item.installation.account_type,
+                "fullName": item.repository.full_name,
+                "private": item.repository.private,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({ "items": items })))
+}
+
 pub async fn installation_repositories(
     State(state): State<AppState>,
     Path(installation_id): Path<i64>,
@@ -1291,6 +1430,9 @@ pub async fn installation_repositories(
         .map(|repository| {
             json!({
                 "id": repository.id,
+                "installationId": installation.id,
+                "accountLogin": installation.account_login,
+                "accountType": installation.account_type,
                 "fullName": repository.full_name,
                 "private": repository.private,
             })
@@ -1346,7 +1488,6 @@ pub async fn create_runner_pool(
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     assert_same_origin(&state, &headers)?;
     input.validate().map_err(ApiError::BadRequest)?;
-    assert_installation_admin(&state, &user, input.installation_id).await?;
     let max_cpu_limit = manager_cpu_capacity(&state).await;
     if input.cpu_limit > max_cpu_limit as f64 {
         return Err(ApiError::BadRequest(format!(
@@ -1354,28 +1495,18 @@ pub async fn create_runner_pool(
         )));
     }
     let repository_ids = input.selected_repository_ids();
-    if !repository_ids.is_empty() {
-        let installation = available_installations(&state, &user, true)
-            .await?
-            .into_iter()
-            .find(|installation| installation.id == input.installation_id)
-            .ok_or_else(|| ApiError::NotFound("GitHub installation does not exist.".into()))?;
-        let available =
-            available_repositories_for_installation(&state, &user, &installation).await?;
-        let requested = repository_ids.iter().copied().collect::<HashSet<_>>();
-        let selected = available
-            .into_iter()
-            .filter(|repository| requested.contains(&repository.id) && !repository.archived)
-            .collect::<Vec<_>>();
-        if selected.len() != requested.len() {
-            return Err(ApiError::BadRequest(
-                "One or more selected repositories are unavailable for this installation.".into(),
-            ));
-        }
-        for repository in &selected {
-            upsert_repository(&state, input.installation_id, repository).await?;
-        }
+    let selected = if input.scope == "repository" {
+        selected_available_repositories(&state, &user, &repository_ids).await?
+    } else {
+        assert_installation_admin(&state, &user, input.installation_id).await?;
+        Vec::new()
+    };
+    for item in &selected {
+        upsert_repository(&state, item.installation.id, &item.repository).await?;
     }
+    let primary_installation_id = selected
+        .first()
+        .map_or(input.installation_id, |item| item.installation.id);
     let pool_id = uuid::Uuid::new_v4().to_string();
     let labels = normalized_pool_labels(&input.name, &input.labels)?;
     let runner_group_id = if input.scope == "repository" {
@@ -1392,7 +1523,7 @@ pub async fn create_runner_pool(
           runner_group_id,autoscaling_enabled,queue_scale_factor,idle_timeout_minutes
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'active',?,?,?,?,?,?,?)"#,
     )
-    .bind(&pool_id).bind(input.installation_id).bind(repository_ids.first().copied()).bind(&input.name)
+    .bind(&pool_id).bind(primary_installation_id).bind(repository_ids.first().copied()).bind(&input.name)
     .bind(&input.scope).bind(&input.mode).bind(serde_json::to_string(&labels).map_err(|error| ApiError::Internal(error.into()))?)
     .bind(&input.image).bind(input.desired_count).bind(input.min_count).bind(input.max_count).bind(input.cpu_limit)
     .bind(input.memory_limit_mb).bind(input.mode == "ephemeral").bind(&user.id).bind(now).bind(now)
@@ -1454,7 +1585,7 @@ pub async fn runner_pool_action(
         "reconcile" => return Ok(Json(reconcile_pool(&state, &user, &pool_id).await?)),
         "scale" => {
             let pool = pool_access(&state, &user, &pool_id).await?;
-            assert_installation_admin(&state, &user, pool.installation_id).await?;
+            assert_pool_admin(&state, &user, &pool_id).await?;
             let desired = input
                 .desired_count
                 .ok_or_else(|| ApiError::BadRequest("desiredCount is required.".into()))?;
@@ -1498,8 +1629,8 @@ pub async fn delete_runner_pool(
     user: AuthUser,
 ) -> ApiResult<Json<Value>> {
     assert_same_origin(&state, &headers)?;
-    let pool = pool_access(&state, &user, &pool_id).await?;
-    assert_installation_admin(&state, &user, pool.installation_id).await?;
+    pool_access(&state, &user, &pool_id).await?;
+    assert_pool_admin(&state, &user, &pool_id).await?;
     sqlx::query("UPDATE runner_pools SET paused=1,state='deleting',updated_at=? WHERE id=?")
         .bind(now_millis())
         .bind(&pool_id)
@@ -1838,8 +1969,53 @@ pub async fn settings(
     } else {
         Vec::new()
     };
+    let configuration = configuration(&state).await?;
+    let github_app = if configuration.github_app_control {
+        let slug = state.github_app_slug().await.map_err(ApiError::Internal)?;
+        Some(json!({
+            "slug": &slug,
+            "appUrl": format!("https://github.com/apps/{slug}"),
+            "installUrl": format!("https://github.com/apps/{slug}/installations/new"),
+        }))
+    } else {
+        None
+    };
+    let installation_rows = sqlx::query(
+        r#"SELECT installation.id,installation.account_login,installation.account_type,
+          installation.account_avatar_url,installation.repository_selection,
+          installation.suspended_at,installation.last_synced_at,access.permission,
+          (SELECT COUNT(*) FROM runner_pool_installations mapped
+            WHERE mapped.installation_id=installation.id) AS pool_count
+          FROM user_installations access
+          JOIN installations installation ON installation.id=access.installation_id
+          WHERE access.user_id=? ORDER BY installation.account_login"#,
+    )
+    .bind(&user.id)
+    .fetch_all(&state.database)
+    .await?;
+    let installations = installation_rows
+        .iter()
+        .map(|row| {
+            let id = row.get::<i64, _>("id");
+            let account_login = row.get::<String, _>("account_login");
+            let account_type = row.get::<String, _>("account_type");
+            json!({
+                "id": id,
+                "accountLogin": &account_login,
+                "accountType": &account_type,
+                "accountAvatarUrl": row.try_get::<Option<String>, _>("account_avatar_url").ok().flatten(),
+                "repositorySelection": row.get::<String, _>("repository_selection"),
+                "permission": row.get::<String, _>("permission"),
+                "suspended": row.try_get::<Option<i64>, _>("suspended_at").ok().flatten().is_some(),
+                "lastSyncedAt": iso_optional(row.try_get::<Option<i64>, _>("last_synced_at").ok().flatten()),
+                "poolCount": row.get::<i64, _>("pool_count"),
+                "manageUrl": github_installation_settings_url(&account_type, &account_login, id),
+            })
+        })
+        .collect::<Vec<_>>();
     Ok(Json(json!({ "authenticated": true, "data": {
-        "configuration": configuration(&state).await?, "manager": manager,
+        "configuration": configuration, "githubApp": github_app, "installations": installations,
+        "manager": manager,
         "settings": {
             "logRetentionDays": stored_i64(&stored, "logRetentionDays", 30),
             "webhookRetentionDays": stored_i64(&stored, "webhookRetentionDays", 90),
@@ -1942,7 +2118,7 @@ async fn provision(
     preferred_repository_id: Option<i64>,
 ) -> ApiResult<Value> {
     let pool = pool_access(state, user, pool_id).await?;
-    assert_installation_admin(state, user, pool.installation_id).await?;
+    assert_pool_admin(state, user, pool_id).await?;
     if pool.paused {
         return Err(ApiError::Conflict("Runner pool is paused.".into()));
     }
@@ -1952,7 +2128,7 @@ async fn provision(
     let target_repository = if pool.scope == "repository" {
         let preferred = if let Some(repository_id) = preferred_repository_id {
             sqlx::query(
-                r#"SELECT repo.id,repo.owner,repo.name FROM runner_pool_repositories membership
+                r#"SELECT repo.id,repo.installation_id,repo.owner,repo.name FROM runner_pool_repositories membership
                    JOIN repositories repo ON repo.id=membership.repository_id
                    WHERE membership.pool_id=? AND membership.repository_id=? AND repo.archived=0"#,
             )
@@ -1962,6 +2138,7 @@ async fn provision(
             .await?
             .map(|row| RepositoryCapacity {
                 repository_id: row.get("id"),
+                installation_id: row.get("installation_id"),
                 owner: row.get("owner"),
                 name: row.get("name"),
                 queued: 0,
@@ -1993,7 +2170,10 @@ async fn provision(
         .bind(&runner_name).bind(pool.ephemeral)
         .bind(pool.configuration_version).bind(now).bind(now).execute(&state.database).await?;
     let result = async {
-        let token = control_token(state, &user.id, pool.installation_id).await?;
+        let target_installation_id = target_repository
+            .as_ref()
+            .map_or(pool.installation_id, |repository| repository.installation_id);
+        let token = control_token(state, &user.id, target_installation_id).await?;
         let labels = json_array(&pool.labels);
         let target = match &target_repository {
             Some(repository) => RunnerTarget::Repository {
@@ -2064,8 +2244,8 @@ async fn set_pool_paused(
     pool_id: &str,
     paused: bool,
 ) -> ApiResult<()> {
-    let pool = pool_access(state, user, pool_id).await?;
-    assert_installation_admin(state, user, pool.installation_id).await?;
+    pool_access(state, user, pool_id).await?;
+    assert_pool_admin(state, user, pool_id).await?;
     sqlx::query("UPDATE runner_pools SET paused=?,state=?,updated_at=? WHERE id=?")
         .bind(paused)
         .bind(if paused { "draining" } else { "active" })
@@ -2102,7 +2282,7 @@ async fn set_pool_paused(
 
 async fn reconcile_pool(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResult<Value> {
     let pool = pool_access(state, user, pool_id).await?;
-    assert_installation_admin(state, user, pool.installation_id).await?;
+    assert_pool_admin(state, user, pool_id).await?;
     let known = runners_for_pool(state, pool_id).await?;
     let managed = match manager_json(state, Method::GET, "v1/runners", None).await {
         Ok(value) => value,
@@ -2368,17 +2548,36 @@ async fn cleanup_github_runner(
 }
 
 async fn pool_access(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiResult<PoolAccess> {
-    sqlx::query_as::<_, PoolAccess>(r#"SELECT p.installation_id,ui.permission AS installation_permission,i.account_login,
+    sqlx::query_as::<_, PoolAccess>(
+        r#"SELECT p.installation_id,
+      CASE WHEN NOT EXISTS (
+        SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+          AND NOT EXISTS (SELECT 1 FROM user_installations manage
+            WHERE manage.user_id=? AND manage.installation_id=mapped.installation_id
+              AND manage.permission='admin')
+      ) THEN 'admin' ELSE 'read' END AS installation_permission,
+      i.account_login,
       p.repository_id,repo.owner AS repository_owner,repo.name AS repository_name,p.name,p.scope,
       p.mode,p.labels,p.image,p.desired_count,p.min_count,p.max_count,
       CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,
       p.runner_group_id,p.ephemeral,p.paused,p.state,p.autoscaling_enabled,p.queue_scale_factor,
       p.idle_timeout_minutes,p.configuration_version
-      FROM runner_pools p JOIN user_installations ui ON ui.installation_id=p.installation_id
-      JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=p.repository_id
-      WHERE p.id=? AND ui.user_id=?"#)
-        .bind(pool_id).bind(&user.id).fetch_optional(&state.database).await?
-        .ok_or_else(|| ApiError::NotFound("Runner pool does not exist or is not accessible.".into()))
+      FROM runner_pools p JOIN installations i ON i.id=p.installation_id
+      LEFT JOIN repositories repo ON repo.id=p.repository_id
+      WHERE p.id=?
+        AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+            AND NOT EXISTS (SELECT 1 FROM user_installations access
+              WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+        )"#,
+    )
+    .bind(&user.id)
+    .bind(pool_id)
+    .bind(&user.id)
+    .fetch_optional(&state.database)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("Runner pool does not exist or is not accessible.".into()))
 }
 
 async fn runner_access(
@@ -2388,12 +2587,22 @@ async fn runner_access(
 ) -> ApiResult<RunnerAccess> {
     sqlx::query_as::<_, RunnerAccess>(r#"SELECT r.id AS runner_id,r.name AS runner_name,r.container_id,
       r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,r.configuration_version,
-      r.last_job_id,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
+      r.last_job_id,p.id AS pool_id,p.name AS pool_name,
+      COALESCE(repo.installation_id,p.installation_id) AS installation_id,
+      COALESCE(target_installation.account_login,primary_installation.account_login) AS account_login,
       r.target_repository_id,
       repo.owner AS repository_owner,repo.name AS repository_name FROM runners r
-      JOIN runner_pools p ON p.id=r.pool_id JOIN user_installations ui ON ui.installation_id=p.installation_id
-      JOIN installations i ON i.id=p.installation_id LEFT JOIN repositories repo ON repo.id=r.target_repository_id
-      WHERE r.id=? AND ui.user_id=? AND r.deleted_at IS NULL"#)
+      JOIN runner_pools p ON p.id=r.pool_id
+      JOIN installations primary_installation ON primary_installation.id=p.installation_id
+      LEFT JOIN repositories repo ON repo.id=r.target_repository_id
+      LEFT JOIN installations target_installation ON target_installation.id=repo.installation_id
+      WHERE r.id=? AND r.deleted_at IS NULL
+        AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+            AND NOT EXISTS (SELECT 1 FROM user_installations access
+              WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+        )"#)
         .bind(runner_id).bind(&user.id).fetch_optional(&state.database).await?
         .ok_or_else(|| ApiError::NotFound("Runner does not exist or is not accessible.".into()))
 }
@@ -2401,11 +2610,16 @@ async fn runner_access(
 async fn runners_for_pool(state: &AppState, pool_id: &str) -> ApiResult<Vec<RunnerAccess>> {
     Ok(sqlx::query_as::<_, RunnerAccess>(r#"SELECT r.id AS runner_id,r.name AS runner_name,r.container_id,
       r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,r.configuration_version,
-      r.last_job_id,p.id AS pool_id,p.name AS pool_name,p.installation_id,i.account_login,
+      r.last_job_id,p.id AS pool_id,p.name AS pool_name,
+      COALESCE(repo.installation_id,p.installation_id) AS installation_id,
+      COALESCE(target_installation.account_login,primary_installation.account_login) AS account_login,
       r.target_repository_id,
       repo.owner AS repository_owner,repo.name AS repository_name FROM runners r
-      JOIN runner_pools p ON p.id=r.pool_id JOIN installations i ON i.id=p.installation_id
-      LEFT JOIN repositories repo ON repo.id=r.target_repository_id WHERE p.id=? AND r.deleted_at IS NULL ORDER BY r.created_at DESC"#)
+      JOIN runner_pools p ON p.id=r.pool_id
+      JOIN installations primary_installation ON primary_installation.id=p.installation_id
+      LEFT JOIN repositories repo ON repo.id=r.target_repository_id
+      LEFT JOIN installations target_installation ON target_installation.id=repo.installation_id
+      WHERE p.id=? AND r.deleted_at IS NULL ORDER BY r.created_at DESC"#)
         .bind(pool_id).fetch_all(&state.database).await?)
 }
 
@@ -2803,6 +3017,14 @@ fn runner_registration_url(account_login: &str, repository: Option<&RepositoryCa
     }
 }
 
+fn github_installation_settings_url(account_type: &str, account_login: &str, id: i64) -> String {
+    if account_type == "Organization" {
+        format!("https://github.com/organizations/{account_login}/settings/installations/{id}")
+    } else {
+        format!("https://github.com/settings/installations/{id}")
+    }
+}
+
 #[allow(dead_code)]
 fn backup_path(database: &PathBuf, name: &str) -> PathBuf {
     database.with_file_name(name)
@@ -2891,5 +3113,17 @@ mod tests {
             "https://hooks.example.com/api/webhooks/github"
         );
         Ok(())
+    }
+
+    #[test]
+    fn github_installation_settings_urls_follow_account_ownership() {
+        assert_eq!(
+            github_installation_settings_url("User", "octocat", 12),
+            "https://github.com/settings/installations/12"
+        );
+        assert_eq!(
+            github_installation_settings_url("Organization", "octo-org", 34),
+            "https://github.com/organizations/octo-org/settings/installations/34"
+        );
     }
 }

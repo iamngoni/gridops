@@ -77,6 +77,7 @@ function RunnerPoolsPage() {
                           : pool.repository ?? pool.accountLogin}
                       </div>
                       <div className="mt-1 text-[11px] capitalize text-muted-foreground">{pool.scope} · {pool.mode}</div>
+                      {pool.scope === "repository" && pool.accountCount > 1 ? <div className="mt-1 text-[11px] text-primary">{pool.accountCount} GitHub accounts</div> : null}
                     </TableCell>
                     <TableCell>
                       <div className="font-mono text-xs">{pool.desiredCount}</div>

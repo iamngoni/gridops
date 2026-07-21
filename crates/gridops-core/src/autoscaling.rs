@@ -4,6 +4,7 @@ use sqlx::SqlitePool;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepositoryCapacity {
     pub repository_id: i64,
+    pub installation_id: i64,
     pub owner: String,
     pub name: String,
     pub queued: i64,
@@ -90,7 +91,7 @@ pub async fn repository_capacities(
     pool_id: &str,
 ) -> Result<Vec<RepositoryCapacity>, sqlx::Error> {
     let rows = sqlx::query(
-        r#"SELECT repo.id,repo.owner,repo.name,
+        r#"SELECT repo.id,repo.installation_id,repo.owner,repo.name,
           (SELECT COUNT(*) FROM workflow_jobs wj
             JOIN workflow_runs wr ON wr.id=wj.run_id
             WHERE wr.repository_id=repo.id AND wj.status='queued' AND ?=(
@@ -136,6 +137,7 @@ pub async fn repository_capacities(
         .into_iter()
         .map(|row| RepositoryCapacity {
             repository_id: row.get("id"),
+            installation_id: row.get("installation_id"),
             owner: row.get("owner"),
             name: row.get("name"),
             queued: row.get("queued"),
