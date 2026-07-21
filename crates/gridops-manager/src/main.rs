@@ -615,7 +615,7 @@ unset GRIDOPS_BOOTSTRAP_SECRET"#,
                     r#"/home/runner/run.sh "${runner_args[@]}""#,
                 ),
             ],
-            vec!["ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1".into()],
+            vec![],
         )),
         "persistent" => {
             let registration_url = input.registration_url.as_ref().ok_or_else(|| {
@@ -644,7 +644,6 @@ fi"#;
                         "GRIDOPS_RUNNER_GROUP={}",
                         input.runner_group.as_deref().unwrap_or_default()
                     ),
-                    "ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1".into(),
                 ],
             ))
         }
@@ -850,6 +849,7 @@ mod tests {
         assert!(metadata.contains("read -r GRIDOPS_BOOTSTRAP_SECRET"));
         assert!(metadata.contains("_diag/pages/*.log"));
         assert!(metadata.contains("GRIDOPS JOB LOG"));
+        assert!(!metadata.contains("ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT"));
         Ok(())
     }
 
@@ -867,6 +867,7 @@ mod tests {
         assert!(metadata.contains("if [ ! -f .runner ]"));
         assert!(metadata.contains("_diag/pages/*.log"));
         assert!(metadata.contains("GRIDOPS JOB LOG"));
+        assert!(!metadata.contains("ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT"));
         Ok(())
     }
 

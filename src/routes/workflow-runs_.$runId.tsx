@@ -57,13 +57,13 @@ function WorkflowRunDetailPage() {
           {run.jobs.length ? <Table><TableHeader><TableRow><TableHead>Job</TableHead><TableHead>Runner</TableHead><TableHead>Labels</TableHead><TableHead>Duration</TableHead><TableHead>Status</TableHead><TableHead /></TableRow></TableHeader><TableBody>
             {run.jobs.map((job) => <TableRow key={job.id}>
               <TableCell className="font-medium">{job.name}</TableCell>
-              <TableCell><div className="font-mono text-xs">{job.runnerName ?? "Unassigned"}</div><div className="mt-1 text-[11px] text-muted-foreground">{job.runnerGroupName ?? "—"}</div></TableCell>
+              <TableCell>{job.liveRunnerId || job.archivedLogId ? <Link className="font-mono text-xs font-medium hover:text-primary" search={{ target: job.liveRunnerId ?? job.archivedLogId ?? undefined }} to="/live-logs">{job.runnerName ?? "Assigned runner"}</Link> : <div className="font-mono text-xs">{job.runnerName ?? "Unassigned"}</div>}<div className="mt-1 text-[11px] text-muted-foreground">{job.runnerGroupName ?? "—"}</div></TableCell>
               <TableCell><div className="flex max-w-80 flex-wrap gap-1">{job.labels.map((label) => <Badge key={label} variant="outline">{label}</Badge>)}</div></TableCell>
               <TableCell className="text-xs">{formatDuration(job.startedAt, job.completedAt)}</TableCell>
               <TableCell><StatusBadge status={job.conclusion ?? job.status} /></TableCell>
               <TableCell><div className="flex justify-end gap-2">
-                {job.liveRunnerId || job.archivedLogId ? <Link aria-label={`View logs for ${job.name}`} className="text-muted-foreground hover:text-foreground" search={{ target: job.liveRunnerId ?? job.archivedLogId ?? undefined }} to="/live-logs"><Terminal className="size-4" /></Link> : null}
-                <a aria-label={`Open ${job.name} on GitHub`} className="text-muted-foreground hover:text-foreground" href={job.htmlUrl} rel="noreferrer" target="_blank"><ExternalLink className="size-4" /></a>
+                {job.liveRunnerId || job.archivedLogId ? <Link aria-label={`View logs for ${job.name}`} className="text-muted-foreground hover:text-foreground" search={{ target: job.liveRunnerId ?? job.archivedLogId ?? undefined }} title={`View logs for ${job.name}`} to="/live-logs"><Terminal className="size-4" /></Link> : null}
+                <a aria-label={`Open ${job.name} on GitHub`} className="text-muted-foreground hover:text-foreground" href={job.htmlUrl} rel="noreferrer" target="_blank" title={`Open ${job.name} on GitHub`}><ExternalLink className="size-4" /></a>
               </div></TableCell>
             </TableRow>)}
           </TableBody></Table> : <div className="grid min-h-56 place-items-center border-t border-border text-sm text-muted-foreground">Job details arrive through workflow job webhooks.</div>}

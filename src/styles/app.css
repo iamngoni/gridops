@@ -5,26 +5,26 @@
 
 :root {
   color-scheme: dark;
-  --radius: 0.5rem;
-  --background: oklch(0.135 0.006 285.9);
-  --foreground: oklch(0.965 0.003 286.3);
-  --card: oklch(0.17 0.006 285.9);
-  --card-foreground: oklch(0.965 0.003 286.3);
-  --popover: oklch(0.18 0.006 285.9);
-  --popover-foreground: oklch(0.965 0.003 286.3);
-  --primary: oklch(0.72 0.17 155.5);
-  --primary-foreground: oklch(0.14 0.02 155.5);
-  --secondary: oklch(0.23 0.007 285.9);
-  --secondary-foreground: oklch(0.93 0.003 286.3);
-  --muted: oklch(0.205 0.006 285.9);
-  --muted-foreground: oklch(0.68 0.01 286.2);
-  --accent: oklch(0.22 0.009 285.9);
-  --accent-foreground: oklch(0.965 0.003 286.3);
-  --destructive: oklch(0.63 0.21 25.3);
-  --border: oklch(0.26 0.007 285.9);
-  --input: oklch(0.28 0.007 285.9);
-  --ring: oklch(0.72 0.17 155.5);
-  --sidebar: oklch(0.12 0.007 285.9);
+  --radius: 0.625rem;
+  --background: hsl(160 16% 6%);
+  --foreground: hsl(150 12% 96%);
+  --card: hsl(160 14% 8.5%);
+  --card-foreground: hsl(150 12% 96%);
+  --popover: hsl(160 13% 10%);
+  --popover-foreground: hsl(150 12% 96%);
+  --primary: hsl(153 64% 52%);
+  --primary-foreground: hsl(158 35% 8%);
+  --secondary: hsl(160 10% 14%);
+  --secondary-foreground: hsl(150 10% 92%);
+  --muted: hsl(160 9% 12%);
+  --muted-foreground: hsl(154 8% 65%);
+  --accent: hsl(158 12% 14%);
+  --accent-foreground: hsl(150 12% 96%);
+  --destructive: hsl(3 67% 54%);
+  --border: hsl(160 10% 18%);
+  --input: hsl(160 10% 20%);
+  --ring: hsl(153 64% 52%);
+  --sidebar: hsl(163 18% 5%);
 }
 
 @theme inline {
@@ -70,6 +70,25 @@ body {
   font-family: var(--font-sans);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   text-rendering: optimizeLegibility;
+}
+
+.app-shell {
+  background-color: var(--background);
+  background-image:
+    radial-gradient(circle at 78% -12%, hsl(153 60% 20% / 0.14), transparent 34rem),
+    linear-gradient(180deg, hsl(160 16% 7% / 0.86), var(--background) 26rem);
+  background-attachment: fixed;
+}
+
+[data-slot="card"] {
+  box-shadow:
+    0 1px 0 hsl(150 20% 95% / 0.025) inset,
+    0 1px 2px hsl(160 60% 2% / 0.32),
+    0 12px 32px hsl(160 60% 2% / 0.12);
+}
+
+[data-slot="button"]:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 button,

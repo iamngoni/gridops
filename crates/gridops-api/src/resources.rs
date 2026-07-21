@@ -125,6 +125,14 @@ pub(crate) struct PaginationQuery {
     per_page: Option<i64>,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct LogTargetsQuery {
+    page: Option<i64>,
+    #[serde(rename = "perPage")]
+    per_page: Option<i64>,
+    target: Option<String>,
+}
+
 #[derive(Clone)]
 struct InstallationAccess {
     id: i64,
@@ -278,7 +286,7 @@ pub async fn overview(
         })
         .collect::<Vec<_>>();
     let activity_rows = sqlx::query(
-        r#"SELECT re.id,re.level,re.event,re.message,re.created_at FROM runner_events re
+        r#"SELECT re.id,re.level,re.event,re.message,re.runner_id,re.pool_id,re.created_at FROM runner_events re
         WHERE EXISTS (SELECT 1 FROM runner_pools p JOIN user_installations ui
           ON ui.installation_id=p.installation_id WHERE p.id=re.pool_id AND ui.user_id=?)
         ORDER BY re.created_at DESC LIMIT 8"#,
@@ -292,6 +300,8 @@ pub async fn overview(
             json!({
                 "id": row.get::<String, _>("id"), "level": row.get::<String, _>("level"),
                 "event": row.get::<String, _>("event"), "message": row.get::<String, _>("message"),
+                "runnerId": row.try_get::<Option<String>, _>("runner_id").ok().flatten(),
+                "poolId": row.try_get::<Option<String>, _>("pool_id").ok().flatten(),
                 "createdAt": iso(row.get::<i64, _>("created_at")),
             })
         })
@@ -1120,7 +1130,7 @@ pub async fn audit_events(
 
 pub async fn log_targets(
     State(state): State<AppState>,
-    Query(query): Query<PaginationQuery>,
+    Query(query): Query<LogTargetsQuery>,
     OptionalAuth(user): OptionalAuth,
 ) -> ApiResult<Json<Value>> {
     let (requested_page, per_page) = pagination(query.page, query.per_page);
@@ -1156,11 +1166,15 @@ pub async fn log_targets(
             ls.created_at,COALESCE(ls.pool_name,'Deleted pool'),ls.repository,'archive',ls.size_bytes
           FROM log_streams ls JOIN user_installations ui
             ON ui.installation_id=ls.installation_id AND ui.user_id=? WHERE ls.complete=1
-        ) targets ORDER BY CASE kind WHEN 'live' THEN 0 ELSE 1 END,busy DESC,updated_at DESC
+        ) targets ORDER BY
+          CASE WHEN id=? OR runner_id=? THEN 0 ELSE 1 END,
+          CASE kind WHEN 'live' THEN 0 ELSE 1 END,busy DESC,updated_at DESC
         LIMIT ? OFFSET ?"#,
     )
     .bind(&user.id)
     .bind(&user.id)
+    .bind(query.target.as_deref())
+    .bind(query.target.as_deref())
     .bind(per_page)
     .bind(offset)
     .fetch_all(&state.database)

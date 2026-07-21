@@ -73,7 +73,7 @@ export type SettingsPage = {
       secureStorage: boolean; runnerManager: boolean; installationTokens: boolean;
       callbackUrl: string; webhookUrl: string;
     };
-    manager: { ok: boolean; dockerVersion?: string; apiVersion?: string; error?: string };
+    manager: { ok: boolean; dockerVersion?: string; apiVersion?: string; availableCpus?: number; error?: string };
     settings: { logRetentionDays: number; webhookRetentionDays: number; auditRetentionDays: number;
       reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean };
     user: { id: string; login: string; role: "admin" | "member" };
@@ -96,8 +96,8 @@ export const getWebhooksPage = ({ page = 1 }: { page?: number } = {}) =>
   api<PaginatedPage<WebhookDelivery>>(paginatedUrl("/api/v1/webhooks", page));
 export const getAuditLogPage = ({ page = 1 }: { page?: number } = {}) =>
   api<PaginatedPage<AuditEvent>>(paginatedUrl("/api/v1/audit", page));
-export const getLiveLogsPage = ({ page = 1 }: { page?: number } = {}) =>
-  api<PaginatedPage<LogTarget>>(paginatedUrl("/api/v1/log-streams", page));
+export const getLiveLogsPage = ({ page = 1, target }: { page?: number; target?: string } = {}) =>
+  api<PaginatedPage<LogTarget>>(`${paginatedUrl("/api/v1/log-streams", page)}${target ? `&target=${encodeURIComponent(target)}` : ""}`);
 export const getSettingsPage = () => api<SettingsPage>("/api/v1/settings");
 
 export const getWorkflowRunDetailAction = ({ data }: { data: { runId: number } }) =>

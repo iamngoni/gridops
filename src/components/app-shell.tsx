@@ -26,15 +26,28 @@ import { api } from "~/lib/api";
 import { searchAction } from "~/features/operations/operations.functions";
 
 const navigation = [
-  { label: "Overview", to: "/", icon: CircleGauge },
-  { label: "Repositories", to: "/repositories", icon: PackageSearch },
-  { label: "Runner Pools", to: "/runner-pools", icon: Boxes },
-  { label: "Runners", to: "/runners", icon: Activity },
-  { label: "Workflow Runs", to: "/workflow-runs", icon: GitPullRequestArrow },
-  { label: "Live Logs", to: "/live-logs", icon: Radio },
-  { label: "Webhooks", to: "/webhooks", icon: Webhook },
-  { label: "Audit Log", to: "/audit-log", icon: FileClock },
-  { label: "Settings", to: "/settings", icon: Settings },
+  {
+    label: "Operate",
+    items: [
+      { label: "Overview", to: "/", icon: CircleGauge },
+      { label: "Repositories", to: "/repositories", icon: PackageSearch },
+      { label: "Runner pools", to: "/runner-pools", icon: Boxes },
+      { label: "Runners", to: "/runners", icon: Activity },
+      { label: "Workflow runs", to: "/workflow-runs", icon: GitPullRequestArrow },
+      { label: "Live logs", to: "/live-logs", icon: Radio },
+    ],
+  },
+  {
+    label: "Observe",
+    items: [
+      { label: "Webhooks", to: "/webhooks", icon: Webhook },
+      { label: "Audit log", to: "/audit-log", icon: FileClock },
+    ],
+  },
+  {
+    label: "System",
+    items: [{ label: "Settings", to: "/settings", icon: Settings }],
+  },
 ] as const;
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -74,12 +87,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const alertCount = viewer
     ? viewer.alerts.failedRunners + viewer.alerts.failedWebhooks + viewer.alerts.queuedJobs + viewer.alerts.deferredRunnerCleanup
     : 0;
+  const currentSection = navigation
+    .map((group) => group.items.find((item) => item.to === "/" ? pathname === "/" : pathname.startsWith(item.to)))
+    .find((item) => item !== undefined);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="app-shell min-h-screen text-foreground">
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-60 -translate-x-full flex-col border-r border-border bg-sidebar transition-transform lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 flex w-64 -translate-x-full flex-col border-r border-border/60 bg-sidebar/95 shadow-[12px_0_40px_hsl(160_70%_2%/0.16)] backdrop-blur transition-transform lg:translate-x-0",
           mobileOpen && "translate-x-0",
         )}
       >
@@ -96,26 +112,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Button>
         </div>
 
-        <nav className="flex-1 space-y-1 px-2.5 py-4" aria-label="Main navigation">
-          {navigation.map((item) => {
-            const active = item.to === "/" ? pathname === "/" : pathname.startsWith(item.to);
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.to}
-                to={item.to}
-                onClick={() => setMobileOpen(false)}
-                className={cn(
-                  "relative flex h-9 items-center gap-3 rounded-md px-3 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-                  active && "bg-primary/10 text-primary",
-                )}
-              >
-                {active && <span className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-primary" />}
-                <Icon className="size-4" />
-                {item.label}
-              </Link>
-            );
-          })}
+        <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-5" aria-label="Main navigation">
+          {navigation.map((group) => (
+            <div key={group.label}>
+              <p className="px-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/55">{group.label}</p>
+              <div className="mt-1.5 space-y-1">
+                {group.items.map((item) => {
+                  const active = item.to === "/" ? pathname === "/" : pathname.startsWith(item.to);
+                  const Icon = item.icon;
+                  return (
+                    <Link
+                      key={item.to}
+                      to={item.to}
+                      onClick={() => setMobileOpen(false)}
+                      className={cn(
+                        "relative flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent/80 hover:text-foreground",
+                        active && "bg-primary/[0.09] text-primary shadow-[0_1px_0_hsl(150_70%_90%/0.03)_inset]",
+                      )}
+                    >
+                      {active && <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-primary" />}
+                      <span className={cn("grid size-6 place-items-center rounded-md", active && "bg-primary/10")}><Icon className="size-4" /></span>
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         <div className="border-t border-border p-4">
@@ -136,8 +159,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         />
       )}
 
-      <div className="lg:pl-60">
-        <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border bg-background/95 px-4 backdrop-blur md:px-6">
+      <div className="lg:pl-64">
+        <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border/60 bg-background/80 px-4 backdrop-blur-xl md:px-6">
           <Button
             aria-label="Open navigation"
             className="lg:hidden"
@@ -151,9 +174,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="hidden min-w-0 items-center gap-2 text-sm md:flex">
             <span className="font-medium">GridOps</span>
             <span className="text-muted-foreground">/</span>
-            <span className="truncate capitalize text-muted-foreground">
-              {pathname === "/" ? "Overview" : pathname.slice(1).replaceAll("-", " ")}
-            </span>
+            <span className="truncate text-muted-foreground">{currentSection?.label ?? "Resource detail"}</span>
           </div>
 
           <div className="ml-auto flex items-center gap-2">
@@ -164,13 +185,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 ⌘ K
               </kbd>
               {searchOpen && query.trim().length >= 2 ? (
-                <div className="absolute right-0 top-11 z-50 w-[420px] overflow-hidden rounded-md border border-border bg-popover p-1 shadow-2xl">
+                <div className="absolute right-0 top-11 z-50 w-[420px] overflow-hidden rounded-xl border border-border/80 bg-popover p-1.5 shadow-2xl">
                   {results.length ? results.map((result) => (
-                    <a className="flex items-center gap-3 rounded-sm px-3 py-2 hover:bg-accent" href={result.href} key={`${result.kind}-${result.id}`} onClick={() => setSearchOpen(false)}>
+                    <Link className="flex items-center gap-3 rounded-sm px-3 py-2 hover:bg-accent" key={`${result.kind}-${result.id}`} onClick={() => setSearchOpen(false)} to={result.href}>
                       <Search className="size-3.5 text-muted-foreground" />
                       <span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium">{result.title}</span><span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{result.subtitle}</span></span>
                       <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{result.kind}</span>
-                    </a>
+                    </Link>
                   )) : <div className="px-3 py-6 text-center text-xs text-muted-foreground">No GridOps resources match “{query}”.</div>}
                 </div>
               ) : null}
@@ -203,19 +224,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <details className="relative">
               <summary className="inline-flex size-9 cursor-pointer list-none items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><ChevronDown className="size-4" /><span className="sr-only">Account menu</span></summary>
               <div className="absolute right-0 top-11 z-50 w-48 rounded-md border border-border bg-popover p-1 shadow-2xl">
-                <a className="block rounded-sm px-3 py-2 text-xs hover:bg-accent" href="/settings">Settings</a>
+                <Link className="block rounded-sm px-3 py-2 text-xs hover:bg-accent" to="/settings">Settings</Link>
                 {viewer ? <button className="block w-full rounded-sm px-3 py-2 text-left text-xs text-red-300 hover:bg-accent" type="button" onClick={() => void api("/auth/logout", { method: "POST" }).then(() => { window.location.href = "/login"; })}>Sign out</button> : <a className="block rounded-sm px-3 py-2 text-xs hover:bg-accent" href="/auth/github">Connect GitHub</a>}
               </div>
             </details>
           </div>
         </header>
 
-        <main className="mx-auto max-w-[1680px] p-4 md:p-6">{children}</main>
+        <main className="mx-auto max-w-[1600px] p-4 md:p-6 xl:p-8">{children}</main>
       </div>
     </div>
   );
 }
 
 function AlertRow({ href, label, value }: { href: string; label: string; value: number }) {
-  return <a className="flex items-center justify-between rounded-sm border border-border px-3 py-2 hover:bg-accent" href={href}><span className="text-muted-foreground">{label}</span><span className={value > 0 ? "font-medium text-foreground" : "text-muted-foreground"}>{value}</span></a>;
+  return <Link className="flex items-center justify-between rounded-sm border border-border px-3 py-2 hover:bg-accent" to={href}><span className="text-muted-foreground">{label}</span><span className={value > 0 ? "font-medium text-foreground" : "text-muted-foreground"}>{value}</span></Link>;
 }

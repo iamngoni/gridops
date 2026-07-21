@@ -44,6 +44,8 @@ export type DashboardOverview = {
     level: string;
     event: string;
     message: string;
+    runnerId: string | null;
+    poolId: string | null;
     createdAt: string;
   }>;
   installations: number;

@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { CheckCircle2, RefreshCw, ShieldAlert, Webhook } from "lucide-react";
+import { CheckCircle2, Copy, RefreshCw, ShieldAlert, Webhook } from "lucide-react";
+import { toast } from "sonner";
 
 import { AsyncActionButton } from "~/components/async-action-button";
 import { ListPagination } from "~/components/list-pagination";
@@ -48,13 +49,13 @@ function WebhooksPage() {
           <TableHeader><TableRow><TableHead>Delivery</TableHead><TableHead>Event</TableHead><TableHead>Destination</TableHead><TableHead>Signature</TableHead><TableHead>Status</TableHead><TableHead>Received</TableHead><TableHead /></TableRow></TableHeader>
           <TableBody>{data.items.map((delivery) => (
             <TableRow key={delivery.id}>
-              <TableCell><div className="max-w-44 truncate font-mono text-xs" title={delivery.id}>{delivery.id}</div>{delivery.error ? <div className="mt-1 max-w-64 truncate text-[11px] text-red-400" title={String(delivery.error)}>{String(delivery.error)}</div> : null}</TableCell>
+              <TableCell><button className="group inline-flex max-w-52 items-center gap-1.5 font-mono text-xs text-muted-foreground hover:text-foreground" onClick={() => void navigator.clipboard.writeText(delivery.id).then(() => toast.success("Delivery ID copied."))} title="Copy delivery ID" type="button"><span className="truncate">{delivery.id}</span><Copy className="size-3 shrink-0 opacity-40 group-hover:opacity-100" /></button>{delivery.error ? <details className="mt-1 max-w-72 text-[11px] text-red-400"><summary className="cursor-pointer truncate">{String(delivery.error)}</summary><p className="mt-1 whitespace-pre-wrap break-words rounded-md bg-red-500/5 p-2 leading-5">{String(delivery.error)}</p></details> : null}</TableCell>
               <TableCell><Badge variant="outline">{delivery.event}</Badge>{delivery.action ? <div className="mt-1 text-[11px] text-muted-foreground">{delivery.action}</div> : null}</TableCell>
               <TableCell><div className="text-xs">{delivery.repository ?? delivery.accountLogin ?? "GitHub App"}</div><div className="mt-1 font-mono text-[11px] text-muted-foreground">{delivery.installationId ? `installation ${delivery.installationId}` : "global"}</div></TableCell>
               <TableCell>{delivery.signatureValid ? <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400"><CheckCircle2 className="size-3.5" />Verified</span> : <span className="inline-flex items-center gap-1.5 text-xs text-red-400"><ShieldAlert className="size-3.5" />Invalid</span>}</TableCell>
               <TableCell><StatusBadge status={delivery.status} /></TableCell>
               <TableCell className="text-xs text-muted-foreground">{formatRelativeTime(delivery.receivedAt)}</TableCell>
-              <TableCell>{delivery.canRetry && delivery.status === "failed" && delivery.signatureValid ? <AsyncActionButton action={() => retry({ data: { deliveryId: delivery.id } })} icon={<RefreshCw />} size="icon" success="Webhook delivery reprocessed."><span className="sr-only">Retry delivery</span></AsyncActionButton> : null}</TableCell>
+              <TableCell>{delivery.canRetry && delivery.status === "failed" && delivery.signatureValid ? <AsyncActionButton action={() => retry({ data: { deliveryId: delivery.id } })} icon={<RefreshCw />} size="icon" success="Webhook delivery reprocessed." title="Retry delivery"><span className="sr-only">Retry delivery</span></AsyncActionButton> : null}</TableCell>
             </TableRow>
           ))}</TableBody>
         </Table><ListPagination itemCount={data.items.length} noun="webhook deliveries" onPageChange={(page) => void navigate({ search: { page } })} page={data.page} perPage={data.perPage} total={data.total} /></CardContent></Card>

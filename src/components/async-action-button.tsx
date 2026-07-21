@@ -14,6 +14,7 @@ export function AsyncActionButton({
   variant = "outline",
   size = "sm",
   disabled,
+  title,
 }: {
   children: ReactNode;
   icon?: ReactNode;
@@ -23,6 +24,7 @@ export function AsyncActionButton({
   variant?: "default" | "destructive" | "outline" | "secondary" | "ghost" | "link";
   size?: "default" | "sm" | "lg" | "icon";
   disabled?: boolean;
+  title?: string;
 }) {
   const [pending, setPending] = useState(false);
   const router = useRouter();
@@ -42,7 +44,7 @@ export function AsyncActionButton({
   }
 
   return (
-    <Button disabled={disabled || pending} onClick={run} size={size} variant={variant}>
+    <Button disabled={disabled || pending} onClick={run} size={size} title={title} variant={variant}>
       {pending ? <LoaderCircle className="animate-spin" /> : icon}
       {children}
     </Button>

@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ExternalLink, LoaderCircle, Lock, PackageSearch, RefreshCw, Search, X } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
@@ -96,12 +96,12 @@ function RepositoriesPage() {
               <Table>
                 <TableHeader><TableRow>
                   <TableHead>Repository</TableHead><TableHead>Installation</TableHead><TableHead>Default branch</TableHead>
-                  <TableHead>Runner pools</TableHead><TableHead>Runs</TableHead><TableHead>Source</TableHead><TableHead />
+                  <TableHead>Runner pools</TableHead><TableHead>Workflow runs</TableHead><TableHead className="w-12" />
                 </TableRow></TableHeader>
                 <TableBody>{data.items.map((repository) => (
                   <TableRow key={repository.id}>
                     <TableCell>
-                      <div className="flex items-center gap-2 font-medium">{repository.fullName}{repository.private ? <Lock className="size-3 text-muted-foreground" /> : null}</div>
+                      <a className="group inline-flex items-center gap-2 font-medium hover:text-primary" href={String(repository.htmlUrl)} rel="noreferrer" target="_blank">{repository.fullName}{repository.private ? <Lock className="size-3 text-muted-foreground" /> : null}<ExternalLink className="size-3 text-muted-foreground/40 transition-colors group-hover:text-primary" /></a>
                       <div className="mt-1 flex gap-1">
                         {repository.archived ? <Badge variant="warning">archived</Badge> : null}
                         <Badge variant={repository.connected ? "success" : "outline"}>{repository.connected ? "connected" : "available"}</Badge>
@@ -110,10 +110,9 @@ function RepositoriesPage() {
                     </TableCell>
                     <TableCell><div className="text-xs">{repository.accountLogin}</div><div className="mt-1 text-[11px] text-muted-foreground">{repository.accountType} · {repository.repositorySelection}</div></TableCell>
                     <TableCell className="font-mono text-xs">{repository.defaultBranch}</TableCell>
-                    <TableCell>{repository.poolCount}</TableCell>
-                    <TableCell><div>{repository.runCount}</div><div className="mt-1 text-[11px] text-muted-foreground">{repository.lastRunAt ? formatRelativeTime(String(repository.lastRunAt)) : "No runs"}</div></TableCell>
-                    <TableCell className="text-xs text-muted-foreground">Live from GitHub</TableCell>
-                    <TableCell><a aria-label={`Open ${repository.fullName} on GitHub`} className="text-muted-foreground hover:text-foreground" href={String(repository.htmlUrl)} rel="noreferrer" target="_blank"><ExternalLink className="size-4" /></a></TableCell>
+                    <TableCell><Link className="text-xs font-medium hover:text-primary" to="/runner-pools">{repository.poolCount} {repository.poolCount === 1 ? "pool" : "pools"}</Link><div className="mt-1 text-[11px] text-muted-foreground">Using this repository</div></TableCell>
+                    <TableCell><Link className="text-xs font-medium hover:text-primary" to="/workflow-runs">{repository.runCount} {repository.runCount === 1 ? "run" : "runs"}</Link><div className="mt-1 text-[11px] text-muted-foreground">{repository.lastRunAt ? `Last ${formatRelativeTime(String(repository.lastRunAt))}` : "No workflow history"}</div></TableCell>
+                    <TableCell><a aria-label={`Open ${repository.fullName} on GitHub`} className="inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground" href={String(repository.htmlUrl)} rel="noreferrer" target="_blank" title={`Open ${repository.fullName} on GitHub`}><ExternalLink className="size-4" /></a></TableCell>
                   </TableRow>
                 ))}</TableBody>
               </Table>
@@ -156,12 +155,12 @@ function RepositoryLoadingCard({ initialQuery, onSearch }: { initialQuery: strin
         <Table>
           <TableHeader><TableRow>
             <TableHead>Repository</TableHead><TableHead>Installation</TableHead><TableHead>Default branch</TableHead>
-            <TableHead>Runner pools</TableHead><TableHead>Runs</TableHead><TableHead>Source</TableHead><TableHead />
+            <TableHead>Runner pools</TableHead><TableHead>Workflow runs</TableHead><TableHead />
           </TableRow></TableHeader>
           <TableBody>
             {Array.from({ length: 7 }, (_, index) => (
               <TableRow key={index}>
-                {Array.from({ length: 7 }, (_, cell) => (
+                {Array.from({ length: 6 }, (_, cell) => (
                   <TableCell key={cell}><div className="h-7 animate-pulse rounded bg-muted" /></TableCell>
                 ))}
               </TableRow>

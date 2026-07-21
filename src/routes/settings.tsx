@@ -162,6 +162,7 @@ function AuthenticatedSettings({ data }: { data: NonNullable<SettingsPage["data"
             <InfoRow label="Manager" value={data.manager.ok ? "Authenticated and reachable" : "Unavailable"} />
             <InfoRow label="Docker Engine" value={data.manager.dockerVersion ?? "—"} />
             <InfoRow label="Docker API" value={data.manager.apiVersion ?? "—"} />
+            <InfoRow label="Host capacity" value={data.manager.availableCpus ? `${data.manager.availableCpus} logical CPUs` : "—"} />
             <InfoRow label="GitHub control token" value={data.configuration.installationTokens ? "Installation token" : "Authorized user token fallback"} />
             <InfoRow label="Database" value="SQLite · WAL mode" />
             <InfoRow label="Signed in as" value={`${data.user.login} · ${data.user.role}`} />

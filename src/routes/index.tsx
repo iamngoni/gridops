@@ -21,7 +21,7 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 import { AppShell } from "~/components/app-shell";
 import { AsyncActionButton } from "~/components/async-action-button";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
-import { Badge } from "~/components/ui/badge";
+import { StatusBadge } from "~/components/status-badge";
 import { Button, buttonVariants } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import {
@@ -63,11 +63,12 @@ function OverviewPage() {
 
   return (
     <AppShell>
-      <div className="flex flex-col gap-6">
-        <div className="flex flex-col justify-between gap-4 xl:flex-row xl:items-center">
+      <div className="flex flex-col gap-8">
+        <div className="flex flex-col justify-between gap-5 xl:flex-row xl:items-end">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">Operations overview</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-primary/75">GridOps control plane</p>
+            <h1 className="text-2xl font-semibold tracking-[-0.025em] md:text-3xl">Operations overview</h1>
+            <p className="mt-2 max-w-[62ch] text-sm leading-6 text-muted-foreground">
               Monitor capacity, runners, and workflow activity across your GitHub installations.
             </p>
           </div>
@@ -82,17 +83,19 @@ function OverviewPage() {
         <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Runner metrics">
           <MetricCard
             icon={Users}
-            label="Runners"
+            label="Managed runners"
             value={data.metrics.runners}
             footer={`${data.metrics.online} online`}
             tone="green"
+            to="/runners"
           />
           <MetricCard
             icon={Activity}
-            label="Busy"
+            label="Busy runners"
             value={data.metrics.busy}
             footer="Running jobs now"
             tone="green"
+            to="/runners"
           />
           <MetricCard
             icon={Clock3}
@@ -100,6 +103,7 @@ function OverviewPage() {
             value={data.metrics.queuedJobs}
             footer={data.metrics.queuedJobs > 0 ? "Waiting to be assigned" : "Queue is clear"}
             tone="amber"
+            to="/workflow-runs"
           />
           <MetricCard
             icon={CheckCircle2}
@@ -107,6 +111,7 @@ function OverviewPage() {
             value={data.metrics.successRate === null ? "—" : `${data.metrics.successRate}%`}
             footer="Completed runs"
             tone="green"
+            to="/workflow-runs"
           />
         </section>
 
@@ -157,16 +162,19 @@ function MetricCard({
   value,
   footer,
   tone,
+  to,
 }: {
   icon: typeof Users;
   label: string;
   value: number | string;
   footer: string;
   tone: "green" | "amber";
+  to: "/runners" | "/workflow-runs";
 }) {
   return (
-    <Card className="min-h-32">
-      <CardContent className="flex h-full items-start gap-4 p-4">
+    <Link className="group block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" to={to}>
+    <Card className="min-h-36 overflow-hidden transition-[border-color,transform,box-shadow] group-hover:-translate-y-0.5 group-hover:border-primary/30 group-hover:shadow-[0_16px_36px_hsl(160_80%_2%/0.24),inset_0_1px_0_hsl(150_70%_90%/0.04)]">
+      <CardContent className="flex h-full items-start gap-4 p-5">
         <div
           className={
             tone === "green"
@@ -176,8 +184,8 @@ function MetricCard({
         >
           <Icon className="size-5" />
         </div>
-        <div className="min-w-0">
-          <p className="text-xs text-muted-foreground">{label}</p>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-3"><p className="text-xs font-medium text-muted-foreground">{label}</p><ArrowRight className="size-3.5 text-muted-foreground/40 transition-transform group-hover:translate-x-0.5 group-hover:text-primary" /></div>
           <p className="mt-1 text-3xl font-semibold tracking-tight">{value}</p>
           <p className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
             <span className={tone === "green" ? "size-1.5 rounded-full bg-emerald-400" : "size-1.5 rounded-full bg-amber-400"} />
@@ -186,6 +194,7 @@ function MetricCard({
         </div>
       </CardContent>
     </Card>
+    </Link>
   );
 }
 
@@ -297,22 +306,31 @@ function ActivityPanel({ data }: { data: DashboardOverview }) {
         {data.activity.length === 0 ? (
           <EmptyState icon={CircleDot} title="No runner activity yet" body="Runner lifecycle and assignment events will stream here." />
         ) : (
-          <div className="divide-y divide-border">
+          <div className="divide-y divide-border/70">
             {data.activity.map((item) => (
-              <div className="flex gap-3 py-3 first:pt-0" key={item.id}>
-                <span className="mt-1.5 size-2 shrink-0 rounded-full bg-emerald-400" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{item.event}</p>
-                  <p className="mt-1 truncate text-xs text-muted-foreground">{item.message}</p>
-                </div>
-                <time className="shrink-0 text-[11px] text-muted-foreground">{formatRelativeTime(item.createdAt)}</time>
-              </div>
+              <ActivityRow item={item} key={item.id} />
             ))}
           </div>
         )}
       </CardContent>
     </Card>
   );
+}
+
+function ActivityRow({ item }: { item: DashboardOverview["activity"][number] }) {
+  const content = <>
+    <span className={`mt-1 grid size-7 shrink-0 place-items-center rounded-full ${item.level === "error" ? "bg-red-500/10 text-red-400" : item.level === "warning" ? "bg-amber-500/10 text-amber-400" : "bg-emerald-500/10 text-emerald-400"}`}><CircleDot className="size-3.5" /></span>
+    <div className="min-w-0 flex-1">
+      <p className="truncate text-sm font-medium">{item.event}</p>
+      <p className="mt-1 truncate text-xs text-muted-foreground">{item.message}</p>
+    </div>
+    <time className="shrink-0 text-[11px] text-muted-foreground">{formatRelativeTime(item.createdAt)}</time>
+    {(item.runnerId || item.poolId) ? <ArrowRight className="size-3.5 shrink-0 text-muted-foreground/35 transition-transform group-hover:translate-x-0.5 group-hover:text-primary" /> : null}
+  </>;
+  const className = "group flex items-start gap-3 rounded-lg px-2 py-3 first:pt-2 hover:bg-muted/45";
+  if (item.runnerId) return <Link className={className} search={{ target: item.runnerId }} to="/live-logs">{content}</Link>;
+  if (item.poolId) return <Link className={className} params={{ poolId: item.poolId }} to="/runner-pools/$poolId">{content}</Link>;
+  return <div className={className}>{content}</div>;
 }
 
 function RunnerPoolsPanel({ data }: { data: DashboardOverview }) {
@@ -332,12 +350,9 @@ function RunnerPoolsPanel({ data }: { data: DashboardOverview }) {
             <TableHeader>
               <TableRow>
                 <TableHead>Pool</TableHead>
-                <TableHead>Scope</TableHead>
-                <TableHead>Desired</TableHead>
-                <TableHead>Online</TableHead>
-                <TableHead>Busy</TableHead>
-                <TableHead>Queue</TableHead>
-                <TableHead>Mode</TableHead>
+                <TableHead>Destination</TableHead>
+                <TableHead>Capacity</TableHead>
+                <TableHead>Demand</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-10" />
               </TableRow>
@@ -346,14 +361,11 @@ function RunnerPoolsPanel({ data }: { data: DashboardOverview }) {
               {data.pools.map((pool) => (
                 <TableRow key={pool.id}>
                   <TableCell className="font-medium"><span className="mr-2 inline-block size-1.5 rounded-full bg-emerald-400" /><Link className="hover:text-primary" params={{ poolId: pool.id }} to="/runner-pools/$poolId">{pool.name}</Link></TableCell>
-                  <TableCell className="text-muted-foreground">{pool.scope}</TableCell>
-                  <TableCell>{pool.desired}</TableCell>
-                  <TableCell>{pool.online}</TableCell>
-                  <TableCell>{pool.busy}</TableCell>
-                  <TableCell>{pool.queue}</TableCell>
-                  <TableCell className="capitalize text-muted-foreground">{pool.mode}</TableCell>
+                  <TableCell><div className="capitalize text-xs">{pool.scope}</div><div className="mt-1 text-[11px] capitalize text-muted-foreground">{pool.mode} runners</div></TableCell>
+                  <TableCell><div className="text-xs">{pool.desired} desired · {pool.online} online</div><div className="mt-1 text-[11px] text-muted-foreground">Provisioned capacity</div></TableCell>
+                  <TableCell><div className="text-xs">{pool.busy} busy · {pool.queue} queued</div><div className="mt-1 text-[11px] text-muted-foreground">Current workload</div></TableCell>
                   <TableCell><StatusBadge status={pool.status} /></TableCell>
-                  <TableCell><Link aria-label={`Edit ${pool.name}`} className={buttonVariants({ size: "icon", variant: "ghost" })} params={{ poolId: pool.id }} to="/runner-pools/$poolId"><Settings2 /></Link></TableCell>
+                  <TableCell><Link aria-label={`Open ${pool.name}`} className={buttonVariants({ size: "icon", variant: "ghost" })} params={{ poolId: pool.id }} title={`Open ${pool.name}`} to="/runner-pools/$poolId"><ArrowRight /></Link></TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -379,36 +391,23 @@ function WorkflowRunsPanel({ data }: { data: DashboardOverview }) {
         ) : (
           <div className="divide-y divide-border">
             {data.runs.map((run) => (
-              <div className="grid gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto]" key={run.id}>
+              <Link className="group grid gap-3 px-5 py-3.5 transition-colors hover:bg-muted/45 sm:grid-cols-[minmax(0,1fr)_auto]" key={run.id} params={{ runId: String(run.id) }} to="/workflow-runs/$runId">
                 <div className="min-w-0">
-                  <p className="flex items-center gap-2 truncate text-sm font-medium"><Github className="size-4 shrink-0" />{run.repository}</p>
-                  <p className="mt-1 truncate text-xs text-muted-foreground">{run.workflow} · {run.branch ?? "detached"}</p>
+                  <p className="flex items-center gap-2 truncate text-sm font-medium"><Workflow className="size-4 shrink-0 text-primary" />{run.workflow}</p>
+                  <p className="mt-1 truncate text-xs text-muted-foreground">{run.repository} · {run.branch ?? "detached"}</p>
                 </div>
                 <div className="flex items-center justify-between gap-4 sm:justify-end">
                   <span className="text-xs text-muted-foreground">{formatDuration(run.startedAt, run.completedAt)}</span>
                   <StatusBadge status={run.conclusion ?? run.status} />
+                  <ArrowRight className="size-3.5 text-muted-foreground/35 transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
                 </div>
-              </div>
+              </Link>
             ))}
           </div>
         )}
       </CardContent>
     </Card>
   );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const normalized = status.toLowerCase();
-  const variant = normalized === "success" || normalized === "active" || normalized === "healthy"
-    ? "success"
-    : normalized === "queued" || normalized === "paused" || normalized === "draining"
-      ? "warning"
-      : normalized === "failure" || normalized === "failed"
-        ? "destructive"
-        : normalized === "in_progress" || normalized === "running"
-          ? "info"
-          : "outline";
-  return <Badge variant={variant}>{normalized.replaceAll("_", " ")}</Badge>;
 }
 
 function EmptyState({

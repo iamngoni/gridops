@@ -94,13 +94,14 @@ function RunnerPoolsPage() {
                     <TableCell><StatusBadge status={pool.paused ? "paused" : pool.state} /></TableCell>
                     <TableCell>
                       {pool.canManage ? <div className="flex justify-end gap-1">
-                        <Link aria-label={`Edit ${pool.name}`} className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" params={{ poolId: pool.id }} to="/runner-pools/$poolId"><Settings2 className="size-4" /></Link>
+                        <Link aria-label={`Edit ${pool.name}`} className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" params={{ poolId: pool.id }} title={`Edit ${pool.name}`} to="/runner-pools/$poolId"><Settings2 className="size-4" /></Link>
                         <AsyncActionButton
                           action={() => control({ data: { action: "scale", poolId: pool.id, desiredCount: pool.desiredCount - 1 } })}
                           disabled={pool.desiredCount <= pool.minCount || pool.paused}
                           icon={<Minus />}
                           size="icon"
                           success="Pool capacity decreased."
+                          title={`Scale down ${pool.name}`}
                         ><span className="sr-only">Scale down {pool.name}</span></AsyncActionButton>
                         <AsyncActionButton
                           action={() => control({ data: { action: "scale", poolId: pool.id, desiredCount: pool.desiredCount + 1 } })}
@@ -108,6 +109,7 @@ function RunnerPoolsPage() {
                           icon={<Plus />}
                           size="icon"
                           success="Pool capacity increased."
+                          title={`Scale up ${pool.name}`}
                         ><span className="sr-only">Scale up {pool.name}</span></AsyncActionButton>
                         <AsyncActionButton
                           action={() => control({ data: { action: pool.paused ? "resume" : "pause", poolId: pool.id } })}
@@ -115,12 +117,14 @@ function RunnerPoolsPage() {
                           icon={pool.paused ? <Play /> : <Pause />}
                           size="icon"
                           success={pool.paused ? "Pool resumed." : "Pool is draining."}
+                          title={`${pool.paused ? "Resume" : "Pause"} ${pool.name}`}
                         ><span className="sr-only">{pool.paused ? "Resume" : "Pause"} {pool.name}</span></AsyncActionButton>
                         <AsyncActionButton
                           action={() => control({ data: { action: "reconcile", poolId: pool.id } })}
                           icon={<RefreshCw />}
                           size="icon"
                           success="Pool reconciled with Docker."
+                          title={`Reconcile ${pool.name}`}
                         ><span className="sr-only">Reconcile {pool.name}</span></AsyncActionButton>
                         <AsyncActionButton
                           action={() => control({ data: { action: "delete", poolId: pool.id } })}
@@ -128,7 +132,8 @@ function RunnerPoolsPage() {
                           icon={<Trash2 />}
                           size="icon"
                           success="Runner pool deleted."
-                          variant="destructive"
+                          title={`Delete ${pool.name}`}
+                          variant="ghost"
                         ><span className="sr-only">Delete {pool.name}</span></AsyncActionButton>
                       </div> : <div className="flex justify-end"><Badge variant="outline">read only</Badge></div>}
                     </TableCell>
