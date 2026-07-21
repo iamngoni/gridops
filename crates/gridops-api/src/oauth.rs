@@ -195,7 +195,19 @@ pub async fn callback(
     .execute(&state.database)
     .await?;
 
-    sync_user_installations(&state, &user_id, &access_token).await?;
+    if state
+        .github_app_credentials()
+        .await
+        .map_err(ApiError::Internal)?
+        .is_some()
+    {
+        sync_user_installations(&state, &user_id, &access_token).await?;
+    } else {
+        tracing::info!(
+            user = %profile.login,
+            "bootstrap OAuth login completed; installation sync awaits GitHub App setup"
+        );
+    }
     let cookie = create_session(
         &state,
         &user_id,
@@ -226,6 +238,16 @@ pub async fn callback(
 }
 
 pub async fn sync(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<Value>> {
+    if state
+        .github_app_credentials()
+        .await
+        .map_err(ApiError::Internal)?
+        .is_none()
+    {
+        return Err(ApiError::Conflict(
+            "Create the controller GitHub App before synchronizing installations.".into(),
+        ));
+    }
     let token = user_access_token(&state, &user.id).await?;
     sync_user_installations(&state, &user.id, &token).await?;
     let count = sqlx::query(
