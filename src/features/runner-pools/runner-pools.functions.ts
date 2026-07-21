@@ -1,4 +1,9 @@
-import { createRunnerPoolSchema, type CreateRunnerPoolInput } from "./schemas";
+import {
+  createRunnerPoolSchema,
+  type CreateRunnerPoolInput,
+  updateRunnerPoolSchema,
+  type UpdateRunnerPoolInput,
+} from "./schemas";
 import { api } from "~/lib/api";
 
 type BaseOptions = {
@@ -21,11 +26,47 @@ export type RunnerPoolOptions = (BaseOptions & {
   };
 });
 
+export type RunnerPoolDetail = {
+  id: string;
+  installationId: number;
+  repositoryId: number | null;
+  repository: string | null;
+  accountLogin: string;
+  name: string;
+  scope: "repository" | "organization";
+  mode: "ephemeral" | "persistent";
+  labels: string[];
+  image: string;
+  desiredCount: number;
+  minCount: number;
+  maxCount: number;
+  cpuLimit: number;
+  memoryLimitMb: number;
+  runnerGroupId: number;
+  paused: boolean;
+  state: string;
+  autoscalingEnabled: boolean;
+  queueScaleFactor: number;
+  idleTimeoutMinutes: number;
+  configurationVersion: number;
+};
+
 export const getCreateRunnerPoolOptions = () => api<RunnerPoolOptions>("/api/v1/runner-pools/options");
+export const getRunnerPoolAction = ({ data }: { data: { poolId: string } }) =>
+  api<RunnerPoolDetail>(`/api/v1/runner-pools/${data.poolId}`);
 
 export function createRunnerPoolAction({ data }: { data: CreateRunnerPoolInput }) {
   const input = createRunnerPoolSchema.parse(data);
   return api<{ id: string }>("/api/v1/runner-pools", { method: "POST", body: input });
+}
+
+export function updateRunnerPoolAction({ data }: { data: UpdateRunnerPoolInput & { poolId: string } }) {
+  const { poolId, ...values } = data;
+  const input = updateRunnerPoolSchema.parse(values);
+  return api<{ ok: true; configurationVersion: number; rollingReplacement: boolean }>(
+    `/api/v1/runner-pools/${poolId}`,
+    { method: "PUT", body: input },
+  );
 }
 
 export function runnerPoolAction({ data }: { data: {

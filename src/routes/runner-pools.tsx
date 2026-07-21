@@ -1,5 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { Boxes, Minus, Pause, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Link, createFileRoute } from "@tanstack/react-router";
+import { Boxes, Minus, Pause, Play, Plus, RefreshCw, Settings2, Trash2 } from "lucide-react";
 
 import { AsyncActionButton } from "~/components/async-action-button";
 import { ResourcePage } from "~/components/resource-page";
@@ -50,7 +50,7 @@ function RunnerPoolsPage() {
                 {data.items.map((pool) => (
                   <TableRow key={pool.id}>
                     <TableCell>
-                      <div className="font-medium">{pool.name}</div>
+                      <Link className="font-medium hover:text-primary" params={{ poolId: pool.id }} to="/runner-pools/$poolId">{pool.name}</Link>
                       <div className="mt-1 flex flex-wrap gap-1">
                         {pool.labels.slice(0, 3).map((label) => <Badge key={label} variant="outline">{label}</Badge>)}
                       </div>
@@ -66,6 +66,7 @@ function RunnerPoolsPage() {
                     <TableCell>
                       <div className="text-xs">{pool.onlineRunners} online · {pool.busyRunners} busy</div>
                       <div className="mt-1 text-[11px] text-muted-foreground">{pool.totalRunners} managed · {pool.failedRunners} failed</div>
+                      {pool.outdatedRunners > 0 ? <div className="mt-1 text-[11px] text-amber-300">{pool.outdatedRunners} awaiting update</div> : null}
                     </TableCell>
                     <TableCell className="text-xs">
                       {pool.cpuLimit} CPU · {pool.memoryLimitMb} MB
@@ -74,6 +75,7 @@ function RunnerPoolsPage() {
                     <TableCell><StatusBadge status={pool.paused ? "paused" : pool.state} /></TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-1">
+                        <Link aria-label={`Edit ${pool.name}`} className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" params={{ poolId: pool.id }} to="/runner-pools/$poolId"><Settings2 className="size-4" /></Link>
                         <AsyncActionButton
                           action={() => control({ data: { action: "scale", poolId: pool.id, desiredCount: pool.desiredCount - 1 } })}
                           disabled={pool.desiredCount <= pool.minCount || pool.paused}

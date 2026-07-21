@@ -13,7 +13,8 @@ export type RunnerPool = {
   id: string; name: string; scope: string; mode: string; labels: string[]; image: string;
   desiredCount: number; minCount: number; maxCount: number; cpuLimit: number; memoryLimitMb: number;
   paused: boolean; state: string; accountLogin: string; repository: string | null;
-  totalRunners: number; onlineRunners: number; busyRunners: number; failedRunners: number; createdAt: string;
+  totalRunners: number; onlineRunners: number; busyRunners: number; failedRunners: number;
+  outdatedRunners: number; createdAt: string;
 };
 
 export type Runner = {

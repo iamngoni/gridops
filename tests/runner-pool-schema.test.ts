@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createRunnerPoolSchema } from "~/features/runner-pools/schemas";
+import { createRunnerPoolSchema, updateRunnerPoolSchema } from "~/features/runner-pools/schemas";
 
 const validPool = {
   installationId: 123,
@@ -44,5 +44,13 @@ describe("runner pool validation", () => {
   it("rejects unsafe names and excessive resources", () => {
     expect(createRunnerPoolSchema.safeParse({ ...validPool, name: "Bad Pool" }).success).toBe(false);
     expect(createRunnerPoolSchema.safeParse({ ...validPool, cpuLimit: 128 }).success).toBe(false);
+  });
+
+  it("validates editable configuration without allowing a destination change", () => {
+    const { installationId: _installationId, repositoryId: _repositoryId, scope: _scope, ...configuration } = validPool;
+    expect(updateRunnerPoolSchema.parse(configuration)).toEqual(configuration);
+    expect(updateRunnerPoolSchema.safeParse({ ...configuration, desiredCount: 11, maxCount: 10 }).success).toBe(false);
+    expect(updateRunnerPoolSchema.safeParse({ ...configuration, installationId: 999 }).success).toBe(true);
+    expect("installationId" in updateRunnerPoolSchema.parse({ ...configuration, installationId: 999 })).toBe(false);
   });
 });
