@@ -40,7 +40,7 @@ export function runnerPoolAction({ data }: { data: {
 
 export function runnerAction({ data }: { data: {
   runnerId: string;
-  action: "stop" | "pause" | "resume" | "restart" | "rebuild" | "delete";
+  action: "start" | "stop" | "pause" | "resume" | "restart" | "rebuild" | "delete";
 } }) {
   return api<{ ok: true }>(`/api/v1/runners/${data.runnerId}/action`, { method: "POST", body: { action: data.action } });
 }

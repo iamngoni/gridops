@@ -48,8 +48,9 @@ export type AuditEvent = {
 };
 
 export type LogTarget = {
-  id: string; name: string; status: string; busy: boolean; containerId: string;
-  updatedAt: string; poolName: string; repository: string | null;
+  id: string; runnerId?: string | null; name: string; status: string; busy: boolean;
+  containerId: string | null; updatedAt: string; poolName: string; repository: string | null;
+  kind: "live" | "archive"; sizeBytes?: number;
 };
 
 export type SettingsPage = {
@@ -83,6 +84,8 @@ export const workflowRunAction = ({ data }: { data: { runId: number; action: "ca
   api<{ ok: true }>(`/api/v1/workflow-runs/${data.runId}/action`, { method: "POST", body: { action: data.action } });
 export const runnerLogsAction = ({ data }: { data: { runnerId: string } }) =>
   api<{ runnerId: string; name: string; logs: string }>(`/api/v1/runners/${data.runnerId}/logs`);
+export const archivedLogsAction = ({ data }: { data: { streamId: string } }) =>
+  api<{ streamId: string; name: string; logs: string }>(`/api/v1/log-streams/${data.streamId}/logs`);
 export const searchAction = ({ data }: { data: { query: string } }) =>
   api<Array<{ kind: string; id: string; title: string; subtitle: string; href: string }>>(`/api/v1/search?q=${encodeURIComponent(data.query)}`);
 export const retryWebhookAction = ({ data }: { data: { deliveryId: string } }) =>

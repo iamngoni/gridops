@@ -63,11 +63,13 @@ function RunnersPage() {
                 <TableCell><div className="flex justify-end gap-1">
                   {runner.status === "paused" ? (
                     <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "resume" } })} icon={<Play />} size="icon" success="Runner resumed."><span className="sr-only">Resume {runner.name}</span></AsyncActionButton>
-                  ) : (
+                  ) : runner.status === "stopped" && !runner.ephemeral ? (
+                    <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "start" } })} icon={<Play />} size="icon" success="Runner started."><span className="sr-only">Start {runner.name}</span></AsyncActionButton>
+                  ) : runner.status !== "stopped" ? (
                     <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "pause" } })} disabled={runner.busy || !runner.containerId || runner.status === "stopped"} icon={<Pause />} size="icon" success="Runner paused."><span className="sr-only">Pause {runner.name}</span></AsyncActionButton>
-                  )}
+                  ) : null}
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "stop" } })} confirm={`Stop ${runner.name}?`} disabled={!runner.containerId || runner.status === "stopped"} icon={<Square />} size="icon" success="Runner stopped."><span className="sr-only">Stop {runner.name}</span></AsyncActionButton>
-                  <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "restart" } })} confirm={runner.busy ? `${runner.name} is busy. Restart it and interrupt the current job?` : undefined} disabled={!runner.containerId || runner.status === "stopped"} icon={<RotateCcw />} size="icon" success="Runner restarted."><span className="sr-only">Restart {runner.name}</span></AsyncActionButton>
+                  <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "restart" } })} confirm={runner.busy ? `${runner.name} is busy. Restart it and interrupt the current job?` : undefined} disabled={runner.ephemeral || !runner.containerId || runner.status === "stopped"} icon={<RotateCcw />} size="icon" success="Runner restarted."><span className="sr-only">Restart {runner.name}</span></AsyncActionButton>
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "rebuild" } })} confirm={`Rebuild ${runner.name}? GridOps will replace it with a newly registered container.`} disabled={runner.busy} icon={<RefreshCw />} size="icon" success="Runner rebuilt."><span className="sr-only">Rebuild {runner.name}</span></AsyncActionButton>
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "delete" } })} confirm={`Delete ${runner.name} from Docker and GitHub?`} icon={<Trash2 />} size="icon" success="Runner deleted." variant="destructive"><span className="sr-only">Delete {runner.name}</span></AsyncActionButton>
                 </div></TableCell>

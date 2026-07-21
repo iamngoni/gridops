@@ -6,7 +6,7 @@ import { ResourcePage } from "~/components/resource-page";
 import { StatusBadge } from "~/components/status-badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
-import { getLiveLogsPage, runnerLogsAction } from "~/features/operations/operations.functions";
+import { archivedLogsAction, getLiveLogsPage, runnerLogsAction } from "~/features/operations/operations.functions";
 
 export const Route = createFileRoute("/live-logs")({
   loader: () => getLiveLogsPage(),
@@ -16,17 +16,21 @@ export const Route = createFileRoute("/live-logs")({
 function LiveLogsPage() {
   const data = Route.useLoaderData();
   const getLogs = runnerLogsAction;
+  const getArchive = archivedLogsAction;
   const [runnerId, setRunnerId] = useState(data.items[0]?.id ?? "");
   const [logs, setLogs] = useState("");
   const [streaming, setStreaming] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const selected = data.items.find((item) => item.id === runnerId);
 
   const refresh = useCallback(async () => {
-    if (!runnerId) return;
+    if (!selected) return;
     setLoading(true);
     try {
-      const response = await getLogs({ data: { runnerId } });
+      const response = selected.kind === "archive"
+        ? await getArchive({ data: { streamId: selected.id } })
+        : await getLogs({ data: { runnerId: selected.id } });
       setLogs(response.logs || "No container output yet.");
       setError(null);
     } catch (cause) {
@@ -34,19 +38,60 @@ function LiveLogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [getLogs, runnerId]);
+  }, [getArchive, getLogs, selected]);
 
   useEffect(() => {
-    const initial = window.setTimeout(() => void refresh(), 0);
-    if (!streaming) return () => window.clearTimeout(initial);
-    const interval = window.setInterval(() => void refresh(), 2_000);
-    return () => {
-      window.clearTimeout(initial);
-      window.clearInterval(interval);
-    };
-  }, [refresh, streaming]);
+    if (!selected) return undefined;
+    if (selected.kind === "archive" || !streaming) {
+      const initial = window.setTimeout(() => void refresh(), 0);
+      return () => window.clearTimeout(initial);
+    }
 
-  const selected = data.items.find((item) => item.id === runnerId);
+    let cancelled = false;
+    let controller: AbortController | undefined;
+    void (async () => {
+      await delay(0);
+      if (cancelled) return;
+      setLogs("");
+      setError(null);
+      setLoading(true);
+      let tail = "500";
+      while (!cancelled) {
+        controller = new AbortController();
+        try {
+          const response = await fetch(`/api/v1/runners/${encodeURIComponent(selected.id)}/logs/stream?tail=${tail}`, {
+            credentials: "same-origin",
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            const body = await response.json().catch(() => null) as { error?: string } | null;
+            throw new Error(body?.error ?? `Log stream failed (${response.status}).`);
+          }
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error("This browser cannot read streaming responses.");
+          const decoder = new TextDecoder();
+          setLoading(false);
+          while (!cancelled) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            if (chunk) setLogs((current) => trimLog(`${current}${chunk}`));
+          }
+          tail = "0";
+          if (!cancelled) await delay(250);
+        } catch (cause) {
+          if (cancelled || controller.signal.aborted) break;
+          setLoading(false);
+          setError(cause instanceof Error ? cause.message : "Could not stream runner logs.");
+          await delay(1_000);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      controller?.abort();
+    };
+  }, [refresh, selected, streaming]);
 
   return (
     <ResourcePage
@@ -70,9 +115,9 @@ function LiveLogsPage() {
           </CardContent></Card>
           <Card className="min-w-0 overflow-hidden">
             <CardHeader>
-              <div><CardTitle className="flex items-center gap-2"><Terminal className="size-4" />{selected?.name ?? "Runner output"}</CardTitle><p className="mt-1 text-[11px] text-muted-foreground">Last 500 Docker log lines · refreshes every 2 seconds</p></div>
+              <div><CardTitle className="flex items-center gap-2"><Terminal className="size-4" />{selected?.name ?? "Runner output"}</CardTitle><p className="mt-1 text-[11px] text-muted-foreground">{selected?.kind === "archive" ? `Retained Docker log · ${formatBytes(selected.sizeBytes ?? 0)}` : "Streaming Docker output · reconnects automatically"}</p></div>
               <div className="flex gap-1">
-                <Button onClick={() => setStreaming((value) => !value)} size="sm" variant="outline">{streaming ? <Pause /> : <Play />}{streaming ? "Pause stream" : "Resume stream"}</Button>
+                {selected?.kind === "live" ? <Button onClick={() => setStreaming((value) => !value)} size="sm" variant="outline">{streaming ? <Pause /> : <Play />}{streaming ? "Pause stream" : "Resume stream"}</Button> : null}
                 <Button disabled={loading} onClick={() => void refresh()} size="icon" variant="outline">{loading ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}<span className="sr-only">Refresh logs</span></Button>
               </div>
             </CardHeader>
@@ -85,4 +130,20 @@ function LiveLogsPage() {
       ) : undefined}
     </ResourcePage>
   );
+}
+
+const MAX_LOG_CHARACTERS = 1_000_000;
+
+function trimLog(value: string) {
+  return value.length > MAX_LOG_CHARACTERS ? value.slice(-MAX_LOG_CHARACTERS) : value;
+}
+
+function delay(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1_024) return `${bytes} B`;
+  if (bytes < 1_048_576) return `${(bytes / 1_024).toFixed(1)} KB`;
+  return `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
