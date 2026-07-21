@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute } from "@tanstack/react-router";
 import { Activity, Pause, Play, RefreshCw, RotateCcw, Square, Trash2 } from "lucide-react";
 
 import { AsyncActionButton } from "~/components/async-action-button";
@@ -47,13 +47,17 @@ function RunnersPage() {
                   <div className="mt-1 text-[11px] text-muted-foreground">{runner.os}/{runner.architecture} · {runner.ephemeral ? "ephemeral" : "persistent"}</div>
                 </TableCell>
                 <TableCell>
-                  <div className="text-xs">{runner.poolName}</div>
+                  <Link className="text-xs hover:text-primary" params={{ poolId: runner.poolId }} to="/runner-pools/$poolId">{runner.poolName}</Link>
                   <div className="mt-1 text-[11px] text-muted-foreground">{runner.repository ?? runner.accountLogin}</div>
                 </TableCell>
                 <TableCell className="font-mono text-xs">{runner.githubRunnerId ?? "pending"}</TableCell>
                 <TableCell>
                   <div className="max-w-36 truncate font-mono text-[11px]" title={String(runner.containerId ?? "")}>{runner.containerId ? String(runner.containerId).slice(0, 12) : "—"}</div>
-                  {runner.currentJobName ? <Badge className="mt-1" variant="info">{String(runner.currentJobName)}</Badge> : null}
+                  {runner.currentJobName ? runner.currentRunId ? (
+                    <Link params={{ runId: String(runner.currentRunId) }} to="/workflow-runs/$runId">
+                      <Badge className="mt-1 hover:bg-sky-500/20" variant="info">{String(runner.currentJobName)}</Badge>
+                    </Link>
+                  ) : <Badge className="mt-1" variant="info">{String(runner.currentJobName)}</Badge> : null}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {runner.lastHeartbeatAt ? formatRelativeTime(String(runner.lastHeartbeatAt)) : "Never"}
