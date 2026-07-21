@@ -51,7 +51,12 @@ export type WorkflowRunDetail = Omit<WorkflowRun, "jobCount" | "activeJobs" | "f
 export type WebhookDelivery = {
   id: string; event: string; action: string | null; installationId: number | null;
   repositoryId: number | null; signatureValid: boolean; status: string; error: string | null;
-  receivedAt: string; processedAt: string | null; accountLogin: string | null; repository: string | null; canRetry: boolean;
+  receivedAt: string; processedAt: string | null; accountLogin: string | null; repository: string | null;
+  canRetry: boolean; hasPayload: boolean;
+};
+
+export type WebhookPayload = {
+  id: string; event: string; payload: unknown | null; payloadBytes: number;
 };
 
 export type AuditEvent = {
@@ -113,6 +118,8 @@ export const searchAction = ({ data }: { data: { query: string } }) =>
   api<Array<{ kind: string; id: string; title: string; subtitle: string; href: string }>>(`/api/v1/search?q=${encodeURIComponent(data.query)}`);
 export const retryWebhookAction = ({ data }: { data: { deliveryId: string } }) =>
   api<{ ok: true }>(`/api/v1/webhooks/${data.deliveryId}/retry`, { method: "POST" });
+export const getWebhookPayloadAction = ({ data }: { data: { deliveryId: string } }) =>
+  api<WebhookPayload>(`/api/v1/webhooks/${encodeURIComponent(data.deliveryId)}`);
 export const saveSettingsAction = ({ data }: { data: {
   logRetentionDays: number; webhookRetentionDays: number; auditRetentionDays: number;
   reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean;

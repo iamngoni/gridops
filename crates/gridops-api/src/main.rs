@@ -148,6 +148,10 @@ async fn main() -> Result<()> {
         )
         .route("/api/v1/webhooks", get(resources::webhook_deliveries))
         .route(
+            "/api/v1/webhooks/{delivery_id}",
+            get(resources::webhook_delivery),
+        )
+        .route(
             "/api/v1/webhooks/{delivery_id}/retry",
             post(webhooks::retry),
         )

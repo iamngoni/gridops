@@ -249,6 +249,31 @@ mod tests {
                 .iter()
                 .any(|row| row.get::<String, _>("name") == "role")
         );
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO installations (id,account_id,account_login,account_type,target_type,repository_selection,created_at,updated_at)
+              VALUES (1,1,'iamngoni','User','User','selected',1,1);
+            INSERT INTO repositories (id,installation_id,owner,name,full_name,private,default_branch,html_url,last_synced_at,created_at,updated_at)
+              VALUES
+                (10,1,'iamngoni','gridops','iamngoni/gridops',0,'master','https://github.com/iamngoni/gridops',1,1,1),
+                (11,1,'iamngoni','tgpatcher','iamngoni/tgpatcher',1,'main','https://github.com/iamngoni/tgpatcher',1,1,1);
+            INSERT INTO runner_pools (id,installation_id,name,scope,labels,image,created_at,updated_at)
+              VALUES ('pool-1',1,'homelab','repository','["homelab"]','runner:latest',1,1);
+            INSERT INTO runner_pool_repositories (pool_id,repository_id,created_at)
+              VALUES ('pool-1',10,1),('pool-1',11,1);
+            INSERT INTO runners (id,pool_id,target_repository_id,github_runner_id,name,created_at,updated_at)
+              VALUES
+                ('runner-1','pool-1',10,61,'homelab-gridops',1,1),
+                ('runner-2','pool-1',11,61,'homelab-tgpatcher',1,1);
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+        let shared_github_id =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM runners WHERE github_runner_id=61")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(shared_github_id, 2);
         pool.close().await;
         fs::remove_dir_all(directory)?;
         Ok(())
@@ -307,7 +332,7 @@ mod tests {
             sqlx::query_scalar::<_, String>("SELECT role FROM users WHERE id='legacy-user'")
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(migration_count, 12);
+        assert_eq!(migration_count, 13);
         assert_eq!(preserved, "preserved");
         assert_eq!(migrated_role, "admin");
         pool.close().await;
