@@ -9,15 +9,21 @@ import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { archivedLogsAction, getLiveLogsPage, runnerLogsAction } from "~/features/operations/operations.functions";
 
 export const Route = createFileRoute("/live-logs")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    target: typeof search.target === "string" ? search.target : undefined,
+  }),
   loader: () => getLiveLogsPage(),
   component: LiveLogsPage,
 });
 
 function LiveLogsPage() {
   const data = Route.useLoaderData();
+  const search = Route.useSearch();
   const getLogs = runnerLogsAction;
   const getArchive = archivedLogsAction;
-  const [runnerId, setRunnerId] = useState(data.items[0]?.id ?? "");
+  const [runnerId, setRunnerId] = useState(
+    data.items.some((item) => item.id === search.target) ? String(search.target) : (data.items[0]?.id ?? ""),
+  );
   const [logs, setLogs] = useState("");
   const [streaming, setStreaming] = useState(true);
   const [loading, setLoading] = useState(false);

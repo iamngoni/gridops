@@ -29,6 +29,9 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
   const router = useRouter();
   const [pending, setPending] = useState(false);
   const [manifestPending, setManifestPending] = useState(false);
+  const [appOwnerType, setAppOwnerType] = useState<"user" | "organization">("user");
+  const [appOrganization, setAppOrganization] = useState("");
+  const [appName, setAppName] = useState("GridOps Self-Hosted");
 
   useEffect(() => {
     const search = new URLSearchParams(window.location.search);
@@ -43,7 +46,11 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
   async function createGitHubApp() {
     setManifestPending(true);
     try {
-      const setup = await createGitHubAppManifestAction({ data: { ownerType: "user" } });
+      const setup = await createGitHubAppManifestAction({ data: {
+        ownerType: appOwnerType,
+        organization: appOwnerType === "organization" ? appOrganization.trim() : undefined,
+        name: appName.trim() || undefined,
+      } });
       const form = document.createElement("form");
       form.action = `${setup.action}?state=${encodeURIComponent(setup.state)}`;
       form.method = "post";
@@ -112,7 +119,12 @@ function AuthenticatedSettings({ data }: { data: NonNullable<Extract<ReturnType<
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
                   GridOps can create a private GitHub App with the runner, Actions, installation, and webhook permissions it needs. GitHub returns the private key and webhook secret directly to this instance, where they are encrypted at rest.
                 </p>
-                <Button className="mt-3" disabled={manifestPending} onClick={() => void createGitHubApp()} type="button">
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-2"><span className="block text-[11px] font-medium">App owner</span><select className="gridops-select" value={appOwnerType} onChange={(event) => setAppOwnerType(event.target.value as typeof appOwnerType)}><option value="user">My GitHub account</option><option value="organization">An organization</option></select></label>
+                  <label className="space-y-2"><span className="block text-[11px] font-medium">App name</span><Input maxLength={100} onChange={(event) => setAppName(event.target.value)} value={appName} /></label>
+                  {appOwnerType === "organization" ? <label className="space-y-2 sm:col-span-2"><span className="block text-[11px] font-medium">Organization login</span><Input onChange={(event) => setAppOrganization(event.target.value)} placeholder="your-organization" required value={appOrganization} /></label> : null}
+                </div>
+                <Button className="mt-3" disabled={manifestPending || (appOwnerType === "organization" && !appOrganization.trim())} onClick={() => void createGitHubApp()} type="button">
                   {manifestPending ? <LoaderCircle className="animate-spin" /> : <Github />}
                   {manifestPending ? "Opening GitHub…" : "Create GitHub App"}
                 </Button>

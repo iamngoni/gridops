@@ -33,7 +33,8 @@ export type WorkflowRun = {
 
 export type WorkflowRunDetail = Omit<WorkflowRun, "jobCount" | "activeJobs" | "failedJobs"> & {
   jobs: Array<{ id: number; name: string; status: string; conclusion: string | null; runnerName: string | null;
-    runnerGroupName: string | null; labels: string[]; htmlUrl: string; startedAt: string | null; completedAt: string | null }>;
+    runnerGroupName: string | null; labels: string[]; htmlUrl: string; startedAt: string | null; completedAt: string | null;
+    liveRunnerId: string | null; archivedLogId: string | null }>;
 };
 
 export type WebhookDelivery = {

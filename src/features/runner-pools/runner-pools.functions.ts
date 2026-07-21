@@ -4,6 +4,7 @@ import { api } from "~/lib/api";
 type BaseOptions = {
   installations: Array<{ id: number; accountLogin: string; accountType: string }>;
   repositories: Array<{ id: number; installationId: number; fullName: string; private: boolean }>;
+  runnerGroups: Array<{ installationId: number; id: number; name: string; visibility: string; isDefault: boolean }>;
 };
 
 export type RunnerPoolOptions = (BaseOptions & {

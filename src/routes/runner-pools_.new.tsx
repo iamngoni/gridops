@@ -67,6 +67,13 @@ type RunnerPoolFormOptions = {
     fullName: string;
     private: boolean;
   }>;
+  runnerGroups: Array<{
+    installationId: number;
+    id: number;
+    name: string;
+    visibility: string;
+    isDefault: boolean;
+  }>;
   defaults: {
     image: string;
     labels: string[];
@@ -94,6 +101,11 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
     () => options.repositories.filter((repository) => repository.installationId === installationId),
     [installationId, options.repositories],
   );
+  const runnerGroups = useMemo(
+    () => options.runnerGroups.filter((group) => group.installationId === installationId),
+    [installationId, options.runnerGroups],
+  );
+  const defaultRunnerGroup = runnerGroups.find((group) => group.isDefault) ?? runnerGroups[0];
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -123,7 +135,9 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
           idleTimeoutMinutes: Number(form.get("idleTimeoutMinutes")),
           cpuLimit: Number(form.get("cpuLimit")),
           memoryLimitMb: Number(form.get("memoryLimitMb")),
-          runnerGroupId: Number(form.get("runnerGroupId")),
+          runnerGroupId: scope === "organization"
+            ? Number(form.get("runnerGroupId")) || defaultRunnerGroup?.id || 1
+            : 1,
         },
       });
       await navigate({ to: "/runner-pools" });
@@ -194,9 +208,17 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
               <Field className="md:col-span-2" label="Additional labels" hint="Comma-separated; the pool name is always included.">
                 <Input defaultValue={options.defaults.labels.join(", ")} name="labels" placeholder="docker, x64" />
               </Field>
-              <Field label="Runner group ID" hint="Use 1 for the default group.">
-                <Input defaultValue={options.defaults.runnerGroupId} min="1" name="runnerGroupId" type="number" required />
-              </Field>
+              {scope === "organization" ? (
+                <Field label="Runner group" hint={runnerGroups.length ? "Groups available to this GitHub App installation." : "GridOps could not discover groups; enter the GitHub runner group ID."}>
+                  {runnerGroups.length ? (
+                    <select className="gridops-select" defaultValue={defaultRunnerGroup?.id} key={installationId} name="runnerGroupId">
+                      {runnerGroups.map((group) => <option key={group.id} value={group.id}>{group.name}{group.isDefault ? " · Default" : ` · ${group.visibility}`}</option>)}
+                    </select>
+                  ) : (
+                    <Input defaultValue={options.defaults.runnerGroupId} min="1" name="runnerGroupId" type="number" required />
+                  )}
+                </Field>
+              ) : null}
             </CardContent>
           </Card>
 
