@@ -117,6 +117,10 @@ async fn main() -> Result<()> {
                 .delete(resources::delete_runner_pool),
         )
         .route(
+            "/api/v1/runner-pools/{pool_id}/events",
+            get(resources::runner_pool_events),
+        )
+        .route(
             "/api/v1/runner-pools/{pool_id}/action",
             post(resources::runner_pool_action),
         )

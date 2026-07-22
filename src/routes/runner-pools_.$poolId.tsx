@@ -1,8 +1,9 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, LoaderCircle, Save, Server, Settings2 } from "lucide-react";
+import { Activity, ArrowLeft, CircleAlert, CircleCheck, CircleX, LoaderCircle, Save, Server, Settings2 } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 
 import { AppShell } from "~/components/app-shell";
+import { ListPagination } from "~/components/list-pagination";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { StatusBadge } from "~/components/status-badge";
 import { Badge } from "~/components/ui/badge";
@@ -15,8 +16,10 @@ import {
   type RepositoryOption,
   type RunnerGroupOption,
   type RunnerPoolDetail,
+  type RunnerPoolEvent,
   getInstallationRunnerGroups,
   getRunnerPoolRepositories,
+  getRunnerPoolEvents,
   getRunnerPoolAction,
   updateRunnerPoolAction,
 } from "~/features/runner-pools/runner-pools.functions";
@@ -339,9 +342,72 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
             </Button>
           </div>
         </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.scope === "repository" ? `${pool.repositoryIds.length} repositories` : pool.accountLogin} /><ReadOnly label="Providers" value={(pool.providers?.length ? pool.providers : [pool.provider]).map((provider) => provider === "tart" ? "Tart · macOS ARM64" : "Docker · Linux").join(" + ")} /><ReadOnly label="Runner capacity" value={`${pool.desiredCount} target · ${pool.minCount}-${pool.maxCount} runners`} />{pool.providers.includes("docker") ? <ReadOnly label="Docker image" value={pool.dockerImage} /> : null}{pool.providers.includes("tart") ? <ReadOnly label="Tart base VM" value={pool.tartImage} /> : null}<ReadOnly label="Per-runner resources" value={`${pool.cpuLimit} CPU cores · ${pool.memoryLimitMb} MB memory`} /></CardContent></Card>}
+        <PoolActivity poolId={pool.id} />
       </div>
     </AppShell>
   );
+}
+
+type PoolActivityState =
+  | { status: "loading"; data: null; error: null }
+  | { status: "ready"; data: { items: RunnerPoolEvent[]; total: number; page: number; perPage: number }; error: null }
+  | { status: "error"; data: null; error: string };
+
+function PoolActivity({ poolId }: { poolId: string }) {
+  const [page, setPage] = useState(1);
+  const [state, setState] = useState<PoolActivityState>({ status: "loading", data: null, error: null });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const data = await getRunnerPoolEvents(poolId, page, controller.signal);
+        if (!cancelled) setState({ status: "ready", data, error: null });
+      } catch (cause) {
+        if (!cancelled && !(cause instanceof DOMException && cause.name === "AbortError")) {
+          setState({ status: "error", data: null, error: cause instanceof Error ? cause.message : "Pool activity could not be loaded." });
+        }
+      }
+    };
+    void load();
+    const interval = window.setInterval(() => void load(), 5_000);
+    return () => { cancelled = true; controller.abort(); window.clearInterval(interval); };
+  }, [page, poolId]);
+
+  return (
+    <Card className="mt-6">
+      <CardHeader>
+        <div className="flex items-start justify-between gap-3">
+          <div><CardTitle className="flex items-center gap-2"><Activity className="size-4 text-primary" />Pool activity</CardTitle><p className="mt-1 text-xs text-muted-foreground">Provisioning, capacity, autoscaling, runner, and workflow routing events for this pool.</p></div>
+          {state.status === "ready" ? <Badge variant="outline">{state.data.total} events</Badge> : null}
+        </div>
+      </CardHeader>
+      <CardContent className="px-0 pb-0">
+        {state.status === "loading" ? <div className="flex items-center gap-2 px-6 pb-6 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Loading pool activity…</div> : null}
+        {state.status === "error" ? <p className="mx-6 mb-6 rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-destructive" role="alert">{state.error}</p> : null}
+        {state.status === "ready" && state.data.items.length === 0 ? <p className="px-6 pb-6 text-sm text-muted-foreground">No lifecycle events have been recorded for this pool yet.</p> : null}
+        {state.status === "ready" && state.data.items.length > 0 ? <>
+          <div className="divide-y divide-border border-y border-border">
+            {state.data.items.map((event) => <PoolActivityRow event={event} key={event.id} />)}
+          </div>
+          <ListPagination itemCount={state.data.items.length} noun="pool events" onPageChange={setPage} page={state.data.page} perPage={state.data.perPage} total={state.data.total} />
+        </> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function PoolActivityRow({ event }: { event: RunnerPoolEvent }) {
+  const Icon = event.level === "error" ? CircleX : event.level === "warning" ? CircleAlert : CircleCheck;
+  const iconClass = event.level === "error" ? "text-red-500" : event.level === "warning" ? "text-amber-500" : "text-emerald-500";
+  let metadata = event.metadata;
+  try { metadata = JSON.stringify(JSON.parse(event.metadata), null, 2); } catch { /* Keep non-JSON metadata readable. */ }
+  return <div className="grid gap-2 px-6 py-4 sm:grid-cols-[auto_1fr_auto] sm:items-start">
+    <Icon className={cn("mt-0.5 size-4", iconClass)} />
+    <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{event.event}</span><Badge variant={event.level === "error" ? "destructive" : event.level === "warning" ? "outline" : "secondary"}>{event.level}</Badge></div><p className="mt-1 text-sm text-muted-foreground">{event.message}</p>{event.runnerId ? <p className="mt-1 font-mono text-[11px] text-muted-foreground">Runner {event.runnerId}</p> : null}{event.metadata && event.metadata !== "{}" ? <details className="group mt-2"><summary className="cursor-pointer text-[11px] text-primary/80 hover:text-primary">View event details</summary><pre className="mt-2 max-h-48 overflow-auto rounded-md bg-muted/40 p-3 text-[11px] leading-5 text-foreground/80">{metadata}</pre></details> : null}</div>
+    <time className="text-xs text-muted-foreground sm:text-right" dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleString()}</time>
+  </div>;
 }
 
 function ReadOnly({ label, value }: { label: string; value: string }) {

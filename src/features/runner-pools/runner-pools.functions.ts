@@ -80,9 +80,19 @@ export type RunnerPoolDetail = {
   canManage: boolean;
 };
 
+export type RunnerPoolEvent = {
+  id: string; runnerId: string | null; level: "info" | "warning" | "error"; event: string;
+  message: string; metadata: string; createdAt: string;
+};
+
 export const getCreateRunnerPoolOptions = () => api<RunnerPoolOptions>("/api/v1/runner-pools/options");
 export const getRunnerPoolAction = ({ data }: { data: { poolId: string } }) =>
   api<RunnerPoolDetail>(`/api/v1/runner-pools/${data.poolId}`);
+export const getRunnerPoolEvents = (poolId: string, page = 1, signal?: AbortSignal) =>
+  api<{ authenticated: boolean; items: RunnerPoolEvent[]; total: number; page: number; perPage: number }>(
+    `/api/v1/runner-pools/${encodeURIComponent(poolId)}/events?page=${page}&perPage=25`,
+    { signal },
+  );
 export const getInstallationRunnerGroups = (installationId: number, signal?: AbortSignal) =>
   api<{ items: RunnerGroupOption[] }>(`/api/v1/installations/${installationId}/runner-groups`, { signal });
 export const getInstallationRepositories = (installationId: number, signal?: AbortSignal) =>

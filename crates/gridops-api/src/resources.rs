@@ -860,6 +860,48 @@ pub async fn runner_pool(
     })))
 }
 
+pub async fn runner_pool_events(
+    State(state): State<AppState>,
+    Path(pool_id): Path<String>,
+    Query(query): Query<PaginationQuery>,
+    user: AuthUser,
+) -> ApiResult<Json<Value>> {
+    // Reuse the pool access check so lifecycle details never cross an
+    // installation boundary, even when a user knows another pool's id.
+    pool_access(&state, &user, &pool_id).await?;
+    let (requested_page, per_page) = pagination(query.page, query.per_page);
+    let total = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM runner_events WHERE pool_id=?")
+        .bind(&pool_id)
+        .fetch_one(&state.database)
+        .await?;
+    let (page, offset) = bounded_pagination(requested_page, total, per_page);
+    let rows = sqlx::query(
+        r#"SELECT id,runner_id,level,event,message,metadata,created_at
+        FROM runner_events WHERE pool_id=?
+        ORDER BY created_at DESC LIMIT ? OFFSET ?"#,
+    )
+    .bind(&pool_id)
+    .bind(per_page)
+    .bind(offset)
+    .fetch_all(&state.database)
+    .await?;
+    let items = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "id": row.get::<String, _>("id"),
+                "runnerId": row.try_get::<Option<String>, _>("runner_id").ok().flatten(),
+                "level": row.get::<String, _>("level"),
+                "event": row.get::<String, _>("event"),
+                "message": row.get::<String, _>("message"),
+                "metadata": row.get::<String, _>("metadata"),
+                "createdAt": iso(row.get::<i64, _>("created_at")),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(paginated_page(&items, total, page, per_page))
+}
+
 pub async fn update_runner_pool(
     State(state): State<AppState>,
     Path(pool_id): Path<String>,
