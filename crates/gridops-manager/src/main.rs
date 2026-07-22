@@ -365,8 +365,8 @@ impl ManagerLimits {
     fn from_environment(available_cpus: i64, total_memory_bytes: i64) -> Result<Self> {
         let available_cpus = available_cpus.max(1) as f64;
         let total_memory_mb = (total_memory_bytes / 1_024 / 1_024).max(512);
-        let default_cpu_budget = (available_cpus * 0.75).floor().max(1.0);
-        let default_memory_budget_mb = (total_memory_mb * 3 / 4).max(512);
+        let default_cpu_budget = (available_cpus * 0.95).max(1.0);
+        let default_memory_budget_mb = (total_memory_mb * 95 / 100).max(512);
         let cpu_budget = optional_env("GRIDOPS_RUNNER_CPU_BUDGET")?.unwrap_or(default_cpu_budget);
         let memory_budget_mb =
             optional_env("GRIDOPS_RUNNER_MEMORY_BUDGET_MB")?.unwrap_or(default_memory_budget_mb);
