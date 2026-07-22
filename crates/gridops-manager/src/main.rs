@@ -1199,8 +1199,32 @@ async fn ensure_network(docker: &Docker, name: &str) -> Result<(), ManagerError>
 async fn ensure_image(docker: &Docker, image: &str, pull_image: bool) -> Result<(), ManagerError> {
     match docker.inspect_image(image).await {
         Ok(_) if !pull_image => Ok(()),
-        Ok(_)
-        | Err(DockerError::DockerResponseServerError {
+        Ok(_) => match docker
+            .create_image(
+                Some(
+                    CreateImageOptionsBuilder::default()
+                        .from_image(image)
+                        .build(),
+                ),
+                None,
+                None,
+            )
+            .try_collect::<Vec<_>>()
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {
+                tracing::warn!(
+                    image,
+                    "could not refresh local runner image; continuing with the available local image"
+                );
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        },
+        Err(DockerError::DockerResponseServerError {
             status_code: 404, ..
         }) => {
             docker
