@@ -9,8 +9,11 @@ const configurationShape = {
     .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, "Use lowercase letters, numbers, and hyphens."),
   mode: z.enum(["ephemeral", "persistent"]),
   provider: z.enum(["docker", "tart"]),
+  providers: z.array(z.enum(["docker", "tart"])).min(1).max(2),
   labels: z.array(z.string().trim().min(1).max(64)).max(20),
   image: z.string().trim().min(1).max(300),
+  dockerImage: z.string().trim().min(1).max(300),
+  tartImage: z.string().trim().min(1).max(300),
   desiredCount: z.number().int().min(0).max(100),
   minCount: z.number().int().min(0).max(100),
   maxCount: z.number().int().min(1).max(100),
@@ -52,16 +55,20 @@ function validateCapacity(
 }
 
 function validateProvider(
-  value: { provider: "docker" | "tart"; mode: "ephemeral" | "persistent"; cpuLimit: number; memoryLimitMb: number },
+  value: { provider: "docker" | "tart"; providers: Array<"docker" | "tart">; mode: "ephemeral" | "persistent"; cpuLimit: number; memoryLimitMb: number },
   context: z.RefinementCtx,
 ) {
-  if (value.provider === "tart" && value.mode !== "ephemeral") {
-    context.addIssue({ code: "custom", path: ["mode"], message: "Tart runner pools must be ephemeral." });
+  if (new Set(value.providers).size !== value.providers.length || value.providers[0] !== value.provider) {
+    context.addIssue({ code: "custom", path: ["providers"], message: "Choose unique providers with the primary provider first." });
   }
-  if (value.provider === "tart" && !Number.isInteger(value.cpuLimit)) {
+  const includesTart = value.providers.includes("tart");
+  if (includesTart && value.mode !== "ephemeral") {
+    context.addIssue({ code: "custom", path: ["mode"], message: "Pools that include Tart must be ephemeral." });
+  }
+  if (includesTart && !Number.isInteger(value.cpuLimit)) {
     context.addIssue({ code: "custom", path: ["cpuLimit"], message: "Tart runners require whole CPU cores." });
   }
-  if (value.provider === "tart" && value.memoryLimitMb < 2_048) {
+  if (includesTart && value.memoryLimitMb < 2_048) {
     context.addIssue({ code: "custom", path: ["memoryLimitMb"], message: "Tart runners require at least 2048 MB of memory." });
   }
 }

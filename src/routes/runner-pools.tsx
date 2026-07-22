@@ -67,7 +67,9 @@ function RunnerPoolsPage() {
                     <TableCell>
                       <Link className="font-medium hover:text-primary" params={{ poolId: pool.id }} to="/runner-pools/$poolId">{pool.name}</Link>
                       <div className="mt-1 flex flex-wrap gap-1">
-                        <Badge variant="secondary">{pool.provider === "tart" ? "macOS · Tart" : "Linux · Docker"}</Badge>
+                        {(pool.providers?.length ? pool.providers : [pool.provider]).map((provider) => (
+                          <Badge key={provider} variant="secondary">{provider === "tart" ? "macOS · Tart" : "Linux · Docker"}</Badge>
+                        ))}
                         {pool.labels.slice(0, 3).map((label) => <Badge key={label} variant="outline">{label}</Badge>)}
                       </div>
                     </TableCell>
@@ -91,7 +93,9 @@ function RunnerPoolsPage() {
                     </TableCell>
                     <TableCell className="text-xs">
                       {pool.cpuLimit} CPU · {pool.memoryLimitMb} MB
-                      <div className="mt-1 max-w-40 truncate text-[11px] text-muted-foreground" title={pool.image}>{pool.image}</div>
+                      <div className="mt-1 max-w-40 truncate text-[11px] text-muted-foreground" title={(pool.providers?.length ? pool.providers : [pool.provider]).map((provider) => provider === "tart" ? pool.tartImage : pool.dockerImage).join(" · ")}>
+                        {(pool.providers?.length ? pool.providers : [pool.provider]).map((provider) => provider === "tart" ? pool.tartImage : pool.dockerImage).join(" · ")}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <StatusBadge status={pool.paused ? "paused" : pool.state} />
@@ -135,7 +139,7 @@ function RunnerPoolsPage() {
                           action={() => control({ data: { action: "reconcile", poolId: pool.id } })}
                           icon={<RefreshCw />}
                           size="icon"
-                          success={`Pool reconciled with ${pool.provider === "tart" ? "Tart" : "Docker"}.`}
+                          success="Pool reconciled across its runner providers."
                           title={`Reconcile ${pool.name}`}
                         ><span className="sr-only">Reconcile {pool.name}</span></AsyncActionButton>
                         <AsyncActionButton

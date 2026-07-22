@@ -15,8 +15,8 @@ use crate::{
     state::AppState,
 };
 use gridops_core::{
-    assigned_queued_jobs, associate_runner_with_job, now_millis, runner_supports_system_label,
-    scale_up_target,
+    assigned_queued_jobs, associate_runner_with_job, compatible_runner_provider, now_millis,
+    provider_capacities, provider_capacity_deficit, scale_up_target,
 };
 
 const MAX_WEBHOOK_BYTES: usize = 25 * 1024 * 1024;
@@ -594,7 +594,7 @@ async fn scale_for_queued_job(
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
     let candidates = sqlx::query(
-        r#"SELECT p.id,p.provider,p.labels,p.desired_count,p.max_count,p.queue_scale_factor,
+        r#"SELECT p.id,p.providers,p.labels,p.desired_count,p.max_count,p.queue_scale_factor,
           COUNT(CASE WHEN r.deleted_at IS NULL AND r.busy=1
             AND r.status IN ('online','idle','busy') THEN 1 END) AS busy_count
         FROM runner_pools p JOIN repositories event_repo ON event_repo.id=?
@@ -611,15 +611,11 @@ async fn scale_for_queued_job(
     .fetch_all(database)
     .await?;
     for candidate in candidates {
-        let provider = candidate.get::<String, _>("provider");
+        let providers: Vec<String> =
+            serde_json::from_str(candidate.get::<&str, _>("providers")).unwrap_or_default();
         let labels: Vec<String> =
             serde_json::from_str(candidate.get::<&str, _>("labels")).unwrap_or_default();
-        if !requested_labels.iter().all(|requested| {
-            runner_supports_system_label(&provider, requested)
-                || labels
-                    .iter()
-                    .any(|label| label.eq_ignore_ascii_case(requested))
-        }) {
+        if compatible_runner_provider(&providers, &requested_labels, &labels).is_none() {
             continue;
         }
         let pool_id = candidate.get::<String, _>("id");
@@ -628,7 +624,19 @@ async fn scale_for_queued_job(
         let busy = candidate.get::<i64, _>("busy_count");
         let queued = assigned_queued_jobs(database, &pool_id).await?;
         let factor = candidate.get::<i64, _>("queue_scale_factor");
-        let target = scale_up_target(desired, busy, queued, factor, maximum);
+        let provider_capacity =
+            provider_capacities(database, &pool_id, &providers, &labels).await?;
+        let active = provider_capacity
+            .iter()
+            .map(|capacity| capacity.active)
+            .sum::<i64>();
+        let placement_needed = provider_capacity
+            .iter()
+            .map(|capacity| provider_capacity_deficit(capacity, factor).max(0))
+            .sum::<i64>();
+        let target = scale_up_target(desired, busy, queued, factor, maximum)
+            .max(active.saturating_add(placement_needed))
+            .min(maximum);
         if target <= desired {
             return Ok(());
         }

@@ -6,9 +6,11 @@ pub mod github;
 pub mod models;
 
 pub use autoscaling::{
-    RepositoryCapacity, assigned_queued_jobs, effective_runner_labels, next_runner_repository,
-    repository_capacities, repository_capacity_deficit, runner_arch_label,
-    runner_supports_system_label, runner_system_labels, scale_up_target,
+    ProviderCapacity, RepositoryCapacity, assigned_queued_jobs, compatible_runner_provider,
+    effective_runner_labels, next_runner_provider, next_runner_repository, provider_capacities,
+    provider_capacity_deficit, provider_supports_labels, repository_capacities,
+    repository_capacity_deficit, runner_arch_label, runner_supports_system_label,
+    runner_system_labels, scale_up_target,
 };
 pub use config::Config;
 pub use crypto::Vault;

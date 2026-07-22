@@ -108,7 +108,9 @@ type RunnerPoolFormOptions = {
   }>;
   defaults: {
     provider: "docker" | "tart";
+    providers: Array<"docker" | "tart">;
     image: string;
+    dockerImage: string;
     tartImage: string;
     labels: string[];
     cpuLimit: number;
@@ -126,6 +128,8 @@ type RunnerPoolFormOptions = {
   installUrl: string;
 };
 
+type RunnerProvider = "docker" | "tart";
+
 type AsyncOptions<T> =
   | { status: "loading"; items: T[]; error: null }
   | { status: "ready"; items: T[]; error: null }
@@ -140,8 +144,11 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
   const [installationId, setInstallationId] = useState(options.installations[0]?.id ?? 0);
   const [repositoryIds, setRepositoryIds] = useState<number[]>([]);
   const [mode, setMode] = useState<"ephemeral" | "persistent">("ephemeral");
-  const [provider, setProvider] = useState<"docker" | "tart">(options.defaults.provider);
-  const [image, setImage] = useState(options.defaults.image);
+  const [providers, setProviders] = useState<RunnerProvider[]>(options.defaults.providers);
+  const provider = providers[0] ?? options.defaults.provider;
+  const includesTart = providers.includes("tart");
+  const [dockerImage, setDockerImage] = useState(options.defaults.dockerImage);
+  const [tartImage, setTartImage] = useState(options.defaults.tartImage);
   const [maxCount, setMaxCount] = useState(options.defaults.maxCount);
   const initialInstallation = options.installations.find((installation) => installation.id === installationId);
   const [repositoryLoad, setRepositoryLoad] = useState<AsyncOptions<RepositoryOption>>(
@@ -213,11 +220,14 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
           scope,
           mode,
           provider,
+          providers,
           labels: String(form.get("labels") ?? "")
             .split(",")
             .map((label) => label.trim())
             .filter(Boolean),
-          image: String(form.get("image") ?? ""),
+          image: provider === "tart" ? tartImage : dockerImage,
+          dockerImage,
+          tartImage,
           desiredCount: Number(form.get("desiredCount")),
           minCount: Number(form.get("minCount")),
           maxCount: Number(form.get("maxCount")),
@@ -313,6 +323,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                     }))}
                     placeholder="Choose one or more repositories…"
                     searchPlaceholder="Search by owner or repository name…"
+                    selectedNoun="repositories"
                     values={repositoryIds}
                   />
                   {repositoryLoad.status === "error" ? <span className="block text-[11px] text-destructive">{repositoryLoad.error}</span> : null}
@@ -325,31 +336,33 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
             <CardHeader><CardTitle>Runner definition</CardTitle></CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2">
               <Field label="Pool name" hint="Used as a runner label.">
-                <Input name="name" placeholder={provider === "tart" ? "macos-arm64" : "linux-general"} required pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" />
+                <Input name="name" placeholder={providers.length > 1 ? "cross-platform" : provider === "tart" ? "macos-arm64" : "linux-general"} required pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" />
               </Field>
-              <Field label="Runner provider" hint={provider === "tart" ? "Runs isolated Apple Virtualization VMs on the macOS host." : "Runs isolated Linux containers through the Docker manager."}>
-                <SearchableSelect
-                  ariaLabel="Runner provider"
-                  onValueChange={(nextProvider) => {
-                    const selected = nextProvider ?? "docker";
-                    setProvider(selected);
-                    setImage(selected === "tart" ? options.defaults.tartImage : options.defaults.image);
-                    if (selected === "tart") setMode("ephemeral");
+              <Field label="Runner providers" hint="Jobs are routed to the first selected provider whose system labels match. Capacity limits remain shared by the pool.">
+                <SearchableMultiSelect
+                  ariaLabel="Runner providers"
+                  maxSelected={2}
+                  onValueChange={(nextProviders) => {
+                    if (nextProviders.length === 0) return;
+                    setProviders(nextProviders);
+                    if (nextProviders.includes("tart")) setMode("ephemeral");
                   }}
                   options={[
                     { value: "docker", label: "Docker · Linux", description: "Fast Linux containers" },
                     { value: "tart", label: "Tart · macOS ARM64", description: "Copy-on-write macOS virtual machines" },
                   ]}
-                  searchable={false}
-                  value={provider}
+                  placeholder="Choose one or more providers…"
+                  searchPlaceholder="Search providers…"
+                  selectedNoun="providers"
+                  values={providers}
                 />
               </Field>
               <Field label="Mode">
                 <SearchableSelect
                   ariaLabel="Runner mode"
                   onValueChange={(nextMode) => setMode(nextMode ?? "ephemeral")}
-                  options={provider === "tart"
-                    ? [{ value: "ephemeral", label: "Ephemeral", description: "One clean VM per job" }]
+                  options={includesTart
+                    ? [{ value: "ephemeral", label: "Ephemeral", description: "One clean runner per job" }]
                     : [
                       { value: "ephemeral", label: "Ephemeral", description: "One clean runner per job" },
                       { value: "persistent", label: "Persistent", description: "Reuse the runner across jobs" },
@@ -358,11 +371,14 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                   value={mode}
                 />
               </Field>
-              <Field className="md:col-span-2" label={provider === "tart" ? "Tart base VM" : "Container image"} hint={provider === "tart" ? "A stopped, prepared local Tart VM. Each runner is an APFS copy-on-write clone." : "OCI image used to create each Linux runner."}>
-                <Input name="image" onChange={(event) => setImage(event.target.value)} required value={image} />
-              </Field>
-              <Field className="md:col-span-2" label="Additional labels" hint={`Comma-separated; ${provider === "tart" ? "self-hosted, macOS, ARM64, and " : "self-hosted, Linux, the host architecture, and "}the pool name are included automatically.`}>
-                <Input defaultValue={options.defaults.labels.join(", ")} name="labels" placeholder={provider === "tart" ? "xcode, apple-silicon" : "docker, build"} />
+              {providers.includes("docker") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Docker container image" hint="OCI image used for Linux runners.">
+                <Input name="dockerImage" onChange={(event) => setDockerImage(event.target.value)} required value={dockerImage} />
+              </Field> : null}
+              {providers.includes("tart") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Tart base VM" hint="Stopped, prepared local VM cloned copy-on-write for each macOS job.">
+                <Input name="tartImage" onChange={(event) => setTartImage(event.target.value)} required value={tartImage} />
+              </Field> : null}
+              <Field className="md:col-span-2" label="Additional labels" hint="Comma-separated custom labels shared by every provider. GridOps adds the provider-specific OS and architecture labels automatically.">
+                <Input defaultValue={options.defaults.labels.join(", ")} name="labels" placeholder={providers.length > 1 ? "build, release" : provider === "tart" ? "xcode, apple-silicon" : "docker, build"} />
               </Field>
               {scope === "organization" ? (
                 <Field label="Runner group" hint={runnerGroupLoad.status === "loading" ? "Loading runner groups from GitHub…" : runnerGroups.length ? "Groups available to this GitHub App installation." : "Enter the GitHub runner group ID."}>
@@ -396,8 +412,8 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
               <Field label="Target runners" hint="Runners GridOps should keep active now. Autoscaling may change this between the minimum and maximum."><Input defaultValue={options.defaults.desiredCount} min="0" max="100" name="desiredCount" type="number" required /></Field>
               <Field label="Minimum runners" hint="Lowest pool target after idle scale-down. Set 0 to scale all the way down."><Input defaultValue={options.defaults.minCount} min="0" max="100" name="minCount" type="number" required /></Field>
               <Field label="Maximum runners" hint={scope === "repository" ? "Highest pool target during scale-up. Must be at least the number of selected repositories." : "Highest pool target autoscaling can request."}><Input min={Math.max(1, repositoryIds.length)} max="100" name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} type="number" required value={maxCount} /></Field>
-              <Field label="CPU cores per runner" hint={provider === "tart" ? `Virtual CPU cores assigned to each macOS VM. Whole cores only; shared host budget: ${options.defaults.maxCpuLimit}.` : `Hard Docker CPU limit for each runner. Shared host budget: ${options.defaults.maxCpuLimit} logical CPUs.`}><Input defaultValue={options.defaults.cpuLimit} min={provider === "tart" ? "1" : "0.25"} max={options.defaults.maxCpuLimit} step={provider === "tart" ? "1" : "0.25"} name="cpuLimit" type="number" required /></Field>
-              <Field label="Memory per runner (MB)" hint={provider === "tart" ? `Memory assigned to each macOS VM. Minimum 2048 MB; shared host budget: ${options.defaults.maxMemoryLimitMb} MB.` : `Hard Docker memory limit. Shared host budget: ${options.defaults.maxMemoryLimitMb} MB.`}><Input defaultValue={Math.max(provider === "tart" ? 2048 : 256, Math.min(options.defaults.memoryLimitMb, options.defaults.maxMemoryLimitMb))} max={options.defaults.maxMemoryLimitMb} min={provider === "tart" ? "2048" : "256"} step="256" name="memoryLimitMb" type="number" required /></Field>
+              <Field label="CPU cores per runner" hint={includesTart ? `Applied to every backend; Tart requires whole cores. Shared host budget: ${options.defaults.maxCpuLimit}.` : `Hard Docker CPU limit. Shared host budget: ${options.defaults.maxCpuLimit} logical CPUs.`}><Input defaultValue={options.defaults.cpuLimit} min={includesTart ? "1" : "0.25"} max={options.defaults.maxCpuLimit} step={includesTart ? "1" : "0.25"} name="cpuLimit" type="number" required /></Field>
+              <Field label="Memory per runner (MB)" hint={includesTart ? `Applied to every backend; Tart requires at least 2048 MB. Shared host budget: ${options.defaults.maxMemoryLimitMb} MB.` : `Hard Docker memory limit. Shared host budget: ${options.defaults.maxMemoryLimitMb} MB.`}><Input defaultValue={Math.max(includesTart ? 2048 : 256, Math.min(options.defaults.memoryLimitMb, options.defaults.maxMemoryLimitMb))} max={options.defaults.maxMemoryLimitMb} min={includesTart ? "2048" : "256"} step="256" name="memoryLimitMb" type="number" required /></Field>
               <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 xl:col-span-3">
                 <input className="mt-0.5 size-4 accent-emerald-500" defaultChecked={options.defaults.autoscalingEnabled} name="autoscalingEnabled" type="checkbox" />
                 <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Queued workflow jobs raise the target up to Maximum runners. When every runner is idle, the target returns to Minimum runners after the delay below.</span></span>

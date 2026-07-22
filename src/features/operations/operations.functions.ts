@@ -20,7 +20,8 @@ export type Repository = {
 };
 
 export type RunnerPool = {
-  id: string; name: string; scope: string; mode: string; provider: "docker" | "tart"; labels: string[]; image: string;
+  id: string; name: string; scope: string; mode: string; provider: "docker" | "tart"; providers: Array<"docker" | "tart">; labels: string[]; image: string;
+  dockerImage: string; tartImage: string;
   desiredCount: number; minCount: number; maxCount: number; cpuLimit: number; memoryLimitMb: number;
   paused: boolean; state: string; accountLogin: string; repository: string | null; repositoryCount: number;
   provisionFailureCount: number; provisionRetryAt: string | null; provisionCircuitOpen: boolean;
@@ -30,7 +31,7 @@ export type RunnerPool = {
 };
 
 export type Runner = {
-  id: string; name: string; status: string; busy: boolean; ephemeral: boolean; os: string;
+  id: string; name: string; provider: "docker" | "tart"; status: string; busy: boolean; ephemeral: boolean; os: string;
   architecture: string; containerId: string | null; githubRunnerId: number | null;
   failureReason: string | null; registeredAt: string | null; lastHeartbeatAt: string | null;
   createdAt: string; poolId: string; poolName: string; poolPaused: boolean; accountLogin: string;

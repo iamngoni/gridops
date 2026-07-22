@@ -13,8 +13,11 @@ const validPool = {
   scope: "repository" as const,
   mode: "ephemeral" as const,
   provider: "docker" as const,
+  providers: ["docker" as const],
   labels: ["gridops", "docker"],
   image: "ghcr.io/actions/actions-runner:latest",
+  dockerImage: "ghcr.io/actions/actions-runner:latest",
+  tartImage: "gridops-macos-tahoe-base",
   desiredCount: 1,
   minCount: 0,
   maxCount: 10,
@@ -66,11 +69,26 @@ describe("runner pool validation", () => {
   });
 
   it("enforces Tart's ephemeral VM resource shape", () => {
-    const tartPool = { ...validPool, provider: "tart" as const, image: "gridops-macos-tahoe-base" };
+    const tartPool = {
+      ...validPool,
+      provider: "tart" as const,
+      providers: ["tart" as const],
+      image: "gridops-macos-tahoe-base",
+    };
     expect(createRunnerPoolSchema.safeParse(tartPool).success).toBe(true);
     expect(createRunnerPoolSchema.safeParse({ ...tartPool, mode: "persistent" }).success).toBe(false);
     expect(createRunnerPoolSchema.safeParse({ ...tartPool, cpuLimit: 1.5 }).success).toBe(false);
     expect(createRunnerPoolSchema.safeParse({ ...tartPool, memoryLimitMb: 1_024 }).success).toBe(false);
+  });
+
+  it("accepts a mixed Docker and Tart pool with one shared capacity limit", () => {
+    const mixedPool = {
+      ...validPool,
+      providers: ["docker" as const, "tart" as const],
+    };
+    expect(createRunnerPoolSchema.safeParse(mixedPool).success).toBe(true);
+    expect(createRunnerPoolSchema.safeParse({ ...mixedPool, mode: "persistent" }).success).toBe(false);
+    expect(createRunnerPoolSchema.safeParse({ ...mixedPool, providers: [] }).success).toBe(false);
   });
 
   it("validates editable configuration without allowing a destination change", () => {

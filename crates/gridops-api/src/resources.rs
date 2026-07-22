@@ -17,7 +17,7 @@ use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use gridops_core::{
     ConfigurationState, CreateRunnerPool, GitHubRepository, GitHubWorkflowJob, GitHubWorkflowStep,
     JitRequest, RepositoryCapacity, RepositoryPage, RunnerTarget, UpdateRunnerPool,
-    effective_runner_labels, next_runner_repository, now_millis,
+    effective_runner_labels, next_runner_provider, next_runner_repository, now_millis,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -54,8 +54,11 @@ struct PoolAccess {
     scope: String,
     mode: String,
     provider: String,
+    providers: String,
     labels: String,
     image: String,
+    docker_image: String,
+    tart_image: String,
     desired_count: i64,
     min_count: i64,
     max_count: i64,
@@ -80,6 +83,7 @@ struct RunnerAccess {
     runner_name: String,
     container_id: Option<String>,
     github_runner_id: Option<i64>,
+    provider: String,
     runner_status: String,
     busy: bool,
     ephemeral: bool,
@@ -707,7 +711,8 @@ pub async fn runner_pools(
     .await?;
     let (page, offset) = bounded_pagination(requested_page, total, per_page);
     let rows = sqlx::query(
-        r#"SELECT p.id,p.name,p.scope,p.mode,p.provider,p.labels,p.image,p.desired_count,p.min_count,
+        r#"SELECT p.id,p.name,p.scope,p.mode,p.provider,p.providers,p.labels,p.image,
+          p.docker_image,p.tart_image,p.desired_count,p.min_count,
           p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,p.paused,p.state,
           p.provision_failure_count,p.provision_retry_at,p.provision_circuit_open,i.account_login,
           CASE WHEN NOT EXISTS (
@@ -745,7 +750,9 @@ pub async fn runner_pools(
     let items = rows.iter().map(|row| json!({
         "id": row.get::<String,_>("id"), "name": row.get::<String,_>("name"), "scope": row.get::<String,_>("scope"),
         "mode": row.get::<String,_>("mode"), "provider": row.get::<String,_>("provider"),
+        "providers": json_array(row.get::<&str,_>("providers")),
         "labels": json_array(row.get::<&str,_>("labels")), "image": row.get::<String,_>("image"),
+        "dockerImage": row.get::<String,_>("docker_image"), "tartImage": row.get::<String,_>("tart_image"),
         "desiredCount": row.get::<i64,_>("desired_count"), "minCount": row.get::<i64,_>("min_count"), "maxCount": row.get::<i64,_>("max_count"),
         "cpuLimit": row.get::<f64,_>("cpu_limit"), "memoryLimitMb": row.get::<i64,_>("memory_limit_mb"),
         "paused": row.get::<bool,_>("paused"), "state": row.get::<String,_>("state"), "accountLogin": row.get::<String,_>("account_login"),
@@ -827,10 +834,11 @@ pub async fn runner_pool(
         "scope": pool.scope,
         "mode": pool.mode,
         "provider": pool.provider,
+        "providers": json_array(&pool.providers),
         "labels": additional_labels,
         "image": pool.image,
-        "dockerImage": state.config.runner_image(),
-        "tartImage": default_tart_image(),
+        "dockerImage": pool.docker_image,
+        "tartImage": pool.tart_image,
         "desiredCount": pool.desired_count,
         "minCount": pool.min_count,
         "maxCount": pool.max_count,
@@ -920,6 +928,20 @@ pub async fn update_runner_pool(
     let labels = normalized_pool_labels(&input.name, &input.labels)?;
     let encoded_labels =
         serde_json::to_string(&labels).map_err(|error| ApiError::Internal(error.into()))?;
+    let providers = input.selected_providers();
+    let primary_provider = providers
+        .first()
+        .cloned()
+        .ok_or_else(|| ApiError::BadRequest("Choose at least one runner provider.".into()))?;
+    let encoded_providers =
+        serde_json::to_string(&providers).map_err(|error| ApiError::Internal(error.into()))?;
+    let docker_image = input.selected_docker_image();
+    let tart_image = input.selected_tart_image();
+    let primary_image = if primary_provider == "tart" {
+        &tart_image
+    } else {
+        &docker_image
+    };
     let runner_group_id = if pool.scope == "repository" {
         1
     } else {
@@ -930,9 +952,12 @@ pub async fn update_runner_pool(
     let repositories_changed = existing != requested;
     let runtime_changed = pool.name != input.name
         || pool.mode != input.mode
-        || pool.provider != input.provider
+        || pool.provider != primary_provider
+        || pool.providers != encoded_providers
         || pool.labels != encoded_labels
-        || pool.image != input.image
+        || pool.image != primary_image.as_str()
+        || pool.docker_image != docker_image
+        || pool.tart_image != tart_image
         || (pool.cpu_limit - input.cpu_limit).abs() > f64::EPSILON
         || pool.memory_limit_mb != input.memory_limit_mb
         || pool.runner_group_id != runner_group_id
@@ -941,7 +966,7 @@ pub async fn update_runner_pool(
     let now = now_millis();
     let mut transaction = state.database.begin().await?;
     let result = sqlx::query(
-        r#"UPDATE runner_pools SET installation_id=?,name=?,mode=?,provider=?,labels=?,image=?,desired_count=?,min_count=?,
+        r#"UPDATE runner_pools SET installation_id=?,name=?,mode=?,provider=?,providers=?,labels=?,image=?,docker_image=?,tart_image=?,desired_count=?,min_count=?,
           max_count=?,cpu_limit=?,memory_limit_mb=?,ephemeral=?,runner_group_id=?,
           autoscaling_enabled=?,queue_scale_factor=?,idle_timeout_minutes=?,
           repository_id=?,
@@ -952,9 +977,12 @@ pub async fn update_runner_pool(
     .bind(primary_installation_id)
     .bind(&input.name)
     .bind(&input.mode)
-    .bind(&input.provider)
+    .bind(&primary_provider)
+    .bind(&encoded_providers)
     .bind(&encoded_labels)
-    .bind(&input.image)
+    .bind(primary_image)
+    .bind(&docker_image)
+    .bind(&tart_image)
     .bind(input.desired_count)
     .bind(input.min_count)
     .bind(input.max_count)
@@ -1005,6 +1033,7 @@ pub async fn update_runner_pool(
         Some(&pool_id),
         json!({
             "name": input.name,
+            "providers": providers,
             "desiredCount": input.desired_count,
             "runtimeConfigurationChanged": runtime_changed,
             "repositoryIds": repository_ids,
@@ -1043,7 +1072,7 @@ pub async fn runners(
     .await?;
     let (page, offset) = bounded_pagination(requested_page, total, per_page);
     let rows = sqlx::query(
-        r#"SELECT r.id,r.name,r.status,r.busy,r.ephemeral,r.os,r.architecture,r.container_id,
+        r#"SELECT r.id,r.name,r.provider,r.status,r.busy,r.ephemeral,r.os,r.architecture,r.container_id,
           r.github_runner_id,r.failure_reason,r.registered_at,r.last_heartbeat_at,r.created_at,
           p.id AS pool_id,p.name AS pool_name,p.paused AS pool_paused,
           COALESCE(target_installation.account_login,primary_installation.account_login) AS account_login,
@@ -1076,7 +1105,7 @@ pub async fn runners(
     .await?;
     let items = rows.iter().map(|row| json!({
         "id": row.get::<String,_>("id"), "name": row.get::<String,_>("name"), "status": row.get::<String,_>("status"),
-        "busy": row.get::<bool,_>("busy"), "ephemeral": row.get::<bool,_>("ephemeral"), "os": row.get::<String,_>("os"),
+        "provider": row.get::<String,_>("provider"), "busy": row.get::<bool,_>("busy"), "ephemeral": row.get::<bool,_>("ephemeral"), "os": row.get::<String,_>("os"),
         "architecture": row.get::<String,_>("architecture"), "containerId": row.try_get::<Option<String>,_>("container_id").ok().flatten(),
         "githubRunnerId": row.try_get::<Option<i64>,_>("github_runner_id").ok().flatten(),
         "failureReason": row.try_get::<Option<String>,_>("failure_reason").ok().flatten(),
@@ -1559,6 +1588,20 @@ pub async fn create_runner_pool(
         .map_or(input.installation_id, |item| item.installation.id);
     let pool_id = uuid::Uuid::new_v4().to_string();
     let labels = normalized_pool_labels(&input.name, &input.labels)?;
+    let providers = input.selected_providers();
+    let primary_provider = providers
+        .first()
+        .cloned()
+        .ok_or_else(|| ApiError::BadRequest("Choose at least one runner provider.".into()))?;
+    let encoded_providers =
+        serde_json::to_string(&providers).map_err(|error| ApiError::Internal(error.into()))?;
+    let docker_image = input.selected_docker_image();
+    let tart_image = input.selected_tart_image();
+    let primary_image = if primary_provider == "tart" {
+        &tart_image
+    } else {
+        &docker_image
+    };
     let runner_group_id = if input.scope == "repository" {
         1
     } else {
@@ -1568,14 +1611,16 @@ pub async fn create_runner_pool(
     let mut transaction = state.database.begin().await?;
     let result = sqlx::query(
         r#"INSERT INTO runner_pools (
-          id,installation_id,repository_id,name,scope,mode,provider,labels,image,desired_count,min_count,
+          id,installation_id,repository_id,name,scope,mode,provider,providers,labels,image,docker_image,tart_image,desired_count,min_count,
           max_count,cpu_limit,memory_limit_mb,ephemeral,paused,state,created_by,created_at,updated_at,
           runner_group_id,autoscaling_enabled,queue_scale_factor,idle_timeout_minutes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'active',?,?,?,?,?,?,?)"#,
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'active',?,?,?,?,?,?,?)"#,
     )
     .bind(&pool_id).bind(primary_installation_id).bind(repository_ids.first().copied()).bind(&input.name)
-    .bind(&input.scope).bind(&input.mode).bind(&input.provider).bind(serde_json::to_string(&labels).map_err(|error| ApiError::Internal(error.into()))?)
-    .bind(&input.image).bind(input.desired_count).bind(input.min_count).bind(input.max_count).bind(input.cpu_limit)
+    .bind(&input.scope).bind(&input.mode).bind(&primary_provider).bind(&encoded_providers)
+    .bind(serde_json::to_string(&labels).map_err(|error| ApiError::Internal(error.into()))?)
+    .bind(primary_image).bind(&docker_image).bind(&tart_image)
+    .bind(input.desired_count).bind(input.min_count).bind(input.max_count).bind(input.cpu_limit)
     .bind(input.memory_limit_mb).bind(input.mode == "ephemeral").bind(&user.id).bind(now).bind(now)
     .bind(runner_group_id).bind(input.autoscaling_enabled).bind(input.queue_scale_factor).bind(input.idle_timeout_minutes)
     .execute(&mut *transaction).await;
@@ -1604,7 +1649,7 @@ pub async fn create_runner_pool(
         "runner_pool.created",
         "runner_pool",
         Some(&pool_id),
-        json!({ "name": input.name, "scope": input.scope, "repositoryIds": repository_ids, "desiredCount": input.desired_count }),
+        json!({ "name": input.name, "scope": input.scope, "providers": providers, "repositoryIds": repository_ids, "desiredCount": input.desired_count }),
     )
     .await?;
     let mut provisioned = Vec::new();
@@ -2468,19 +2513,39 @@ async fn provision(
     } else {
         None
     };
+    let providers = json_array(&pool.providers);
+    let labels = json_array(&pool.labels);
+    let provider = next_runner_provider(
+        &state.database,
+        pool_id,
+        target_repository
+            .as_ref()
+            .map(|repository| repository.repository_id),
+        &providers,
+        &labels,
+        pool.queue_scale_factor,
+    )
+    .await?
+    .ok_or_else(|| ApiError::Conflict("Runner pool has no configured providers.".into()))?;
+    let image = if provider == "tart" {
+        &pool.tart_image
+    } else {
+        &pool.docker_image
+    };
     let capacity_lease = reserve_runner_capacity(
         state,
         &runner_id,
         pool_id,
+        &provider,
         pool.cpu_limit,
         pool.memory_limit_mb,
     )
     .await?;
     let now = now_millis();
-    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,'starting',?,?,?,?)")
+    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,provider,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,?,'starting',?,?,?,?)")
         .bind(&runner_id).bind(pool_id)
         .bind(target_repository.as_ref().map(|repository| repository.repository_id))
-        .bind(&runner_name).bind(pool.ephemeral)
+        .bind(&runner_name).bind(&provider).bind(pool.ephemeral)
         .bind(pool.configuration_version).bind(now).bind(now).execute(&state.database).await
     {
         release_runner_capacity(state, &capacity_lease).await;
@@ -2491,7 +2556,6 @@ async fn provision(
             .as_ref()
             .map_or(pool.installation_id, |repository| repository.installation_id);
         let token = control_token(state, &user.id, target_installation_id).await?;
-        let labels = json_array(&pool.labels);
         let target = match &target_repository {
             Some(repository) => RunnerTarget::Repository {
                 owner: &repository.owner,
@@ -2500,8 +2564,8 @@ async fn provision(
             None => RunnerTarget::Organization { organization: &pool.account_login },
         };
         let mut request = json!({
-            "runnerId": runner_id, "poolId": pool_id, "name": runner_name, "image": pool.image,
-            "mode": pool.mode, "provider": pool.provider, "labels": &labels, "cpuLimit": pool.cpu_limit,
+            "runnerId": runner_id, "poolId": pool_id, "name": runner_name, "image": image,
+            "mode": pool.mode, "provider": provider, "labels": &labels, "cpuLimit": pool.cpu_limit,
             "memoryLimitMb": pool.memory_limit_mb, "network": state.config.runner_network(),
             "capacityLease": &capacity_lease,
             "pullImage": setting_bool(state, "autoUpdateImages", false).await,
@@ -2509,7 +2573,7 @@ async fn provision(
         let github_runner_id = if pool.ephemeral {
             let jit = state.github.generate_jit_config(target, &token, &JitRequest {
                 name: runner_name.clone(), runner_group_id: pool.runner_group_id,
-                labels: effective_runner_labels(&pool.provider, &labels), work_folder: "_work".into(),
+                labels: effective_runner_labels(&provider, &labels), work_folder: "_work".into(),
             }).await.map_err(ApiError::Internal)?;
             request["jitConfig"] = Value::String(jit.encoded_jit_config);
             Some(jit.runner.id)
@@ -2546,8 +2610,8 @@ async fn provision(
             .bind(updated).bind(updated).bind(updated).bind(&runner_id).execute(&state.database).await?;
         sqlx::query("INSERT INTO runner_events (id,runner_id,pool_id,event,message,metadata,created_at) VALUES (?,?,?,'Runner started',?,?,?)")
             .bind(uuid::Uuid::new_v4().to_string()).bind(&runner_id).bind(pool_id).bind(format!("{runner_name} started in pool {}", pool.name))
-            .bind(json!({ "containerId": container_id, "githubRunnerId": github_runner_id, "mode": pool.mode, "repositoryId": target_repository.as_ref().map(|repository| repository.repository_id) }).to_string()).bind(updated).execute(&state.database).await?;
-        audit(state, user, "runner.provisioned", "runner", Some(&runner_id), json!({ "poolId": pool_id, "containerId": container_id, "githubRunnerId": github_runner_id, "mode": pool.mode, "repositoryId": target_repository.as_ref().map(|repository| repository.repository_id) })).await?;
+            .bind(json!({ "containerId": container_id, "githubRunnerId": github_runner_id, "mode": pool.mode, "provider": provider, "repositoryId": target_repository.as_ref().map(|repository| repository.repository_id) }).to_string()).bind(updated).execute(&state.database).await?;
+        audit(state, user, "runner.provisioned", "runner", Some(&runner_id), json!({ "poolId": pool_id, "containerId": container_id, "githubRunnerId": github_runner_id, "mode": pool.mode, "provider": provider, "repositoryId": target_repository.as_ref().map(|repository| repository.repository_id) })).await?;
         Ok::<Value, ApiError>(json!({ "runnerId": runner_id, "status": status }))
     }.await;
     if let Err(error) = &result {
@@ -2891,7 +2955,8 @@ async fn pool_access(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiRes
       ) THEN 'admin' ELSE 'read' END AS installation_permission,
       i.account_login,
       p.repository_id,repo.owner AS repository_owner,repo.name AS repository_name,p.name,p.scope,
-      p.mode,p.provider,p.labels,p.image,p.desired_count,p.min_count,p.max_count,
+      p.mode,p.provider,p.providers,p.labels,p.image,p.docker_image,p.tart_image,
+      p.desired_count,p.min_count,p.max_count,
       CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,
       p.runner_group_id,p.ephemeral,p.paused,p.state,p.autoscaling_enabled,p.queue_scale_factor,
       p.idle_timeout_minutes,p.configuration_version,p.provision_failure_count,
@@ -2920,7 +2985,7 @@ async fn runner_access(
     runner_id: &str,
 ) -> ApiResult<RunnerAccess> {
     sqlx::query_as::<_, RunnerAccess>(r#"SELECT r.id AS runner_id,r.name AS runner_name,r.container_id,
-      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,r.configuration_version,
+      r.github_runner_id,r.provider,r.status AS runner_status,r.busy,r.ephemeral,r.configuration_version,
       r.last_job_id,p.id AS pool_id,p.name AS pool_name,
       COALESCE(repo.installation_id,p.installation_id) AS installation_id,
       COALESCE(target_installation.account_login,primary_installation.account_login) AS account_login,
@@ -2943,7 +3008,7 @@ async fn runner_access(
 
 async fn runners_for_pool(state: &AppState, pool_id: &str) -> ApiResult<Vec<RunnerAccess>> {
     Ok(sqlx::query_as::<_, RunnerAccess>(r#"SELECT r.id AS runner_id,r.name AS runner_name,r.container_id,
-      r.github_runner_id,r.status AS runner_status,r.busy,r.ephemeral,r.configuration_version,
+      r.github_runner_id,r.provider,r.status AS runner_status,r.busy,r.ephemeral,r.configuration_version,
       r.last_job_id,p.id AS pool_id,p.name AS pool_name,
       COALESCE(repo.installation_id,p.installation_id) AS installation_id,
       COALESCE(target_installation.account_login,primary_installation.account_login) AS account_login,
@@ -3001,6 +3066,7 @@ async fn reserve_runner_capacity(
     state: &AppState,
     runner_id: &str,
     pool_id: &str,
+    provider: &str,
     cpu_limit: f64,
     memory_limit_mb: i64,
 ) -> ApiResult<String> {
@@ -3011,6 +3077,7 @@ async fn reserve_runner_capacity(
         Some(json!({
             "runnerId": runner_id,
             "poolId": pool_id,
+            "provider": provider,
             "cpuLimit": cpu_limit,
             "memoryLimitMb": memory_limit_mb,
         })),
@@ -3070,9 +3137,10 @@ async fn archive_runner_logs(state: &AppState, runner: &RunnerAccess) -> ApiResu
         return Ok(None);
     };
     if let Some(id) = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM log_streams WHERE runner_id=? AND source='docker' AND complete=1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT id FROM log_streams WHERE runner_id=? AND source=? AND complete=1 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&runner.runner_id)
+    .bind(&runner.provider)
     .fetch_optional(&state.database)
     .await?
     {
@@ -3135,7 +3203,7 @@ async fn archive_runner_logs(state: &AppState, runner: &RunnerAccess) -> ApiResu
         r#"INSERT INTO log_streams (
           id,runner_id,job_id,installation_id,runner_name,pool_name,repository,source,path,
           size_bytes,complete,checksum,expires_at,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,'docker',?, ?,1,?,?,?,?)"#,
+        ) VALUES (?,?,?,?,?,?,?,?,?, ?,1,?,?,?,?)"#,
     )
     .bind(&stream_id)
     .bind(&runner.runner_id)
@@ -3144,6 +3212,7 @@ async fn archive_runner_logs(state: &AppState, runner: &RunnerAccess) -> ApiResu
     .bind(&runner.runner_name)
     .bind(&runner.pool_name)
     .bind(repository)
+    .bind(&runner.provider)
     .bind(&filename)
     .bind(size_bytes)
     .bind(checksum)
@@ -3312,7 +3381,8 @@ fn normalized_pool_labels(name: &str, additional: &[String]) -> ApiResult<Vec<St
 fn runner_pool_defaults(image: &str, max_cpu_limit: i64, max_memory_limit_mb: i64) -> Value {
     let tart_image = default_tart_image();
     json!({
-        "provider": "docker", "image": image, "tartImage": tart_image,
+        "provider": "docker", "providers": ["docker"], "image": image,
+        "dockerImage": image, "tartImage": tart_image,
         "labels": ["gridops"], "cpuLimit": 2,
         "memoryLimitMb": 2048, "desiredCount": 1, "minCount": 0, "maxCount": 10,
         "autoscalingEnabled": true, "queueScaleFactor": 1, "idleTimeoutMinutes": 5,

@@ -8,8 +8,8 @@ use futures_util::StreamExt as _;
 use gridops_core::{
     Config, GitHubClient, JitRequest, RunnerTarget, Vault, WorkflowJobPage, WorkflowRunPage,
     assigned_queued_jobs, associate_runner_with_job, connect_database, effective_runner_labels,
-    next_runner_repository, now_millis, repository_capacities, repository_capacity_deficit,
-    scale_up_target,
+    next_runner_provider, next_runner_repository, now_millis, provider_capacities,
+    provider_capacity_deficit, repository_capacities, repository_capacity_deficit, scale_up_target,
 };
 use reqwest::{Method, StatusCode};
 use secrecy::ExposeSecret as _;
@@ -41,8 +41,10 @@ struct Pool {
     state: String,
     mode: String,
     provider: String,
+    providers: String,
     labels: String,
-    image: String,
+    docker_image: String,
+    tart_image: String,
     desired_count: i64,
     min_count: i64,
     max_count: i64,
@@ -70,6 +72,7 @@ struct Runner {
     target_repository_id: Option<i64>,
     repository_owner: Option<String>,
     repository_name: Option<String>,
+    provider: String,
     status: String,
     busy: bool,
     last_job_id: Option<i64>,
@@ -222,7 +225,7 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
 
 async fn load_pools(database: &SqlitePool) -> Result<Vec<Pool>> {
     Ok(sqlx::query_as::<_, Pool>(
-        r#"SELECT p.id,p.installation_id,i.account_login,p.scope,p.name,p.state,p.mode,p.provider,p.labels,p.image,p.desired_count,p.min_count,
+        r#"SELECT p.id,p.installation_id,i.account_login,p.scope,p.name,p.state,p.mode,p.provider,p.providers,p.labels,p.docker_image,p.tart_image,p.desired_count,p.min_count,
           p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,
           p.runner_group_id,p.ephemeral,p.paused,
           p.autoscaling_enabled,p.queue_scale_factor,p.idle_timeout_minutes,p.configuration_version,
@@ -410,7 +413,7 @@ async fn maybe_scale_up(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Re
         pool.queue_scale_factor,
         pool.max_count,
     );
-    let placement_needed = if pool.scope == "repository" {
+    let repository_placement_needed = if pool.scope == "repository" {
         repository_capacities(&app.database, &pool.id)
             .await?
             .iter()
@@ -419,6 +422,14 @@ async fn maybe_scale_up(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Re
     } else {
         0
     };
+    let providers = serde_json::from_str::<Vec<String>>(&pool.providers).unwrap_or_default();
+    let labels = serde_json::from_str::<Vec<String>>(&pool.labels).unwrap_or_default();
+    let provider_placement_needed =
+        provider_capacities(&app.database, &pool.id, &providers, &labels)
+            .await?
+            .iter()
+            .map(|capacity| provider_capacity_deficit(capacity, pool.queue_scale_factor).max(0))
+            .sum::<i64>();
     let active = i64::try_from(
         runners
             .iter()
@@ -427,7 +438,8 @@ async fn maybe_scale_up(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Re
     )
     .unwrap_or(i64::MAX);
     let target = aggregate_target
-        .max(active.saturating_add(placement_needed))
+        .max(active.saturating_add(repository_placement_needed))
+        .max(active.saturating_add(provider_placement_needed))
         .min(pool.max_count);
     if target <= pool.desired_count {
         return Ok(());
@@ -463,7 +475,7 @@ async fn maybe_scale_up(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Re
 }
 
 async fn rebalance_repository_capacity(app: &Reconciler, pool: &Pool, desired: i64) -> Result<i64> {
-    if pool.scope != "repository" || pool.paused {
+    if pool.paused {
         return Ok(0);
     }
     let current = runners(app, &pool.id).await?;
@@ -474,11 +486,22 @@ async fn rebalance_repository_capacity(app: &Reconciler, pool: &Pool, desired: i
     if active < usize::try_from(desired).unwrap_or(usize::MAX) {
         return Ok(0);
     }
-    let capacities = repository_capacities(&app.database, &pool.id).await?;
-    if !capacities
+    let capacities = if pool.scope == "repository" {
+        repository_capacities(&app.database, &pool.id).await?
+    } else {
+        Vec::new()
+    };
+    let repository_needs_capacity = capacities
         .iter()
-        .any(|capacity| repository_capacity_deficit(capacity, pool.queue_scale_factor) > 0)
-    {
+        .any(|capacity| repository_capacity_deficit(capacity, pool.queue_scale_factor) > 0);
+    let providers = serde_json::from_str::<Vec<String>>(&pool.providers).unwrap_or_default();
+    let labels = serde_json::from_str::<Vec<String>>(&pool.labels).unwrap_or_default();
+    let provider_capacities =
+        provider_capacities(&app.database, &pool.id, &providers, &labels).await?;
+    let provider_needs_capacity = provider_capacities
+        .iter()
+        .any(|capacity| provider_capacity_deficit(capacity, pool.queue_scale_factor) > 0);
+    if !repository_needs_capacity && !provider_needs_capacity {
         return Ok(0);
     }
     let surplus = capacities
@@ -491,6 +514,16 @@ async fn rebalance_repository_capacity(app: &Reconciler, pool: &Pool, desired: i
         })
         .map(|capacity| capacity.repository_id)
         .collect::<HashSet<_>>();
+    let provider_surplus = provider_capacities
+        .iter()
+        .filter(|capacity| {
+            capacity.active
+                > capacity
+                    .busy
+                    .saturating_add(capacity.queued.saturating_mul(pool.queue_scale_factor))
+        })
+        .map(|capacity| capacity.provider.as_str())
+        .collect::<HashSet<_>>();
     let membership = capacities
         .iter()
         .map(|capacity| capacity.repository_id)
@@ -498,9 +531,11 @@ async fn rebalance_repository_capacity(app: &Reconciler, pool: &Pool, desired: i
     let Some(runner) = current.iter().find(|runner| {
         !runner.busy
             && active_status(&runner.status)
-            && runner.target_repository_id.is_some_and(|repository_id| {
-                surplus.contains(&repository_id) || !membership.contains(&repository_id)
-            })
+            && (provider_surplus.contains(runner.provider.as_str())
+                || !providers.contains(&runner.provider)
+                || runner.target_repository_id.is_some_and(|repository_id| {
+                    surplus.contains(&repository_id) || !membership.contains(&repository_id)
+                }))
     }) else {
         return Ok(0);
     };
@@ -877,6 +912,28 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     } else {
         None
     };
+    let mut providers = serde_json::from_str::<Vec<String>>(&pool.providers).unwrap_or_default();
+    if providers.is_empty() {
+        providers.push(pool.provider.clone());
+    }
+    let labels = serde_json::from_str::<Vec<String>>(&pool.labels).unwrap_or_default();
+    let provider = next_runner_provider(
+        &app.database,
+        &pool.id,
+        target_repository
+            .as_ref()
+            .map(|repository| repository.repository_id),
+        &providers,
+        &labels,
+        pool.queue_scale_factor,
+    )
+    .await?
+    .context("runner pool has no configured providers")?;
+    let image = if provider == "tart" {
+        &pool.tart_image
+    } else {
+        &pool.docker_image
+    };
     let target_installation_id = target_repository
         .as_ref()
         .map_or(pool.installation_id, |repository| {
@@ -889,7 +946,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         app,
         &runner_id,
         &pool.id,
-        &pool.provider,
+        &provider,
         pool.cpu_limit,
         pool.memory_limit_mb,
     )
@@ -899,16 +956,17 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         return Ok(ProvisionAttempt::Deferred);
     };
     let now = now_millis();
-    let (runner_os, runner_architecture) = if pool.provider == "tart" {
+    let (runner_os, runner_architecture) = if provider == "tart" {
         ("macOS", "ARM64")
     } else {
         ("linux", gridops_core::runner_arch_label())
     };
-    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,os,architecture,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,?,?,'starting',?,?,?,?)")
+    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,provider,os,architecture,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'starting',?,?,?,?)")
         .bind(&runner_id)
         .bind(&pool.id)
         .bind(target_repository.as_ref().map(|repository| repository.repository_id))
         .bind(&runner_name)
+        .bind(&provider)
         .bind(runner_os)
         .bind(runner_architecture)
         .bind(pool.ephemeral)
@@ -923,7 +981,6 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     }
 
     let result = async {
-        let labels = serde_json::from_str::<Vec<String>>(&pool.labels).unwrap_or_default();
         let target = match &target_repository {
             Some(repository) => RunnerTarget::Repository {
                 owner: &repository.owner,
@@ -937,9 +994,9 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
             "runnerId": runner_id,
             "poolId": pool.id,
             "name": runner_name,
-            "image": pool.image,
+            "image": image,
             "mode": pool.mode,
-            "provider": pool.provider,
+            "provider": provider,
             "labels": &labels,
             "cpuLimit": pool.cpu_limit,
             "memoryLimitMb": pool.memory_limit_mb,
@@ -956,7 +1013,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
                     &JitRequest {
                         name: runner_name.clone(),
                         runner_group_id: pool.runner_group_id,
-                        labels: effective_runner_labels(&pool.provider, &labels),
+                        labels: effective_runner_labels(&provider, &labels),
                         work_folder: "_work".into(),
                     },
                 )
@@ -1048,7 +1105,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         "runner.provisioned",
         "runner",
         &runner_id,
-        json!({ "poolId": pool.id, "repositoryId": target_repository.as_ref().map(|repository| repository.repository_id) }),
+        json!({ "poolId": pool.id, "provider": provider, "repositoryId": target_repository.as_ref().map(|repository| repository.repository_id) }),
     )
     .await?;
     Ok(ProvisionAttempt::Provisioned)
@@ -1151,7 +1208,7 @@ async fn runners(app: &Reconciler, pool_id: &str) -> Result<Vec<Runner>> {
         r#"SELECT runner.id,COALESCE(repo.installation_id,pool.installation_id) AS installation_id,
            runner.name,runner.container_id,runner.github_runner_id,
            runner.target_repository_id,repo.owner AS repository_owner,repo.name AS repository_name,
-           runner.status,runner.busy,runner.last_job_id,runner.configuration_version,runner.updated_at
+           runner.provider,runner.status,runner.busy,runner.last_job_id,runner.configuration_version,runner.updated_at
            FROM runners runner JOIN runner_pools pool ON pool.id=runner.pool_id
            LEFT JOIN repositories repo ON repo.id=runner.target_repository_id
            WHERE runner.pool_id=? AND runner.deleted_at IS NULL ORDER BY runner.created_at DESC"#,
@@ -1263,7 +1320,7 @@ async fn archive_runner_logs(app: &Reconciler, pool: &Pool, runner: &Runner) -> 
         "SELECT id FROM log_streams WHERE runner_id=? AND source=? AND complete=1 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&runner.id)
-    .bind(&pool.provider)
+    .bind(&runner.provider)
     .fetch_optional(&app.database)
     .await?
     .is_some()
@@ -1341,7 +1398,7 @@ async fn archive_runner_logs(app: &Reconciler, pool: &Pool, runner: &Runner) -> 
     .bind(&runner.name)
     .bind(&pool.name)
     .bind(repository)
-    .bind(&pool.provider)
+    .bind(&runner.provider)
     .bind(&filename)
     .bind(size_bytes)
     .bind(checksum)
@@ -1672,8 +1729,10 @@ mod tests {
             state: "active".into(),
             mode: "ephemeral".into(),
             provider: "docker".into(),
+            providers: r#"["docker"]"#.into(),
             labels: "[]".into(),
-            image: "runner:latest".into(),
+            docker_image: "runner:latest".into(),
+            tart_image: "gridops-macos-tahoe-base".into(),
             desired_count: 1,
             min_count: 0,
             max_count: 10,
@@ -1702,6 +1761,7 @@ mod tests {
             target_repository_id: None,
             repository_owner: None,
             repository_name: None,
+            provider: "docker".into(),
             status: "online".into(),
             busy: false,
             last_job_id: None,

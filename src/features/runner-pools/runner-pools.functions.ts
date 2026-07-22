@@ -36,7 +36,7 @@ export type RunnerPoolOptions = (BaseOptions & {
   authenticated: true;
   installUrl: string;
   defaults: {
-    provider: "docker" | "tart"; image: string; tartImage: string; labels: string[]; cpuLimit: number; memoryLimitMb: number;
+    provider: "docker" | "tart"; providers: Array<"docker" | "tart">; image: string; dockerImage: string; tartImage: string; labels: string[]; cpuLimit: number; memoryLimitMb: number;
     desiredCount: number; minCount: number; maxCount: number; autoscalingEnabled: boolean;
     queueScaleFactor: number; idleTimeoutMinutes: number; runnerGroupId: number;
     maxCpuLimit: number; maxMemoryLimitMb: number;
@@ -55,6 +55,7 @@ export type RunnerPoolDetail = {
   scope: "repository" | "organization";
   mode: "ephemeral" | "persistent";
   provider: "docker" | "tart";
+  providers: Array<"docker" | "tart">;
   labels: string[];
   image: string;
   dockerImage: string;

@@ -22,7 +22,7 @@ export const Route = createFileRoute("/runners")({
   pendingComponent: () => (
     <ResourcePageLoading
       title="Runners"
-      description="Inspect every managed container and its GitHub registration state."
+      description="Inspect every managed runner and its GitHub registration state."
       icon={Activity}
     />
   ),
@@ -38,10 +38,10 @@ function RunnersPage() {
   return (
     <ResourcePage
       title="Runners"
-      description="Inspect every managed container and its GitHub registration state."
+      description="Inspect every managed runner and its GitHub registration state."
       icon={Activity}
       emptyTitle="No managed runners"
-      emptyDescription="Runners appear here when a pool provisions its first container."
+      emptyDescription="Runners appear here when a pool provisions its first execution environment."
       action="Manage runner pools"
       actionHref="/runner-pools"
       actionIcon={Boxes}
@@ -61,7 +61,7 @@ function RunnersPage() {
                     <span className="size-1.5 rounded-full bg-primary shadow-[0_0_0_3px_hsl(153_64%_52%/0.08)]" />
                     {runner.name}
                   </Link>
-                  <div className="mt-1 text-[11px] text-muted-foreground">{runner.os}/{runner.architecture} · {runner.ephemeral ? "ephemeral" : "persistent"}</div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">{runner.provider === "tart" ? "Tart VM" : "Docker container"} · {runner.os}/{runner.architecture} · {runner.ephemeral ? "ephemeral" : "persistent"}</div>
                 </TableCell>
                 <TableCell>
                   <Link className="text-xs hover:text-primary" params={{ poolId: runner.poolId }} to="/runner-pools/$poolId">{runner.poolName}</Link>
@@ -95,7 +95,7 @@ function RunnersPage() {
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "stop" } })} confirm={`Stop ${runner.name}?`} disabled={!runner.containerId || runner.status === "stopped"} icon={<Square />} size="icon" success="Runner stopped." title={`Stop ${runner.name}`}><span className="sr-only">Stop {runner.name}</span></AsyncActionButton>
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "restart" } })} confirm={runner.busy ? `${runner.name} is busy. Restart it and interrupt the current job?` : undefined} disabled={runner.ephemeral || !runner.containerId || runner.status === "stopped"} icon={<RotateCcw />} size="icon" success="Runner restarted." title={`Restart ${runner.name}`}><span className="sr-only">Restart {runner.name}</span></AsyncActionButton>
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "rebuild" } })} confirm={`Rebuild ${runner.name}? GridOps will replace it with a newly registered container.`} disabled={runner.busy} icon={<RefreshCw />} size="icon" success="Runner rebuilt." title={`Rebuild ${runner.name}`}><span className="sr-only">Rebuild {runner.name}</span></AsyncActionButton>
-                  <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "delete" } })} confirm={`Delete ${runner.name} from Docker and GitHub?`} icon={<Trash2 />} size="icon" success="Runner deleted." title={`Delete ${runner.name}`} variant="ghost"><span className="sr-only">Delete {runner.name}</span></AsyncActionButton>
+                  <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "delete" } })} confirm={`Delete ${runner.name} from its provider and GitHub?`} icon={<Trash2 />} size="icon" success="Runner deleted." title={`Delete ${runner.name}`} variant="ghost"><span className="sr-only">Delete {runner.name}</span></AsyncActionButton>
                 </div> : <div className="flex justify-end"><Badge variant="outline">read only</Badge></div>}</TableCell>
               </TableRow>
             ))}</TableBody>

@@ -19,6 +19,7 @@ type SearchableMultiSelectProps<TValue extends SearchableSelectValue> = {
   loading?: boolean;
   disabled?: boolean;
   maxSelected?: number;
+  selectedNoun?: string;
 };
 
 export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
@@ -32,6 +33,7 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
   loading = false,
   disabled = false,
   maxSelected,
+  selectedNoun = "options",
 }: SearchableMultiSelectProps<TValue>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -87,7 +89,7 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
     ? placeholder
     : selectedOptions.length === 1
       ? selectedOptions[0]?.label
-      : `${selectedOptions.length} repositories selected`;
+      : `${selectedOptions.length} ${selectedNoun} selected`;
 
   return (
     <div className="relative" ref={rootRef}>
@@ -112,7 +114,7 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
         type="button"
       >
         <span className={cn("min-w-0 flex-1 truncate", values.length === 0 && "text-muted-foreground")}>
-          {loading ? "Loading repositories…" : summary}
+          {loading ? `Loading ${selectedNoun}…` : summary}
         </span>
         <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
       </button>
@@ -179,7 +181,7 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
             </div>
             {maxSelected !== undefined ? (
               <div className="mt-2 text-[11px] text-muted-foreground">
-                {values.length} of {maxSelected} repository slots used
+                {values.length} of {maxSelected} {selectedNoun} selected
               </div>
             ) : null}
           </div>

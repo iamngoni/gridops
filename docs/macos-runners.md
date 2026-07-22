@@ -120,10 +120,12 @@ Each macOS runner receives only a short-lived GitHub JIT configuration over stdi
 
 ## Workflow labels
 
-Tart pools automatically advertise `self-hosted`, `macOS`, `ARM64`, and the pool name. Select the exact pool explicitly:
+One pool can include both Docker and Tart. The pool keeps a separate image for each provider and one shared minimum, target, and maximum runner count. GridOps matches each queued job to a compatible provider, then replaces an idle runner from the wrong provider when the pool is already at its maximum.
+
+Tart runners automatically advertise `self-hosted`, `macOS`, `ARM64`, and the pool name. Select the exact pool explicitly:
 
 ```yaml
 runs-on: [self-hosted, macOS, ARM64, macos-arm64]
 ```
 
-GridOps only routes a queued job to a pool when every requested label matches that provider. Linux and macOS jobs therefore cannot consume each other's capacity.
+Docker runners advertise `self-hosted`, `Linux`, the host architecture, and the same pool name. GridOps only routes a queued job when every requested label matches one selected provider, so Linux and macOS jobs share the pool limit without consuming an incompatible runner slot.

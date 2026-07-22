@@ -9,7 +9,7 @@ GridOps is a self-hosted control plane for GitHub Actions runners. Connect a Git
 ## Capabilities
 
 - GitHub App OAuth, installations, encrypted user tokens, and short-lived installation tokens
-- Multi-repository logical runner pools plus organization-scoped runner groups
+- Multi-repository and organization-scoped pools that can share capacity across multiple runner providers
 - Ephemeral and persistent Docker runners with labels, CPU, memory, PID, and capability limits
 - Ephemeral Apple Silicon macOS runners in copy-on-write Tart virtual machines
 - Editable pool configuration with generation-tracked, busy-safe rolling runner replacement

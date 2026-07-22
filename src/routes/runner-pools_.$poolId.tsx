@@ -54,8 +54,11 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"ephemeral" | "persistent">(pool.mode);
-  const [provider, setProvider] = useState<"docker" | "tart">(pool.provider);
-  const [image, setImage] = useState(pool.image);
+  const [providers, setProviders] = useState<Array<"docker" | "tart">>(
+    pool.providers?.length ? pool.providers : [pool.provider],
+  );
+  const [dockerImage, setDockerImage] = useState(pool.dockerImage);
+  const [tartImage, setTartImage] = useState(pool.tartImage);
   const [repositoryIds, setRepositoryIds] = useState(pool.repositoryIds);
   const [maxCount, setMaxCount] = useState(pool.maxCount);
   const [runnerGroupId, setRunnerGroupId] = useState(pool.runnerGroupId);
@@ -73,6 +76,8 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
   );
   const maxCpuLimit = pool.maxCpuLimit ?? 64;
   const maxMemoryLimitMb = pool.maxMemoryLimitMb ?? 262_144;
+  const primaryProvider = providers[0] ?? "docker";
+  const includesTart = providers.includes("tart");
 
   useEffect(() => {
     if (!shouldLoadRunnerGroups) return;
@@ -122,12 +127,15 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
           repositoryIds: pool.scope === "repository" ? repositoryIds : undefined,
           name: String(form.get("name") ?? ""),
           mode,
-          provider,
+          provider: primaryProvider,
+          providers,
           labels: String(form.get("labels") ?? "")
             .split(",")
             .map((label) => label.trim())
             .filter(Boolean),
-          image: String(form.get("image") ?? ""),
+          image: primaryProvider === "tart" ? tartImage : dockerImage,
+          dockerImage,
+          tartImage,
           desiredCount: Number(form.get("desiredCount")),
           minCount: Number(form.get("minCount")),
           maxCount: Number(form.get("maxCount")),
@@ -166,7 +174,9 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               Generation {pool.configurationVersion} · runtime changes roll through idle runners safely.
             </p>
           </div>
-          <Badge variant="outline">{provider === "tart" ? "Tart · macOS ARM64" : "Docker · Linux"} · {mode}</Badge>
+          <Badge variant="outline">
+            {providers.map((provider) => provider === "tart" ? "Tart · macOS ARM64" : "Docker · Linux").join(" + ")} · {mode}
+          </Badge>
         </div>
 
         {pool.canManage ? <form className="mt-6 space-y-4" onSubmit={submit}>
@@ -191,6 +201,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
                     }))}
                     placeholder="Choose one or more repositories…"
                     searchPlaceholder="Search by owner or repository name…"
+                    selectedNoun="repositories"
                     values={repositoryIds}
                   />
                   {repositoryLoad.status === "error" ? <span className="block text-[11px] text-destructive">{repositoryLoad.error}</span> : null}
@@ -209,28 +220,29 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               <Field label="Pool name" hint="Also used as a runner label.">
                 <Input defaultValue={pool.name} name="name" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" required />
               </Field>
-              <Field label="Runner provider" hint={provider === "tart" ? "Runs isolated Apple Virtualization VMs on the macOS host." : "Runs isolated Linux containers through the Docker manager."}>
-                <SearchableSelect
-                  ariaLabel="Runner provider"
-                  onValueChange={(nextProvider) => {
-                    const selected = nextProvider ?? "docker";
-                    setProvider(selected);
-                    setImage(selected === "tart" ? pool.tartImage : pool.dockerImage);
-                    if (selected === "tart") setMode("ephemeral");
+              <Field className="md:col-span-2" label="Runner providers" hint="Select every execution environment this pool may use. GridOps routes each queued job to the first compatible provider; the first provider handles jobs that only request self-hosted.">
+                <SearchableMultiSelect
+                  ariaLabel="Runner providers"
+                  maxSelected={2}
+                  onValueChange={(values) => {
+                    const selected = values.filter((value): value is "docker" | "tart" => value === "docker" || value === "tart");
+                    if (!selected.length) return;
+                    setProviders(selected);
+                    if (selected.includes("tart")) setMode("ephemeral");
                   }}
                   options={[
                     { value: "docker", label: "Docker · Linux", description: "Fast Linux containers" },
                     { value: "tart", label: "Tart · macOS ARM64", description: "Copy-on-write macOS virtual machines" },
                   ]}
-                  searchable={false}
-                  value={provider}
+                  selectedNoun="providers"
+                  values={providers}
                 />
               </Field>
               <Field label="Mode">
                 <SearchableSelect
                   ariaLabel="Runner mode"
                   onValueChange={(nextMode) => setMode(nextMode ?? "ephemeral")}
-                  options={provider === "tart"
+                  options={includesTart
                     ? [{ value: "ephemeral", label: "Ephemeral", description: "One clean VM per job" }]
                     : [
                       { value: "ephemeral", label: "Ephemeral", description: "One clean runner per job" },
@@ -240,10 +252,13 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
                   value={mode}
                 />
               </Field>
-              <Field className="md:col-span-2" label={provider === "tart" ? "Tart base VM" : "Container image"} hint={provider === "tart" ? "A stopped, prepared local Tart VM. Each runner is an APFS copy-on-write clone." : "OCI image used to create each Linux runner."}>
-                <Input name="image" onChange={(event) => setImage(event.target.value)} required value={image} />
-              </Field>
-              <Field className="md:col-span-2" label="Additional labels" hint={`Comma-separated; ${provider === "tart" ? "self-hosted, macOS, ARM64, and " : "self-hosted, Linux, the host architecture, and "}the pool name are included automatically.`}>
+              {providers.includes("docker") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Docker container image" hint="OCI image used to create each Linux runner.">
+                <Input onChange={(event) => setDockerImage(event.target.value)} required value={dockerImage} />
+              </Field> : null}
+              {providers.includes("tart") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Tart base VM" hint="A stopped, prepared local Tart VM. Each runner is an APFS copy-on-write clone.">
+                <Input onChange={(event) => setTartImage(event.target.value)} required value={tartImage} />
+              </Field> : null}
+              <Field className="md:col-span-2" label="Additional labels" hint="Comma-separated custom labels. GridOps adds self-hosted, the provider operating system and architecture, and the pool name automatically.">
                 <Input defaultValue={pool.labels.join(", ")} name="labels" />
               </Field>
               {pool.scope === "organization" ? (
@@ -293,7 +308,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
                 </Field>
               ) : null}
               <div className="rounded-md border border-amber-500/20 bg-amber-500/5 p-3 text-[11px] leading-5 text-amber-100 md:col-span-2">
-                Changing the name, provider, mode, image, labels, runner group, CPU, or memory starts a rolling replacement. Busy runners finish their jobs; GridOps replaces idle runners one at a time.
+                Changing the name, providers, mode, images, labels, runner group, CPU, or memory starts a rolling replacement. Busy runners finish their jobs; GridOps replaces idle runners one at a time.
               </div>
             </CardContent>
           </Card>
@@ -304,8 +319,8 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               <Field label="Target runners" hint="Runners GridOps should keep active now. Autoscaling may change this between the minimum and maximum."><Input defaultValue={pool.desiredCount} max="100" min="0" name="desiredCount" required type="number" /></Field>
               <Field label="Minimum runners" hint="Lowest pool target after idle scale-down. Set 0 to scale all the way down."><Input defaultValue={pool.minCount} max="100" min="0" name="minCount" required type="number" /></Field>
               <Field label="Maximum runners" hint={pool.scope === "repository" ? "Highest pool target during scale-up. Must be at least the number of selected repositories." : "Highest pool target autoscaling can request."}><Input max="100" min={Math.max(1, repositoryIds.length)} name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} required type="number" value={maxCount} /></Field>
-              <Field label="CPU cores per runner" hint={provider === "tart" ? `Virtual CPU cores assigned to each macOS VM. Whole cores only; shared host budget: ${maxCpuLimit}.` : `Hard Docker CPU limit for each runner. Shared host budget: ${maxCpuLimit} logical CPUs.`}><Input defaultValue={pool.cpuLimit} max={Math.max(maxCpuLimit, pool.cpuLimit)} min={provider === "tart" ? "1" : "0.25"} name="cpuLimit" required step={provider === "tart" ? "1" : "0.25"} type="number" /></Field>
-              <Field label="Memory per runner (MB)" hint={provider === "tart" ? `Memory assigned to each macOS VM. Minimum 2048 MB; shared host budget: ${maxMemoryLimitMb} MB.` : `Hard Docker memory limit. Shared host budget: ${maxMemoryLimitMb} MB.`}><Input defaultValue={Math.max(provider === "tart" ? 2_048 : 256, pool.memoryLimitMb)} max={maxMemoryLimitMb} min={provider === "tart" ? "2048" : "256"} name="memoryLimitMb" required step="256" type="number" /></Field>
+              <Field label="CPU cores per runner" hint={includesTart ? `Whole CPU cores per runner because this pool includes macOS VMs. Shared host budget: ${maxCpuLimit}.` : `Hard Docker CPU limit for each runner. Shared host budget: ${maxCpuLimit} logical CPUs.`}><Input defaultValue={pool.cpuLimit} max={Math.max(maxCpuLimit, pool.cpuLimit)} min={includesTart ? "1" : "0.25"} name="cpuLimit" required step={includesTart ? "1" : "0.25"} type="number" /></Field>
+              <Field label="Memory per runner (MB)" hint={includesTart ? `Memory assigned to each runner. macOS VMs require at least 2048 MB; shared host budget: ${maxMemoryLimitMb} MB.` : `Hard Docker memory limit. Shared host budget: ${maxMemoryLimitMb} MB.`}><Input defaultValue={Math.max(includesTart ? 2_048 : 256, pool.memoryLimitMb)} max={maxMemoryLimitMb} min={includesTart ? "2048" : "256"} name="memoryLimitMb" required step="256" type="number" /></Field>
               <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 xl:col-span-3">
                 <input className="mt-0.5 size-4 accent-emerald-500" defaultChecked={pool.autoscalingEnabled} name="autoscalingEnabled" type="checkbox" />
                 <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Queued workflow jobs raise the target up to Maximum runners. When every runner is idle, the target returns to Minimum runners after the delay below.</span></span>
@@ -323,7 +338,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               {submitting ? "Saving changes…" : "Save changes"}
             </Button>
           </div>
-        </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.scope === "repository" ? `${pool.repositoryIds.length} repositories` : pool.accountLogin} /><ReadOnly label="Provider" value={pool.provider === "tart" ? "Tart · macOS ARM64" : "Docker · Linux"} /><ReadOnly label="Runner capacity" value={`${pool.desiredCount} target · ${pool.minCount}-${pool.maxCount} runners`} /><ReadOnly label={pool.provider === "tart" ? "Tart base VM" : "Runner image"} value={pool.image} /><ReadOnly label="Per-runner resources" value={`${pool.cpuLimit} CPU cores · ${pool.memoryLimitMb} MB memory`} /></CardContent></Card>}
+        </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.scope === "repository" ? `${pool.repositoryIds.length} repositories` : pool.accountLogin} /><ReadOnly label="Providers" value={(pool.providers?.length ? pool.providers : [pool.provider]).map((provider) => provider === "tart" ? "Tart · macOS ARM64" : "Docker · Linux").join(" + ")} /><ReadOnly label="Runner capacity" value={`${pool.desiredCount} target · ${pool.minCount}-${pool.maxCount} runners`} />{pool.providers.includes("docker") ? <ReadOnly label="Docker image" value={pool.dockerImage} /> : null}{pool.providers.includes("tart") ? <ReadOnly label="Tart base VM" value={pool.tartImage} /> : null}<ReadOnly label="Per-runner resources" value={`${pool.cpuLimit} CPU cores · ${pool.memoryLimitMb} MB memory`} /></CardContent></Card>}
       </div>
     </AppShell>
   );

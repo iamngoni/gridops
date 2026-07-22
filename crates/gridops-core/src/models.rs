@@ -48,8 +48,14 @@ pub struct CreateRunnerPool {
     pub scope: String,
     pub mode: String,
     pub provider: String,
+    #[serde(default)]
+    pub providers: Vec<String>,
     pub labels: Vec<String>,
     pub image: String,
+    #[serde(default)]
+    pub docker_image: String,
+    #[serde(default)]
+    pub tart_image: String,
     pub desired_count: i64,
     pub min_count: i64,
     pub max_count: i64,
@@ -62,6 +68,18 @@ pub struct CreateRunnerPool {
 }
 
 impl CreateRunnerPool {
+    pub fn selected_providers(&self) -> Vec<String> {
+        selected_providers(&self.provider, &self.providers)
+    }
+
+    pub fn selected_docker_image(&self) -> String {
+        selected_image("docker", &self.provider, &self.image, &self.docker_image)
+    }
+
+    pub fn selected_tart_image(&self) -> String {
+        selected_image("tart", &self.provider, &self.image, &self.tart_image)
+    }
+
     pub fn selected_repository_ids(&self) -> Vec<i64> {
         let mut repositories = self.repository_ids.clone();
         if let Some(repository_id) = self.repository_id {
@@ -100,8 +118,11 @@ impl CreateRunnerPool {
             &self.name,
             &self.mode,
             &self.provider,
+            &self.providers,
             &self.labels,
             &self.image,
+            &self.docker_image,
+            &self.tart_image,
             self.desired_count,
             self.min_count,
             self.max_count,
@@ -122,8 +143,14 @@ pub struct UpdateRunnerPool {
     pub name: String,
     pub mode: String,
     pub provider: String,
+    #[serde(default)]
+    pub providers: Vec<String>,
     pub labels: Vec<String>,
     pub image: String,
+    #[serde(default)]
+    pub docker_image: String,
+    #[serde(default)]
+    pub tart_image: String,
     pub desired_count: i64,
     pub min_count: i64,
     pub max_count: i64,
@@ -136,6 +163,18 @@ pub struct UpdateRunnerPool {
 }
 
 impl UpdateRunnerPool {
+    pub fn selected_providers(&self) -> Vec<String> {
+        selected_providers(&self.provider, &self.providers)
+    }
+
+    pub fn selected_docker_image(&self) -> String {
+        selected_image("docker", &self.provider, &self.image, &self.docker_image)
+    }
+
+    pub fn selected_tart_image(&self) -> String {
+        selected_image("tart", &self.provider, &self.image, &self.tart_image)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.repository_ids.as_ref().is_some_and(|repositories| {
             repositories.is_empty()
@@ -159,8 +198,11 @@ impl UpdateRunnerPool {
             &self.name,
             &self.mode,
             &self.provider,
+            &self.providers,
             &self.labels,
             &self.image,
+            &self.docker_image,
+            &self.tart_image,
             self.desired_count,
             self.min_count,
             self.max_count,
@@ -178,8 +220,11 @@ fn validate_pool_configuration(
     name: &str,
     mode: &str,
     provider: &str,
+    providers: &[String],
     labels: &[String],
     image: &str,
+    docker_image: &str,
+    tart_image: &str,
     desired_count: i64,
     min_count: i64,
     max_count: i64,
@@ -195,11 +240,26 @@ fn validate_pool_configuration(
     if !matches!(mode, "ephemeral" | "persistent") {
         return Err("Runner pool mode is invalid.".into());
     }
-    if !matches!(provider, "docker" | "tart") {
-        return Err("Runner provider must be Docker or Tart.".into());
+    let selected = selected_providers(provider, providers);
+    if selected.is_empty()
+        || selected.len() > 2
+        || selected
+            .iter()
+            .any(|provider| !matches!(provider.as_str(), "docker" | "tart"))
+    {
+        return Err("Choose one or more supported runner providers.".into());
     }
-    if provider == "tart" && mode != "ephemeral" {
-        return Err("Tart runner pools must be ephemeral.".into());
+    let mut unique = selected.clone();
+    unique.sort();
+    unique.dedup();
+    if unique.len() != selected.len() || (!providers.is_empty() && selected[0] != provider) {
+        return Err(
+            "Runner providers must be unique and the primary provider must be first.".into(),
+        );
+    }
+    let includes_tart = selected.iter().any(|provider| provider == "tart");
+    if includes_tart && mode != "ephemeral" {
+        return Err("Pools that include Tart must be ephemeral.".into());
     }
     if min_count < 0 || desired_count < min_count || desired_count > max_count || max_count > 100 {
         return Err("Capacity must satisfy 0 <= minimum <= desired <= maximum <= 100.".into());
@@ -207,7 +267,7 @@ fn validate_pool_configuration(
     if !(0.25..=64.0).contains(&cpu_limit) || !(256..=262_144).contains(&memory_limit_mb) {
         return Err("Runner resource limits are outside the supported range.".into());
     }
-    if provider == "tart" && (cpu_limit.fract() != 0.0 || memory_limit_mb < 2_048) {
+    if includes_tart && (cpu_limit.fract() != 0.0 || memory_limit_mb < 2_048) {
         return Err("Tart runners require whole CPU cores and at least 2048 MB of memory.".into());
     }
     if !(1..=20).contains(&queue_scale_factor) || !(1..=1_440).contains(&idle_timeout_minutes) {
@@ -223,13 +283,39 @@ fn validate_pool_configuration(
     {
         return Err("Use at most 20 runner labels of 1-64 characters each.".into());
     }
-    if image.trim() != image || image.is_empty() || image.len() > 300 {
-        return Err("Runner image must contain 1-300 non-padding characters.".into());
+    let selected_docker_image = selected_image("docker", provider, image, docker_image);
+    let selected_tart_image = selected_image("tart", provider, image, tart_image);
+    if selected.iter().any(|provider| provider == "docker") && !valid_image(&selected_docker_image)
+    {
+        return Err("Docker image must contain 1-300 non-padding characters.".into());
+    }
+    if includes_tart && !valid_image(&selected_tart_image) {
+        return Err("Tart base VM must contain 1-300 non-padding characters.".into());
     }
     if runner_group_id <= 0 {
         return Err("Runner group ID must be positive.".into());
     }
     Ok(())
+}
+
+fn selected_providers(provider: &str, providers: &[String]) -> Vec<String> {
+    if providers.is_empty() {
+        vec![provider.to_owned()]
+    } else {
+        providers.to_vec()
+    }
+}
+
+fn selected_image(kind: &str, provider: &str, image: &str, configured: &str) -> String {
+    if configured.is_empty() && provider == kind {
+        image.to_owned()
+    } else {
+        configured.to_owned()
+    }
+}
+
+fn valid_image(image: &str) -> bool {
+    image.trim() == image && !image.is_empty() && image.len() <= 300
 }
 
 fn valid_pool_name(value: &str) -> bool {
@@ -253,8 +339,11 @@ mod tests {
             scope: "repository".into(),
             mode: "ephemeral".into(),
             provider: "docker".into(),
+            providers: vec!["docker".into()],
             labels: vec!["docker".into()],
             image: "ghcr.io/actions/actions-runner:latest".into(),
+            docker_image: "ghcr.io/actions/actions-runner:latest".into(),
+            tart_image: "gridops-macos-tahoe-base".into(),
             desired_count: 1,
             min_count: 0,
             max_count: 10,
@@ -278,12 +367,18 @@ mod tests {
         invalid.name = "Bad Pool".into();
         assert!(invalid.validate().is_err());
 
+        let mut mixed = pool();
+        mixed.providers = vec!["docker".into(), "tart".into()];
+        assert!(mixed.validate().is_ok());
+        mixed.mode = "persistent".into();
+        assert!(mixed.validate().is_err());
+
         let mut invalid = pool();
         invalid.labels = vec!["bad,label".into()];
         assert!(invalid.validate().is_err());
 
         let mut invalid = pool();
-        invalid.image = " runner:latest".into();
+        invalid.docker_image = " runner:latest".into();
         assert!(invalid.validate().is_err());
 
         let mut multi_repository = pool();
@@ -303,8 +398,11 @@ mod tests {
             name: original.name,
             mode: original.mode,
             provider: original.provider,
+            providers: original.providers,
             labels: original.labels,
             image: original.image,
+            docker_image: original.docker_image,
+            tart_image: original.tart_image,
             desired_count: original.desired_count,
             min_count: original.min_count,
             max_count: original.max_count,
