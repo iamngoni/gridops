@@ -38,15 +38,24 @@ use subtle::ConstantTimeEq as _;
 use tokio::{io::AsyncWriteExt as _, sync::Mutex};
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
+use url::Url;
 
 #[derive(Clone)]
 struct ManagerState {
     docker: Docker,
+    tart: Option<TartAgent>,
     token: SecretString,
     limits: ManagerLimits,
     reservations: Arc<Mutex<HashMap<String, CapacityReservation>>>,
     provisioning_paused: Arc<AtomicBool>,
     provision_lock: Arc<Mutex<()>>,
+}
+
+#[derive(Clone)]
+struct TartAgent {
+    base_url: Url,
+    token: SecretString,
+    http: reqwest::Client,
 }
 
 #[derive(Clone, Debug)]
@@ -68,12 +77,13 @@ struct ManagerLimits {
 struct CapacityReservation {
     runner_id: String,
     pool_id: String,
+    provider: String,
     cpu_limit: f64,
     memory_limit_mb: i64,
     expires_at: Instant,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CapacityUsage {
     active_runners: usize,
@@ -121,8 +131,16 @@ enum ManagerError {
     Forbidden(String),
     BadRequest(String),
     Conflict(String),
-    Guardrail { code: &'static str, message: String },
+    Guardrail {
+        code: &'static str,
+        message: String,
+    },
     NotFound(String),
+    Upstream {
+        status: StatusCode,
+        code: String,
+        message: String,
+    },
     Internal(anyhow::Error),
 }
 
@@ -139,6 +157,11 @@ impl IntoResponse for ManagerError {
             Self::Conflict(message) => (StatusCode::CONFLICT, "conflict", message),
             Self::Guardrail { code, message } => (StatusCode::TOO_MANY_REQUESTS, code, message),
             Self::NotFound(message) => (StatusCode::NOT_FOUND, "not_found", message),
+            Self::Upstream {
+                status,
+                code,
+                message,
+            } => return (status, Json(json!({ "code": code, "error": message }))).into_response(),
             Self::Internal(error) => {
                 tracing::error!(error = ?error, "runner manager request failed");
                 (
@@ -167,7 +190,7 @@ impl From<DockerError> for ManagerError {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProvisionRunner {
     runner_id: String,
@@ -175,6 +198,8 @@ struct ProvisionRunner {
     name: String,
     image: String,
     mode: String,
+    #[serde(default = "default_provider")]
+    provider: String,
     jit_config: Option<String>,
     registration_token: Option<String>,
     registration_url: Option<String>,
@@ -200,7 +225,9 @@ impl ProvisionRunner {
                 "Runner, pool, and capacity lease identifiers are required.".into(),
             ));
         }
-        if !valid_docker_name(&self.name) || !valid_docker_name(&self.network) {
+        if !valid_docker_name(&self.name)
+            || (self.provider == "docker" && !valid_docker_name(&self.network))
+        {
             return Err(ManagerError::BadRequest(
                 "Runner or network name contains unsupported characters.".into(),
             ));
@@ -245,6 +272,16 @@ impl ProvisionRunner {
                 ));
             }
         }
+        if !matches!(self.provider.as_str(), "docker" | "tart") {
+            return Err(ManagerError::BadRequest(
+                "Runner provider must be Docker or Tart.".into(),
+            ));
+        }
+        if self.provider == "tart" && self.mode != "ephemeral" {
+            return Err(ManagerError::BadRequest(
+                "Tart runner pools must be ephemeral.".into(),
+            ));
+        }
         if !(0.25..=64.0).contains(&self.cpu_limit)
             || !(256..=262_144).contains(&self.memory_limit_mb)
         {
@@ -261,6 +298,8 @@ impl ProvisionRunner {
 struct CapacityRequest {
     runner_id: String,
     pool_id: String,
+    #[serde(default = "default_provider")]
+    provider: String,
     cpu_limit: f64,
     memory_limit_mb: i64,
 }
@@ -283,6 +322,11 @@ impl CapacityRequest {
                 "Runner resource limits are outside the supported range.".into(),
             ));
         }
+        if !matches!(self.provider.as_str(), "docker" | "tart") {
+            return Err(ManagerError::BadRequest(
+                "Runner provider must be Docker or Tart.".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -293,7 +337,7 @@ struct ManagerPolicy {
     provisioning_paused: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ManagedRunner {
     id: String,
@@ -303,6 +347,11 @@ struct ManagedRunner {
     status: String,
     labels: HashMap<String, String>,
     created_at: String,
+    provider: String,
+}
+
+fn default_provider() -> String {
+    "docker".into()
 }
 
 #[derive(Deserialize)]
@@ -399,6 +448,99 @@ where
         .transpose()
 }
 
+fn tart_agent_from_environment() -> Result<Option<TartAgent>> {
+    let url = env::var("GRIDOPS_TART_AGENT_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let token = env::var("GRIDOPS_TART_AGENT_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    match (url, token) {
+        (None, None) => Ok(None),
+        (Some(url), Some(token)) => {
+            let base_url = Url::parse(&url).context("GRIDOPS_TART_AGENT_URL is invalid")?;
+            anyhow::ensure!(
+                matches!(base_url.scheme(), "http" | "https"),
+                "GRIDOPS_TART_AGENT_URL must use HTTP or HTTPS"
+            );
+            let http = reqwest::Client::builder()
+                .user_agent("GridOps manager/0.1")
+                .timeout(Duration::from_mins(45))
+                .build()?;
+            Ok(Some(TartAgent {
+                base_url,
+                token: SecretString::from(token),
+                http,
+            }))
+        }
+        _ => anyhow::bail!(
+            "GRIDOPS_TART_AGENT_URL and GRIDOPS_TART_AGENT_TOKEN must be configured together"
+        ),
+    }
+}
+
+async fn tart_agent_response(
+    agent: &TartAgent,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+) -> Result<reqwest::Response, ManagerError> {
+    let url = agent
+        .base_url
+        .join(path.trim_start_matches('/'))
+        .map_err(|error| ManagerError::Internal(error.into()))?;
+    let mut request = agent
+        .http
+        .request(method, url)
+        .bearer_auth(agent.token.expose_secret());
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    request
+        .send()
+        .await
+        .map_err(|error| ManagerError::Upstream {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "tart_agent_unavailable".into(),
+            message: format!("Tart agent is unavailable: {error}"),
+        })
+}
+
+async fn tart_agent_value(
+    agent: &TartAgent,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, ManagerError> {
+    let response = tart_agent_response(agent, method, path, body).await?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| ManagerError::Internal(error.into()))?;
+    if !status.is_success() {
+        let payload = serde_json::from_str::<Value>(&text).ok();
+        return Err(ManagerError::Upstream {
+            status,
+            code: payload
+                .as_ref()
+                .and_then(|value| value.get("code"))
+                .and_then(Value::as_str)
+                .unwrap_or("tart_agent_error")
+                .to_owned(),
+            message: payload
+                .as_ref()
+                .and_then(|value| value.get("error"))
+                .and_then(Value::as_str)
+                .unwrap_or(&text)
+                .chars()
+                .take(2_000)
+                .collect(),
+        });
+    }
+    serde_json::from_str(&text).map_err(|error| ManagerError::Internal(error.into()))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
@@ -424,6 +566,7 @@ async fn main() -> Result<()> {
         info.ncpu.unwrap_or(1),
         info.mem_total.unwrap_or(512 * 1_024 * 1_024),
     )?;
+    let tart = tart_agent_from_environment()?;
     let provisioning_paused = env::var("GRIDOPS_PROVISIONING_PAUSED")
         .ok()
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
@@ -431,12 +574,14 @@ async fn main() -> Result<()> {
         cpu_budget = limits.cpu_budget,
         memory_budget_mb = limits.memory_budget_mb,
         max_runners = limits.max_runners,
+        tart_enabled = tart.is_some(),
         min_free_disk_mb = limits.min_free_disk_mb,
         provisioning_paused,
         "runner host guardrails initialized"
     );
     let state = ManagerState {
         docker,
+        tart,
         token: SecretString::from(token),
         limits,
         reservations: Arc::new(Mutex::new(HashMap::new())),
@@ -472,13 +617,41 @@ async fn health(
 ) -> Result<Json<Value>, ManagerError> {
     state.docker.ping().await?;
     let version = state.docker.version().await?;
-    let active = active_capacity(&state.docker).await?;
+    let mut active = docker_active_capacity(&state.docker).await?;
     let reserved = reserved_capacity(&state).await;
     let disk = disk_capacity(&state.limits)?;
+    let (status, tart) = match &state.tart {
+        Some(agent) => match tart_agent_value(agent, reqwest::Method::GET, "v1/health", None).await
+        {
+            Ok(health) => {
+                if let Some(value) = health
+                    .get("capacity")
+                    .and_then(|capacity| capacity.get("active"))
+                    .cloned()
+                    && let Ok(usage) = serde_json::from_value::<CapacityUsage>(value)
+                {
+                    active.active_runners =
+                        active.active_runners.saturating_add(usage.active_runners);
+                    active.cpu += usage.cpu;
+                    active.memory_mb = active.memory_mb.saturating_add(usage.memory_mb);
+                }
+                ("ok", json!({ "available": true, "health": health }))
+            }
+            Err(error) => {
+                tracing::warn!(error = ?error, "Tart agent health check failed");
+                (
+                    "degraded",
+                    json!({ "available": false, "error": "Tart agent is unavailable." }),
+                )
+            }
+        },
+        None => ("ok", json!({ "available": false, "configured": false })),
+    };
     Ok(Json(json!({
-        "status": "ok",
+        "status": status,
         "dockerVersion": version.version,
         "apiVersion": version.api_version,
+        "providers": { "docker": { "available": true }, "tart": tart },
         "availableCpus": state.limits.available_cpus,
         "totalMemoryMb": state.limits.total_memory_mb,
         "provisioningPaused": state.provisioning_paused.load(Ordering::Relaxed),
@@ -512,7 +685,7 @@ async fn reserve_capacity(
     input.validate()?;
     let _guard = state.provision_lock.lock().await;
     ensure_provisioning_enabled(&state)?;
-    let active = active_capacity(&state.docker).await?;
+    let active = active_capacity(&state).await?;
     let disk = disk_capacity(&state.limits)?;
     let mut reservations = state.reservations.lock().await;
     reservations.retain(|_, reservation| reservation.expires_at > Instant::now());
@@ -542,6 +715,7 @@ async fn reserve_capacity(
         CapacityReservation {
             runner_id: input.runner_id,
             pool_id: input.pool_id,
+            provider: input.provider,
             cpu_limit: input.cpu_limit,
             memory_limit_mb: input.memory_limit_mb,
             expires_at: Instant::now() + Duration::from_mins(5),
@@ -575,7 +749,7 @@ async fn list_runners(
         .filters(&filters)
         .build();
     let containers = state.docker.list_containers(Some(options)).await?;
-    let runners = containers
+    let mut runners = containers
         .into_iter()
         .map(|container| ManagedRunner {
             id: container.id.unwrap_or_default(),
@@ -588,8 +762,19 @@ async fn list_runners(
             labels: container.labels.unwrap_or_default(),
             created_at: chrono::DateTime::from_timestamp(container.created.unwrap_or_default(), 0)
                 .map_or_else(String::new, |value| value.to_rfc3339()),
+            provider: "docker".into(),
         })
         .collect::<Vec<_>>();
+    if let Some(agent) = &state.tart {
+        let response = tart_agent_value(agent, reqwest::Method::GET, "v1/runners", None).await?;
+        let tart_runners = response.get("runners").cloned().ok_or_else(|| {
+            ManagerError::Internal(anyhow::anyhow!("Tart agent runner list is invalid"))
+        })?;
+        runners.extend(
+            serde_json::from_value::<Vec<ManagedRunner>>(tart_runners)
+                .map_err(|error| ManagerError::Internal(error.into()))?,
+        );
+    }
     Ok(Json(json!({ "runners": runners })))
 }
 
@@ -608,6 +793,24 @@ async fn provision_runner(
     }
     let lease_id = input.capacity_lease.clone();
     validate_capacity_lease(&state, &input).await?;
+    if input.provider == "tart" {
+        let result = match &state.tart {
+            Some(agent) => {
+                let body = serde_json::to_value(&input)
+                    .map_err(|error| ManagerError::Internal(error.into()))?;
+                tart_agent_value(agent, reqwest::Method::POST, "v1/runners", Some(body))
+                    .await
+                    .map(|value| (StatusCode::CREATED, Json(value)))
+            }
+            None => Err(ManagerError::Upstream {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                code: "tart_provider_disabled".into(),
+                message: "The Tart macOS runner provider is not configured.".into(),
+            }),
+        };
+        state.reservations.lock().await.remove(&lease_id);
+        return result;
+    }
     let result = provision_runner_inner(&state, &mut input).await;
     state.reservations.lock().await.remove(&lease_id);
     result
@@ -762,6 +965,21 @@ async fn control_runner(
     Path((container_id, action)): Path<(String, String)>,
     _auth: ManagerAuth,
 ) -> Result<Json<Value>, ManagerError> {
+    if is_tart_id(&container_id) {
+        let agent = state.tart.as_ref().ok_or_else(|| ManagerError::Upstream {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "tart_provider_disabled".into(),
+            message: "The Tart macOS runner provider is not configured.".into(),
+        })?;
+        return tart_agent_value(
+            agent,
+            reqwest::Method::POST,
+            &format!("v1/runners/{container_id}/{action}"),
+            None,
+        )
+        .await
+        .map(Json);
+    }
     validate_container_id(&container_id)?;
     let labels = managed_container_labels(&state.docker, &container_id).await?;
     if matches!(action.as_str(), "start" | "restart")
@@ -795,7 +1013,7 @@ async fn control_runner(
             };
             enforce_capacity(
                 &state.limits,
-                active_capacity(&state.docker).await?,
+                active_capacity(&state).await?,
                 reserved_capacity(&state).await,
                 requested,
                 disk_capacity(&state.limits)?,
@@ -855,14 +1073,45 @@ async fn logs(
     Query(query): Query<LogsQuery>,
     _auth: ManagerAuth,
 ) -> Result<Response, ManagerError> {
-    validate_container_id(&container_id)?;
-    managed_container_labels(&state.docker, &container_id).await?;
     let tail = query.tail.unwrap_or_else(|| "500".into());
     if !valid_log_tail(&tail) {
         return Err(ManagerError::BadRequest(
             "Log tail must be all or a number from 0 to 100000.".into(),
         ));
     }
+    if is_tart_id(&container_id) {
+        let agent = state.tart.as_ref().ok_or_else(|| ManagerError::Upstream {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "tart_provider_disabled".into(),
+            message: "The Tart macOS runner provider is not configured.".into(),
+        })?;
+        let path = format!(
+            "v1/runners/{container_id}/logs?tail={tail}&follow={}",
+            query.follow
+        );
+        let response = tart_agent_response(agent, reqwest::Method::GET, &path, None).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(ManagerError::Upstream {
+                status,
+                code: "tart_log_error".into(),
+                message: text.chars().take(2_000).collect(),
+            });
+        }
+        return Ok((
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-store"),
+                (header::HeaderName::from_static("x-accel-buffering"), "no"),
+            ],
+            Body::from_stream(response.bytes_stream()),
+        )
+            .into_response());
+    }
+    validate_container_id(&container_id)?;
+    managed_container_labels(&state.docker, &container_id).await?;
     let options = LogsOptionsBuilder::default()
         .stdout(true)
         .stderr(true)
@@ -891,6 +1140,21 @@ async fn delete_runner(
     Path(container_id): Path<String>,
     _auth: ManagerAuth,
 ) -> Result<Json<Value>, ManagerError> {
+    if is_tart_id(&container_id) {
+        let agent = state.tart.as_ref().ok_or_else(|| ManagerError::Upstream {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "tart_provider_disabled".into(),
+            message: "The Tart macOS runner provider is not configured.".into(),
+        })?;
+        return tart_agent_value(
+            agent,
+            reqwest::Method::DELETE,
+            &format!("v1/runners/{container_id}"),
+            None,
+        )
+        .await
+        .map(Json);
+    }
     validate_container_id(&container_id)?;
     managed_container_labels(&state.docker, &container_id).await?;
     state
@@ -982,6 +1246,7 @@ async fn validate_capacity_lease(
             })?;
     if reservation.runner_id != input.runner_id
         || reservation.pool_id != input.pool_id
+        || reservation.provider != input.provider
         || (reservation.cpu_limit - input.cpu_limit).abs() > f64::EPSILON
         || reservation.memory_limit_mb != input.memory_limit_mb
     {
@@ -992,7 +1257,7 @@ async fn validate_capacity_lease(
     Ok(())
 }
 
-async fn active_capacity(docker: &Docker) -> Result<CapacityUsage, ManagerError> {
+async fn docker_active_capacity(docker: &Docker) -> Result<CapacityUsage, ManagerError> {
     let filters = HashMap::from([(
         "label".to_owned(),
         vec!["io.gridops.managed=true".to_owned()],
@@ -1028,6 +1293,28 @@ async fn active_capacity(docker: &Docker) -> Result<CapacityUsage, ManagerError>
         usage.memory_mb = usage
             .memory_mb
             .saturating_add(host.memory.unwrap_or_default() / 1_024 / 1_024);
+    }
+    Ok(usage)
+}
+
+async fn active_capacity(state: &ManagerState) -> Result<CapacityUsage, ManagerError> {
+    let mut usage = docker_active_capacity(&state.docker).await?;
+    if let Some(agent) = &state.tart {
+        let health = tart_agent_value(agent, reqwest::Method::GET, "v1/health", None).await?;
+        let tart_usage = health
+            .get("capacity")
+            .and_then(|capacity| capacity.get("active"))
+            .cloned()
+            .ok_or_else(|| {
+                ManagerError::Internal(anyhow::anyhow!("Tart agent health omitted active capacity"))
+            })?;
+        let tart_usage = serde_json::from_value::<CapacityUsage>(tart_usage)
+            .map_err(|error| ManagerError::Internal(error.into()))?;
+        usage.active_runners = usage
+            .active_runners
+            .saturating_add(tart_usage.active_runners);
+        usage.cpu += tart_usage.cpu;
+        usage.memory_mb = usage.memory_mb.saturating_add(tart_usage.memory_mb);
     }
     Ok(usage)
 }
@@ -1298,6 +1585,12 @@ fn validate_container_id(id: &str) -> Result<(), ManagerError> {
     ))
 }
 
+fn is_tart_id(id: &str) -> bool {
+    id.strip_prefix("tart-").is_some_and(|suffix| {
+        suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
 async fn managed_container_labels(
     docker: &Docker,
     id: &str,
@@ -1346,6 +1639,7 @@ mod tests {
 
     fn provision_request(mode: &str) -> ProvisionRunner {
         ProvisionRunner {
+            provider: "docker".into(),
             runner_id: "runner-1".into(),
             pool_id: "pool-1".into(),
             name: "runner-1".into(),

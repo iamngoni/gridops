@@ -4,13 +4,14 @@
 
 [![CI](https://github.com/iamngoni/gridops/actions/workflows/ci.yml/badge.svg)](https://github.com/iamngoni/gridops/actions/workflows/ci.yml)
 
-GridOps is a self-hosted control plane for GitHub Actions runners. Connect a GitHub App, select repositories or organizations, and operate isolated Docker runner pools from one interface.
+GridOps is a self-hosted control plane for GitHub Actions runners. Connect a GitHub App, select repositories or organizations, and operate isolated Linux container or macOS virtual-machine runner pools from one interface.
 
 ## Capabilities
 
 - GitHub App OAuth, installations, encrypted user tokens, and short-lived installation tokens
 - Multi-repository logical runner pools plus organization-scoped runner groups
 - Ephemeral and persistent Docker runners with labels, CPU, memory, PID, and capability limits
+- Ephemeral Apple Silicon macOS runners in copy-on-write Tart virtual machines
 - Editable pool configuration with generation-tracked, busy-safe rolling runner replacement
 - Provision, scale, reconcile, pause, resume, stop, restart, rebuild, drain, and delete controls
 - Queue-driven autoscaling and idle scale-down
@@ -28,7 +29,8 @@ GridOps is a self-hosted control plane for GitHub Actions runners. Connect a Git
 - TanStack Router, React 19, Tailwind CSS 4, and shadcn-style UI components in the browser
 - Rust/Axum control-plane API
 - Rust/SQLx with SQLite migrations
-- Rust/Bollard runner manager as the only service with Docker socket access
+- Rust/Bollard runner manager as the only service with Docker socket access and the provider gateway
+- Authenticated native macOS agent for Tart VM lifecycle, capacity, and clean job-log streaming
 - Rust background reconciler
 - Axum serves the compiled client, same-origin API, and OAuth traffic; Traefik handles private ingress and TLS
 
@@ -76,6 +78,8 @@ GRIDOPS_ENV_FILE=.env.local docker compose --env-file .env.local up --build
 Only `manager` receives `/var/run/docker.sock`. Runner containers do not receive it. The API and reconciler share the `gridops-data` volume for SQLite and retained logs.
 
 The manager is the authoritative capacity boundary. Before GitHub runner credentials are issued, the API or reconciler reserves a short-lived capacity lease; container creation consumes that lease and revalidates the configured runner network and disk watermark. By default GridOps reserves 25% of Docker-host CPU and memory, stops admitting runners below the larger of 25 GB or 15% free disk, limits runner logs to five 20 MB files, and derives a conservative global runner count from a 2 CPU / 2 GB runner shape. Override the `GRIDOPS_RUNNER_*` and `GRIDOPS_MIN_FREE_DISK_*` values from `.env.example` when the Docker host has a deliberately different envelope.
+
+Apple Silicon hosts may additionally run ephemeral macOS pools through Tart. The provider is optional and remains disabled unless both its URL and bearer token are configured. See [docs/macos-runners.md](docs/macos-runners.md) for image preparation, native-agent installation, isolation, and capacity limits.
 
 ## Develop
 

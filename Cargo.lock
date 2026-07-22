@@ -1056,6 +1056,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "gridops-core",
+ "reqwest",
  "secrecy",
  "serde",
  "serde_json",
@@ -1064,6 +1065,7 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -1083,6 +1085,25 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "gridops-tart-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "futures-util",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tokio",
+ "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
  "uuid",

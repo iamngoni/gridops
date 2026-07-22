@@ -22,12 +22,15 @@ pub fn runner_arch_label() -> &'static str {
     }
 }
 
-pub fn runner_system_labels() -> [&'static str; 3] {
-    ["self-hosted", "linux", runner_arch_label()]
+pub fn runner_system_labels(provider: &str) -> [&'static str; 3] {
+    match provider {
+        "tart" => ["self-hosted", "macOS", "ARM64"],
+        _ => ["self-hosted", "linux", runner_arch_label()],
+    }
 }
 
-pub fn effective_runner_labels(configured: &[String]) -> Vec<String> {
-    let mut labels = runner_system_labels()
+pub fn effective_runner_labels(provider: &str, configured: &[String]) -> Vec<String> {
+    let mut labels = runner_system_labels(provider)
         .into_iter()
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
@@ -42,8 +45,8 @@ pub fn effective_runner_labels(configured: &[String]) -> Vec<String> {
     labels
 }
 
-pub fn runner_supports_system_label(label: &str) -> bool {
-    runner_system_labels()
+pub fn runner_supports_system_label(provider: &str, label: &str) -> bool {
+    runner_system_labels(provider)
         .iter()
         .any(|system| system.eq_ignore_ascii_case(label))
 }
@@ -69,11 +72,14 @@ pub async fn assigned_queued_jobs(
               (candidate.scope='organization' AND candidate.installation_id=repo.installation_id)
             ) AND NOT EXISTS (
               SELECT 1 FROM json_each(wj.labels) requested
-              WHERE lower(CAST(requested.value AS TEXT)) NOT IN ('self-hosted','linux',?)
-                AND NOT EXISTS (
+              WHERE NOT (
+                lower(CAST(requested.value AS TEXT))='self-hosted' OR
+                (candidate.provider='docker' AND lower(CAST(requested.value AS TEXT)) IN ('linux',lower(?))) OR
+                (candidate.provider='tart' AND lower(CAST(requested.value AS TEXT)) IN ('macos','arm64')) OR EXISTS (
                   SELECT 1 FROM json_each(candidate.labels) assigned
                   WHERE lower(CAST(assigned.value AS TEXT))=lower(CAST(requested.value AS TEXT))
                 )
+              )
             )
             ORDER BY CASE WHEN candidate.scope='repository' THEN 0 ELSE 1 END,
               candidate.created_at,candidate.id
@@ -103,11 +109,14 @@ pub async fn repository_capacities(
                 (candidate.scope='organization' AND candidate.installation_id=repo.installation_id)
               ) AND NOT EXISTS (
                 SELECT 1 FROM json_each(wj.labels) requested
-                WHERE lower(CAST(requested.value AS TEXT)) NOT IN ('self-hosted','linux',?)
-                  AND NOT EXISTS (
+                WHERE NOT (
+                  lower(CAST(requested.value AS TEXT))='self-hosted' OR
+                  (candidate.provider='docker' AND lower(CAST(requested.value AS TEXT)) IN ('linux',lower(?))) OR
+                  (candidate.provider='tart' AND lower(CAST(requested.value AS TEXT)) IN ('macos','arm64')) OR EXISTS (
                     SELECT 1 FROM json_each(candidate.labels) assigned
                     WHERE lower(CAST(assigned.value AS TEXT))=lower(CAST(requested.value AS TEXT))
                   )
+                )
               )
               ORDER BY CASE WHEN candidate.scope='repository' THEN 0 ELSE 1 END,
                 candidate.created_at,candidate.id
@@ -176,8 +185,10 @@ mod tests {
 
     #[test]
     fn effective_labels_include_supported_runner_system_labels() {
-        let labels =
-            effective_runner_labels(&["gridops".into(), "SELF-HOSTED".into(), "pool-a".into()]);
+        let labels = effective_runner_labels(
+            "docker",
+            &["gridops".into(), "SELF-HOSTED".into(), "pool-a".into()],
+        );
         assert!(labels.iter().any(|label| label == "self-hosted"));
         assert!(labels.iter().any(|label| label == "linux"));
         assert!(labels.iter().any(|label| label == runner_arch_label()));
@@ -194,10 +205,13 @@ mod tests {
 
     #[test]
     fn unsupported_system_labels_are_not_treated_as_available() {
-        assert!(runner_supports_system_label("self-hosted"));
-        assert!(runner_supports_system_label("Linux"));
-        assert!(runner_supports_system_label(runner_arch_label()));
-        assert!(!runner_supports_system_label("windows"));
+        assert!(runner_supports_system_label("docker", "self-hosted"));
+        assert!(runner_supports_system_label("docker", "Linux"));
+        assert!(runner_supports_system_label("docker", runner_arch_label()));
+        assert!(!runner_supports_system_label("docker", "windows"));
+        assert!(runner_supports_system_label("tart", "macOS"));
+        assert!(runner_supports_system_label("tart", "arm64"));
+        assert!(!runner_supports_system_label("tart", "linux"));
     }
 
     #[test]

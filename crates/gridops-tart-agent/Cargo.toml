@@ -1,5 +1,5 @@
 [package]
-name = "gridops-manager"
+name = "gridops-tart-agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,11 +8,8 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
-bollard.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
-gridops-core = { path = "../gridops-core" }
-reqwest.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -22,7 +19,6 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
-url.workspace = true
 
 [lints]
 workspace = true

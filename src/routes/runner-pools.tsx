@@ -41,7 +41,7 @@ function RunnerPoolsPage() {
       icon={Boxes}
       emptyTitle={data.authenticated ? "No runner pools" : "Connect GitHub to manage runners"}
       emptyDescription={data.authenticated
-        ? "Create a repository or organization-scoped pool to start provisioning containers."
+        ? "Create a repository or organization-scoped pool to start provisioning runners."
         : "Authorize the GitHub App, then choose a repository or organization for your first pool."}
       action="Create runner pool"
       actionHref="/runner-pools/new"
@@ -67,6 +67,7 @@ function RunnerPoolsPage() {
                     <TableCell>
                       <Link className="font-medium hover:text-primary" params={{ poolId: pool.id }} to="/runner-pools/$poolId">{pool.name}</Link>
                       <div className="mt-1 flex flex-wrap gap-1">
+                        <Badge variant="secondary">{pool.provider === "tart" ? "macOS · Tart" : "Linux · Docker"}</Badge>
                         {pool.labels.slice(0, 3).map((label) => <Badge key={label} variant="outline">{label}</Badge>)}
                       </div>
                     </TableCell>
@@ -134,7 +135,7 @@ function RunnerPoolsPage() {
                           action={() => control({ data: { action: "reconcile", poolId: pool.id } })}
                           icon={<RefreshCw />}
                           size="icon"
-                          success="Pool reconciled with Docker."
+                          success={`Pool reconciled with ${pool.provider === "tart" ? "Tart" : "Docker"}.`}
                           title={`Reconcile ${pool.name}`}
                         ><span className="sr-only">Reconcile {pool.name}</span></AsyncActionButton>
                         <AsyncActionButton

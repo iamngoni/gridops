@@ -47,6 +47,7 @@ pub struct CreateRunnerPool {
     pub name: String,
     pub scope: String,
     pub mode: String,
+    pub provider: String,
     pub labels: Vec<String>,
     pub image: String,
     pub desired_count: i64,
@@ -98,6 +99,7 @@ impl CreateRunnerPool {
         validate_pool_configuration(
             &self.name,
             &self.mode,
+            &self.provider,
             &self.labels,
             &self.image,
             self.desired_count,
@@ -119,6 +121,7 @@ pub struct UpdateRunnerPool {
     pub repository_ids: Option<Vec<i64>>,
     pub name: String,
     pub mode: String,
+    pub provider: String,
     pub labels: Vec<String>,
     pub image: String,
     pub desired_count: i64,
@@ -155,6 +158,7 @@ impl UpdateRunnerPool {
         validate_pool_configuration(
             &self.name,
             &self.mode,
+            &self.provider,
             &self.labels,
             &self.image,
             self.desired_count,
@@ -173,6 +177,7 @@ impl UpdateRunnerPool {
 fn validate_pool_configuration(
     name: &str,
     mode: &str,
+    provider: &str,
     labels: &[String],
     image: &str,
     desired_count: i64,
@@ -190,11 +195,20 @@ fn validate_pool_configuration(
     if !matches!(mode, "ephemeral" | "persistent") {
         return Err("Runner pool mode is invalid.".into());
     }
+    if !matches!(provider, "docker" | "tart") {
+        return Err("Runner provider must be Docker or Tart.".into());
+    }
+    if provider == "tart" && mode != "ephemeral" {
+        return Err("Tart runner pools must be ephemeral.".into());
+    }
     if min_count < 0 || desired_count < min_count || desired_count > max_count || max_count > 100 {
         return Err("Capacity must satisfy 0 <= minimum <= desired <= maximum <= 100.".into());
     }
     if !(0.25..=64.0).contains(&cpu_limit) || !(256..=262_144).contains(&memory_limit_mb) {
         return Err("Runner resource limits are outside the supported range.".into());
+    }
+    if provider == "tart" && (cpu_limit.fract() != 0.0 || memory_limit_mb < 2_048) {
+        return Err("Tart runners require whole CPU cores and at least 2048 MB of memory.".into());
     }
     if !(1..=20).contains(&queue_scale_factor) || !(1..=1_440).contains(&idle_timeout_minutes) {
         return Err("Autoscaling settings are outside the supported range.".into());
@@ -238,6 +252,7 @@ mod tests {
             name: "linux-general".into(),
             scope: "repository".into(),
             mode: "ephemeral".into(),
+            provider: "docker".into(),
             labels: vec!["docker".into()],
             image: "ghcr.io/actions/actions-runner:latest".into(),
             desired_count: 1,
@@ -287,6 +302,7 @@ mod tests {
             repository_ids: None,
             name: original.name,
             mode: original.mode,
+            provider: original.provider,
             labels: original.labels,
             image: original.image,
             desired_count: original.desired_count,

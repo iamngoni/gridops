@@ -78,6 +78,10 @@ services:
       GRIDOPS_RUNNER_LOG_MAX_SIZE: ${GRIDOPS_RUNNER_LOG_MAX_SIZE:-20m}
       GRIDOPS_RUNNER_LOG_MAX_FILES: ${GRIDOPS_RUNNER_LOG_MAX_FILES:-5}
       GRIDOPS_RUNNER_PIDS_LIMIT: ${GRIDOPS_RUNNER_PIDS_LIMIT:-1024}
+      GRIDOPS_TART_AGENT_URL: ${GRIDOPS_TART_AGENT_URL:-}
+      GRIDOPS_TART_AGENT_TOKEN: ${GRIDOPS_TART_AGENT_TOKEN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     read_only: true

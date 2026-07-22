@@ -8,6 +8,7 @@ const configurationShape = {
     .max(48)
     .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, "Use lowercase letters, numbers, and hyphens."),
   mode: z.enum(["ephemeral", "persistent"]),
+  provider: z.enum(["docker", "tart"]),
   labels: z.array(z.string().trim().min(1).max(64)).max(20),
   image: z.string().trim().min(1).max(300),
   desiredCount: z.number().int().min(0).max(100),
@@ -50,6 +51,21 @@ function validateCapacity(
   }
 }
 
+function validateProvider(
+  value: { provider: "docker" | "tart"; mode: "ephemeral" | "persistent"; cpuLimit: number; memoryLimitMb: number },
+  context: z.RefinementCtx,
+) {
+  if (value.provider === "tart" && value.mode !== "ephemeral") {
+    context.addIssue({ code: "custom", path: ["mode"], message: "Tart runner pools must be ephemeral." });
+  }
+  if (value.provider === "tart" && !Number.isInteger(value.cpuLimit)) {
+    context.addIssue({ code: "custom", path: ["cpuLimit"], message: "Tart runners require whole CPU cores." });
+  }
+  if (value.provider === "tart" && value.memoryLimitMb < 2_048) {
+    context.addIssue({ code: "custom", path: ["memoryLimitMb"], message: "Tart runners require at least 2048 MB of memory." });
+  }
+}
+
 export const updateRunnerPoolSchema = z
   .object({ repositoryIds: repositoryIds.optional(), ...configurationShape })
   .superRefine((value, context) => {
@@ -68,6 +84,7 @@ export const updateRunnerPoolSchema = z
       });
     }
     validateCapacity(value, context);
+    validateProvider(value, context);
   });
 
 export const createRunnerPoolSchema = z
@@ -100,6 +117,7 @@ export const createRunnerPoolSchema = z
       });
     }
     validateCapacity(value, context);
+    validateProvider(value, context);
   });
 
 export function parseCreateRunnerPoolInput(input: unknown) {

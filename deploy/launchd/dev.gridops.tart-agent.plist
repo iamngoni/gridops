@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.gridops.tart-agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__BINARY__</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>GRIDOPS_TART_AGENT_TOKEN_FILE</key>
+    <string>__TOKEN_FILE__</string>
+    <key>GRIDOPS_TART_AGENT_HOME</key>
+    <string>__AGENT_HOME__</string>
+    <key>GRIDOPS_TART_AGENT_BIND</key>
+    <string>__BIND__</string>
+    <key>GRIDOPS_TART_BINARY</key>
+    <string>__TART_BINARY__</string>
+    <key>GRIDOPS_TART_RUNNER_ROOT</key>
+    <string>__RUNNER_ROOT__</string>
+    <key>GRIDOPS_TART_NETWORK_MODE</key>
+    <string>__NETWORK_MODE__</string>
+    <key>GRIDOPS_TART_CPU_BUDGET</key>
+    <string>__CPU_BUDGET__</string>
+    <key>GRIDOPS_TART_MEMORY_BUDGET_MB</key>
+    <string>__MEMORY_BUDGET__</string>
+    <key>GRIDOPS_TART_MAX_RUNNERS</key>
+    <string>__MAX_RUNNERS__</string>
+    <key>GRIDOPS_TART_MIN_FREE_DISK_MB</key>
+    <string>__MIN_FREE_DISK__</string>
+    <key>RUST_LOG</key>
+    <string>gridops_tart_agent=info,tower_http=info</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>__STDOUT_LOG__</string>
+  <key>StandardErrorPath</key>
+  <string>__STDERR_LOG__</string>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+</dict>
+</plist>

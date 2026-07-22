@@ -4,6 +4,7 @@ members = [
   "crates/gridops-core",
   "crates/gridops-manager",
   "crates/gridops-reconciler",
+  "crates/gridops-tart-agent",
 ]
 resolver = "3"
 

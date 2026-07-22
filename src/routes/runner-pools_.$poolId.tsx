@@ -54,6 +54,8 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"ephemeral" | "persistent">(pool.mode);
+  const [provider, setProvider] = useState<"docker" | "tart">(pool.provider);
+  const [image, setImage] = useState(pool.image);
   const [repositoryIds, setRepositoryIds] = useState(pool.repositoryIds);
   const [maxCount, setMaxCount] = useState(pool.maxCount);
   const [runnerGroupId, setRunnerGroupId] = useState(pool.runnerGroupId);
@@ -120,6 +122,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
           repositoryIds: pool.scope === "repository" ? repositoryIds : undefined,
           name: String(form.get("name") ?? ""),
           mode,
+          provider,
           labels: String(form.get("labels") ?? "")
             .split(",")
             .map((label) => label.trim())
@@ -163,7 +166,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               Generation {pool.configurationVersion} · runtime changes roll through idle runners safely.
             </p>
           </div>
-          <Badge variant="outline">{pool.mode}</Badge>
+          <Badge variant="outline">{provider === "tart" ? "Tart · macOS ARM64" : "Docker · Linux"} · {mode}</Badge>
         </div>
 
         {pool.canManage ? <form className="mt-6 space-y-4" onSubmit={submit}>
@@ -206,22 +209,41 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               <Field label="Pool name" hint="Also used as a runner label.">
                 <Input defaultValue={pool.name} name="name" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" required />
               </Field>
+              <Field label="Runner provider" hint={provider === "tart" ? "Runs isolated Apple Virtualization VMs on the macOS host." : "Runs isolated Linux containers through the Docker manager."}>
+                <SearchableSelect
+                  ariaLabel="Runner provider"
+                  onValueChange={(nextProvider) => {
+                    const selected = nextProvider ?? "docker";
+                    setProvider(selected);
+                    setImage(selected === "tart" ? pool.tartImage : pool.dockerImage);
+                    if (selected === "tart") setMode("ephemeral");
+                  }}
+                  options={[
+                    { value: "docker", label: "Docker · Linux", description: "Fast Linux containers" },
+                    { value: "tart", label: "Tart · macOS ARM64", description: "Copy-on-write macOS virtual machines" },
+                  ]}
+                  searchable={false}
+                  value={provider}
+                />
+              </Field>
               <Field label="Mode">
                 <SearchableSelect
                   ariaLabel="Runner mode"
                   onValueChange={(nextMode) => setMode(nextMode ?? "ephemeral")}
-                  options={[
-                    { value: "ephemeral", label: "Ephemeral", description: "One clean runner per job" },
-                    { value: "persistent", label: "Persistent", description: "Reuse the runner across jobs" },
-                  ]}
+                  options={provider === "tart"
+                    ? [{ value: "ephemeral", label: "Ephemeral", description: "One clean VM per job" }]
+                    : [
+                      { value: "ephemeral", label: "Ephemeral", description: "One clean runner per job" },
+                      { value: "persistent", label: "Persistent", description: "Reuse the runner across jobs" },
+                    ]}
                   searchable={false}
                   value={mode}
                 />
               </Field>
-              <Field className="md:col-span-2" label="Container image">
-                <Input defaultValue={pool.image} name="image" required />
+              <Field className="md:col-span-2" label={provider === "tart" ? "Tart base VM" : "Container image"} hint={provider === "tart" ? "A stopped, prepared local Tart VM. Each runner is an APFS copy-on-write clone." : "OCI image used to create each Linux runner."}>
+                <Input name="image" onChange={(event) => setImage(event.target.value)} required value={image} />
               </Field>
-              <Field className="md:col-span-2" label="Additional labels" hint="Comma-separated; the current pool name is included automatically.">
+              <Field className="md:col-span-2" label="Additional labels" hint={`Comma-separated; ${provider === "tart" ? "self-hosted, macOS, ARM64, and " : "self-hosted, Linux, the host architecture, and "}the pool name are included automatically.`}>
                 <Input defaultValue={pool.labels.join(", ")} name="labels" />
               </Field>
               {pool.scope === "organization" ? (
@@ -271,7 +293,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
                 </Field>
               ) : null}
               <div className="rounded-md border border-amber-500/20 bg-amber-500/5 p-3 text-[11px] leading-5 text-amber-100 md:col-span-2">
-                Changing the name, mode, image, labels, runner group, CPU, or memory starts a rolling replacement. Busy runners finish their jobs; GridOps replaces idle runners one at a time.
+                Changing the name, provider, mode, image, labels, runner group, CPU, or memory starts a rolling replacement. Busy runners finish their jobs; GridOps replaces idle runners one at a time.
               </div>
             </CardContent>
           </Card>
@@ -282,8 +304,8 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               <Field label="Target runners" hint="Runners GridOps should keep active now. Autoscaling may change this between the minimum and maximum."><Input defaultValue={pool.desiredCount} max="100" min="0" name="desiredCount" required type="number" /></Field>
               <Field label="Minimum runners" hint="Lowest pool target after idle scale-down. Set 0 to scale all the way down."><Input defaultValue={pool.minCount} max="100" min="0" name="minCount" required type="number" /></Field>
               <Field label="Maximum runners" hint={pool.scope === "repository" ? "Highest pool target during scale-up. Must be at least the number of selected repositories." : "Highest pool target autoscaling can request."}><Input max="100" min={Math.max(1, repositoryIds.length)} name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} required type="number" value={maxCount} /></Field>
-              <Field label="CPU cores per runner" hint={`Docker CPU limit for each runner. This host has ${maxCpuLimit} logical CPUs available.`}><Input defaultValue={pool.cpuLimit} max={Math.max(maxCpuLimit, pool.cpuLimit)} min="0.25" name="cpuLimit" required step="0.25" type="number" /></Field>
-              <Field label="Memory per runner (MB)" hint={`Hard Docker limit. Host runner budget: ${maxMemoryLimitMb} MB.`}><Input defaultValue={pool.memoryLimitMb} max={maxMemoryLimitMb} min="256" name="memoryLimitMb" required step="256" type="number" /></Field>
+              <Field label="CPU cores per runner" hint={provider === "tart" ? `Virtual CPU cores assigned to each macOS VM. Whole cores only; shared host budget: ${maxCpuLimit}.` : `Hard Docker CPU limit for each runner. Shared host budget: ${maxCpuLimit} logical CPUs.`}><Input defaultValue={pool.cpuLimit} max={Math.max(maxCpuLimit, pool.cpuLimit)} min={provider === "tart" ? "1" : "0.25"} name="cpuLimit" required step={provider === "tart" ? "1" : "0.25"} type="number" /></Field>
+              <Field label="Memory per runner (MB)" hint={provider === "tart" ? `Memory assigned to each macOS VM. Minimum 2048 MB; shared host budget: ${maxMemoryLimitMb} MB.` : `Hard Docker memory limit. Shared host budget: ${maxMemoryLimitMb} MB.`}><Input defaultValue={Math.max(provider === "tart" ? 2_048 : 256, pool.memoryLimitMb)} max={maxMemoryLimitMb} min={provider === "tart" ? "2048" : "256"} name="memoryLimitMb" required step="256" type="number" /></Field>
               <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 xl:col-span-3">
                 <input className="mt-0.5 size-4 accent-emerald-500" defaultChecked={pool.autoscalingEnabled} name="autoscalingEnabled" type="checkbox" />
                 <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Queued workflow jobs raise the target up to Maximum runners. When every runner is idle, the target returns to Minimum runners after the delay below.</span></span>
@@ -301,7 +323,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               {submitting ? "Saving changes…" : "Save changes"}
             </Button>
           </div>
-        </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.scope === "repository" ? `${pool.repositoryIds.length} repositories` : pool.accountLogin} /><ReadOnly label="Runner capacity" value={`${pool.desiredCount} target · ${pool.minCount}-${pool.maxCount} runners`} /><ReadOnly label="Runner image" value={pool.image} /><ReadOnly label="Per-runner resources" value={`${pool.cpuLimit} CPU cores · ${pool.memoryLimitMb} MB memory`} /></CardContent></Card>}
+        </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.scope === "repository" ? `${pool.repositoryIds.length} repositories` : pool.accountLogin} /><ReadOnly label="Provider" value={pool.provider === "tart" ? "Tart · macOS ARM64" : "Docker · Linux"} /><ReadOnly label="Runner capacity" value={`${pool.desiredCount} target · ${pool.minCount}-${pool.maxCount} runners`} /><ReadOnly label={pool.provider === "tart" ? "Tart base VM" : "Runner image"} value={pool.image} /><ReadOnly label="Per-runner resources" value={`${pool.cpuLimit} CPU cores · ${pool.memoryLimitMb} MB memory`} /></CardContent></Card>}
       </div>
     </AppShell>
   );

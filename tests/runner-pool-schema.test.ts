@@ -12,6 +12,7 @@ const validPool = {
   name: "linux-general",
   scope: "repository" as const,
   mode: "ephemeral" as const,
+  provider: "docker" as const,
   labels: ["gridops", "docker"],
   image: "ghcr.io/actions/actions-runner:latest",
   desiredCount: 1,
@@ -62,6 +63,14 @@ describe("runner pool validation", () => {
   it("rejects unsafe names and excessive resources", () => {
     expect(createRunnerPoolSchema.safeParse({ ...validPool, name: "Bad Pool" }).success).toBe(false);
     expect(createRunnerPoolSchema.safeParse({ ...validPool, cpuLimit: 128 }).success).toBe(false);
+  });
+
+  it("enforces Tart's ephemeral VM resource shape", () => {
+    const tartPool = { ...validPool, provider: "tart" as const, image: "gridops-macos-tahoe-base" };
+    expect(createRunnerPoolSchema.safeParse(tartPool).success).toBe(true);
+    expect(createRunnerPoolSchema.safeParse({ ...tartPool, mode: "persistent" }).success).toBe(false);
+    expect(createRunnerPoolSchema.safeParse({ ...tartPool, cpuLimit: 1.5 }).success).toBe(false);
+    expect(createRunnerPoolSchema.safeParse({ ...tartPool, memoryLimitMb: 1_024 }).success).toBe(false);
   });
 
   it("validates editable configuration without allowing a destination change", () => {

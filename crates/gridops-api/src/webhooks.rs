@@ -593,12 +593,8 @@ async fn scale_for_queued_job(
         .filter_map(Value::as_str)
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    let custom_labels = requested_labels
-        .iter()
-        .filter(|label| !runner_supports_system_label(label))
-        .collect::<Vec<_>>();
     let candidates = sqlx::query(
-        r#"SELECT p.id,p.labels,p.desired_count,p.max_count,p.queue_scale_factor,
+        r#"SELECT p.id,p.provider,p.labels,p.desired_count,p.max_count,p.queue_scale_factor,
           COUNT(CASE WHEN r.deleted_at IS NULL AND r.busy=1
             AND r.status IN ('online','idle','busy') THEN 1 END) AS busy_count
         FROM runner_pools p JOIN repositories event_repo ON event_repo.id=?
@@ -615,12 +611,14 @@ async fn scale_for_queued_job(
     .fetch_all(database)
     .await?;
     for candidate in candidates {
+        let provider = candidate.get::<String, _>("provider");
         let labels: Vec<String> =
             serde_json::from_str(candidate.get::<&str, _>("labels")).unwrap_or_default();
-        if !custom_labels.iter().all(|requested| {
-            labels
-                .iter()
-                .any(|label| label.eq_ignore_ascii_case(requested))
+        if !requested_labels.iter().all(|requested| {
+            runner_supports_system_label(&provider, requested)
+                || labels
+                    .iter()
+                    .any(|label| label.eq_ignore_ascii_case(requested))
         }) {
             continue;
         }

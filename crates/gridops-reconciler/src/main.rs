@@ -40,6 +40,7 @@ struct Pool {
     name: String,
     state: String,
     mode: String,
+    provider: String,
     labels: String,
     image: String,
     desired_count: i64,
@@ -221,7 +222,7 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
 
 async fn load_pools(database: &SqlitePool) -> Result<Vec<Pool>> {
     Ok(sqlx::query_as::<_, Pool>(
-        r#"SELECT p.id,p.installation_id,i.account_login,p.scope,p.name,p.state,p.mode,p.labels,p.image,p.desired_count,p.min_count,
+        r#"SELECT p.id,p.installation_id,i.account_login,p.scope,p.name,p.state,p.mode,p.provider,p.labels,p.image,p.desired_count,p.min_count,
           p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,
           p.runner_group_id,p.ephemeral,p.paused,
           p.autoscaling_enabled,p.queue_scale_factor,p.idle_timeout_minutes,p.configuration_version,
@@ -888,6 +889,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         app,
         &runner_id,
         &pool.id,
+        &pool.provider,
         pool.cpu_limit,
         pool.memory_limit_mb,
     )
@@ -897,11 +899,18 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         return Ok(ProvisionAttempt::Deferred);
     };
     let now = now_millis();
-    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,'starting',?,?,?,?)")
+    let (runner_os, runner_architecture) = if pool.provider == "tart" {
+        ("macOS", "ARM64")
+    } else {
+        ("linux", gridops_core::runner_arch_label())
+    };
+    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,os,architecture,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,?,?,'starting',?,?,?,?)")
         .bind(&runner_id)
         .bind(&pool.id)
         .bind(target_repository.as_ref().map(|repository| repository.repository_id))
         .bind(&runner_name)
+        .bind(runner_os)
+        .bind(runner_architecture)
         .bind(pool.ephemeral)
         .bind(pool.configuration_version)
         .bind(now)
@@ -930,6 +939,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
             "name": runner_name,
             "image": pool.image,
             "mode": pool.mode,
+            "provider": pool.provider,
             "labels": &labels,
             "cpuLimit": pool.cpu_limit,
             "memoryLimitMb": pool.memory_limit_mb,
@@ -946,7 +956,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
                     &JitRequest {
                         name: runner_name.clone(),
                         runner_group_id: pool.runner_group_id,
-                        labels: effective_runner_labels(&labels),
+                        labels: effective_runner_labels(&pool.provider, &labels),
                         work_folder: "_work".into(),
                     },
                 )
@@ -1250,9 +1260,10 @@ async fn archive_runner_logs(app: &Reconciler, pool: &Pool, runner: &Runner) -> 
         return Ok(());
     };
     if sqlx::query_scalar::<_, String>(
-        "SELECT id FROM log_streams WHERE runner_id=? AND source='docker' AND complete=1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT id FROM log_streams WHERE runner_id=? AND source=? AND complete=1 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&runner.id)
+    .bind(&pool.provider)
     .fetch_optional(&app.database)
     .await?
     .is_some()
@@ -1321,7 +1332,7 @@ async fn archive_runner_logs(app: &Reconciler, pool: &Pool, runner: &Runner) -> 
         r#"INSERT INTO log_streams (
           id,runner_id,job_id,installation_id,runner_name,pool_name,repository,source,path,
           size_bytes,complete,checksum,expires_at,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,'docker',?, ?,1,?,?,?,?)"#,
+        ) VALUES (?,?,?,?,?,?,?,?,?, ?,1,?,?,?,?)"#,
     )
     .bind(&stream_id)
     .bind(&runner.id)
@@ -1330,6 +1341,7 @@ async fn archive_runner_logs(app: &Reconciler, pool: &Pool, runner: &Runner) -> 
     .bind(&runner.name)
     .bind(&pool.name)
     .bind(repository)
+    .bind(&pool.provider)
     .bind(&filename)
     .bind(size_bytes)
     .bind(checksum)
@@ -1409,6 +1421,7 @@ async fn reserve_runner_capacity(
     app: &Reconciler,
     runner_id: &str,
     pool_id: &str,
+    provider: &str,
     cpu_limit: f64,
     memory_limit_mb: i64,
 ) -> Result<Option<String>> {
@@ -1419,6 +1432,7 @@ async fn reserve_runner_capacity(
         Some(json!({
             "runnerId": runner_id,
             "poolId": pool_id,
+            "provider": provider,
             "cpuLimit": cpu_limit,
             "memoryLimitMb": memory_limit_mb,
         })),
@@ -1657,6 +1671,7 @@ mod tests {
             name: "linux".into(),
             state: "active".into(),
             mode: "ephemeral".into(),
+            provider: "docker".into(),
             labels: "[]".into(),
             image: "runner:latest".into(),
             desired_count: 1,

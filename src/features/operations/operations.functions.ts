@@ -20,7 +20,7 @@ export type Repository = {
 };
 
 export type RunnerPool = {
-  id: string; name: string; scope: string; mode: string; labels: string[]; image: string;
+  id: string; name: string; scope: string; mode: string; provider: "docker" | "tart"; labels: string[]; image: string;
   desiredCount: number; minCount: number; maxCount: number; cpuLimit: number; memoryLimitMb: number;
   paused: boolean; state: string; accountLogin: string; repository: string | null; repositoryCount: number;
   provisionFailureCount: number; provisionRetryAt: string | null; provisionCircuitOpen: boolean;
