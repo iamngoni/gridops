@@ -49,13 +49,19 @@ if [[ -z "${runner_url}" || -z "${runner_digest}" ]]; then
   exit 1
 fi
 
+vm_pid=""
 cleanup() {
   "${tart_binary}" stop "${base_name}" >/dev/null 2>&1 || true
+  if [[ -n "${vm_pid}" ]]; then
+    wait "${vm_pid}" 2>/dev/null || true
+    vm_pid=""
+  fi
 }
 trap cleanup EXIT INT TERM
 
 "${tart_binary}" set "${base_name}" --cpu 4 --memory 8192
 "${tart_binary}" run --no-graphics --no-audio --no-clipboard "${base_name}" >/tmp/gridops-tart-image-preparation.log 2>&1 &
+vm_pid=$!
 
 print "Waiting for the Tart guest agent…"
 deadline=$((SECONDS + 240))
@@ -81,6 +87,7 @@ printf '%s  %s\n' "$runner_digest" "$archive" | shasum -a 256 --check
 tar -xzf "$archive" -C "$runner_root"
 rm -f "$archive"
 test -x "$runner_root/run.sh"
+sync
 GUEST_SCRIPT
 
 cleanup

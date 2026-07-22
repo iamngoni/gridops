@@ -717,6 +717,7 @@ IFS= read -r GRIDOPS_BOOTSTRAP_SECRET
 runner_args=(--jitconfig "$GRIDOPS_BOOTSTRAP_SECRET")
 unset GRIDOPS_BOOTSTRAP_SECRET
 runner_diagnostics="$runner_root/_diag/gridops-runner-diagnostics.log"
+mkdir -p "$runner_root/_diag"
 ./run.sh "${{runner_args[@]}}" >"$runner_diagnostics" 2>&1 &
 runner_pid=$!
 trap 'kill -TERM "$runner_pid" 2>/dev/null || true' TERM INT
@@ -999,6 +1000,7 @@ mod tests {
     fn generated_runner_script_keeps_jit_secret_off_command_line() {
         let script = runner_script("/Users/admin/actions-runner");
         assert!(script.contains("read -r GRIDOPS_BOOTSTRAP_SECRET"));
+        assert!(script.contains("mkdir -p \"$runner_root/_diag\""));
         assert!(script.contains("_diag/pages/*.log"));
         assert!(!script.contains("fake-jit"));
     }
