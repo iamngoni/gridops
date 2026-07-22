@@ -930,17 +930,6 @@ pub async fn update_runner_pool(
     input.validate().map_err(ApiError::BadRequest)?;
     let pool = pool_access(&state, &user, &pool_id).await?;
     assert_pool_admin(&state, &user, &pool_id).await?;
-    let (max_cpu_limit, max_memory_limit_mb) = manager_resource_capacity(&state).await;
-    if input.cpu_limit > max_cpu_limit as f64 {
-        return Err(ApiError::BadRequest(format!(
-            "CPU limit cannot exceed host CPU capacity ({max_cpu_limit})."
-        )));
-    }
-    if input.memory_limit_mb > max_memory_limit_mb {
-        return Err(ApiError::BadRequest(format!(
-            "Memory limit cannot exceed host runner budget ({max_memory_limit_mb} MB)."
-        )));
-    }
     let existing_repository_ids = sqlx::query_scalar::<_, i64>(
         "SELECT repository_id FROM runner_pool_repositories WHERE pool_id=? ORDER BY created_at,repository_id",
     )
@@ -1621,17 +1610,6 @@ pub async fn create_runner_pool(
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     assert_same_origin(&state, &headers)?;
     input.validate().map_err(ApiError::BadRequest)?;
-    let (max_cpu_limit, max_memory_limit_mb) = manager_resource_capacity(&state).await;
-    if input.cpu_limit > max_cpu_limit as f64 {
-        return Err(ApiError::BadRequest(format!(
-            "CPU limit cannot exceed host CPU capacity ({max_cpu_limit})."
-        )));
-    }
-    if input.memory_limit_mb > max_memory_limit_mb {
-        return Err(ApiError::BadRequest(format!(
-            "Memory limit cannot exceed host runner budget ({max_memory_limit_mb} MB)."
-        )));
-    }
     let repository_ids = input.selected_repository_ids();
     let selected = if input.scope == "repository" {
         selected_available_repositories(&state, &user, &repository_ids).await?
