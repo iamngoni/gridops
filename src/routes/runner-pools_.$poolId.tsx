@@ -267,7 +267,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               {providers.includes("docker") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Docker container image" hint="OCI image used to create each Linux runner.">
                 <Input onChange={(event) => setDockerImage(event.target.value)} required value={dockerImage} />
               </Field> : null}
-              {providers.includes("tart") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Tart base VM" hint="A stopped, prepared local Tart VM. Each runner is an APFS copy-on-write clone.">
+              {providers.includes("tart") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Tart base VM" hint="A stopped, prepared local Tart VM. Each runner is an APFS copy-on-write clone. Workflows that run xcodebuild need an Xcode-ready VM; a plain base image has Command Line Tools only.">
                 <Input onChange={(event) => setTartImage(event.target.value)} required value={tartImage} />
               </Field> : null}
               <Field className="md:col-span-2" label="Additional labels" hint="Comma-separated custom labels. GridOps adds self-hosted, the provider operating system and architecture, and the pool name automatically.">

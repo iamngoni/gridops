@@ -30,7 +30,7 @@ fi
 
 vm_state="$(${tart_binary} list --source local --format json | jq -r --arg name "${base_name}" '.[] | select(.Name == $name) | .State' | head -n 1)"
 if [[ -z "${vm_state}" ]]; then
-  print "Cloning ${source_image} to ${base_name}; the first pull is approximately 25 GB…"
+  print "Cloning ${source_image} to ${base_name}; this may download a large macOS image…"
   "${tart_binary}" clone "${source_image}" "${base_name}" --concurrency "${pull_concurrency}"
 elif [[ "${vm_state}" != "stopped" ]]; then
   print -u2 "${base_name} is ${vm_state}; stop it before preparing the base image."

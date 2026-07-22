@@ -385,7 +385,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
               {providers.includes("docker") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Docker container image" hint="OCI image used for Linux runners.">
                 <Input name="dockerImage" onChange={(event) => setDockerImage(event.target.value)} required value={dockerImage} />
               </Field> : null}
-              {providers.includes("tart") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Tart base VM" hint="Stopped, prepared local VM cloned copy-on-write for each macOS job.">
+              {providers.includes("tart") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Tart base VM" hint="Stopped, prepared local VM cloned copy-on-write for each macOS job. Workflows that run xcodebuild need an Xcode-ready VM; a plain base image has Command Line Tools only.">
                 <Input name="tartImage" onChange={(event) => setTartImage(event.target.value)} required value={tartImage} />
               </Field> : null}
               <Field className="md:col-span-2" label="Additional labels" hint="Comma-separated custom labels shared by every provider. GridOps adds the provider-specific OS and architecture labels automatically.">
