@@ -307,7 +307,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
                   )}
                 </Field>
               ) : null}
-              <div className="rounded-md border border-amber-500/20 bg-amber-500/5 p-3 text-[11px] leading-5 text-amber-100 md:col-span-2">
+              <div className="rounded-md border border-amber-500/25 bg-amber-500/5 p-3 text-[11px] leading-5 text-amber-800 dark:text-amber-100 md:col-span-2">
                 Changing the name, providers, mode, images, labels, runner group, CPU, or memory starts a rolling replacement. Busy runners finish their jobs; GridOps replaces idle runners one at a time.
               </div>
             </CardContent>
