@@ -1,4 +1,15 @@
-use std::{collections::HashMap, env, time::Duration};
+use std::{
+    collections::HashMap,
+    env,
+    path::Path as FsPath,
+    process::Command,
+    str::FromStr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context as _, Result};
 use axum::{
@@ -7,12 +18,12 @@ use axum::{
     extract::{FromRequestParts, Path, Query, State},
     http::{StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use bollard::{
     API_DEFAULT_VERSION, Docker,
     errors::Error as DockerError,
-    models::{ContainerCreateBody, HostConfig, NetworkCreateRequest},
+    models::{ContainerCreateBody, HostConfig, HostConfigLogConfig, NetworkCreateRequest},
     query_parameters::{
         AttachContainerOptionsBuilder, CreateContainerOptionsBuilder, CreateImageOptionsBuilder,
         ListContainersOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
@@ -24,7 +35,7 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq as _;
-use tokio::io::AsyncWriteExt as _;
+use tokio::{io::AsyncWriteExt as _, sync::Mutex};
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
@@ -32,6 +43,51 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberI
 struct ManagerState {
     docker: Docker,
     token: SecretString,
+    limits: ManagerLimits,
+    reservations: Arc<Mutex<HashMap<String, CapacityReservation>>>,
+    provisioning_paused: Arc<AtomicBool>,
+    provision_lock: Arc<Mutex<()>>,
+}
+
+#[derive(Clone, Debug)]
+struct ManagerLimits {
+    available_cpus: f64,
+    total_memory_mb: i64,
+    cpu_budget: f64,
+    memory_budget_mb: i64,
+    max_runners: usize,
+    min_free_disk_mb: u64,
+    min_free_disk_percent: u64,
+    runner_network: String,
+    log_max_size: String,
+    log_max_files: u64,
+    runner_pids_limit: i64,
+}
+
+#[derive(Clone, Debug)]
+struct CapacityReservation {
+    runner_id: String,
+    pool_id: String,
+    cpu_limit: f64,
+    memory_limit_mb: i64,
+    expires_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CapacityUsage {
+    active_runners: usize,
+    cpu: f64,
+    memory_mb: i64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_field_names)]
+struct DiskCapacity {
+    total_mb: u64,
+    available_mb: u64,
+    minimum_free_mb: u64,
 }
 
 struct ManagerAuth;
@@ -65,27 +121,34 @@ enum ManagerError {
     Forbidden(String),
     BadRequest(String),
     Conflict(String),
+    Guardrail { code: &'static str, message: String },
     NotFound(String),
     Internal(anyhow::Error),
 }
 
 impl IntoResponse for ManagerError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".into()),
-            Self::Forbidden(message) => (StatusCode::FORBIDDEN, message),
-            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
-            Self::Conflict(message) => (StatusCode::CONFLICT, message),
-            Self::NotFound(message) => (StatusCode::NOT_FOUND, message),
+        let (status, code, message) = match self {
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "Unauthorized".into(),
+            ),
+            Self::Forbidden(message) => (StatusCode::FORBIDDEN, "forbidden", message),
+            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, "bad_request", message),
+            Self::Conflict(message) => (StatusCode::CONFLICT, "conflict", message),
+            Self::Guardrail { code, message } => (StatusCode::TOO_MANY_REQUESTS, code, message),
+            Self::NotFound(message) => (StatusCode::NOT_FOUND, "not_found", message),
             Self::Internal(error) => {
                 tracing::error!(error = ?error, "runner manager request failed");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
                     "Runner manager request failed.".into(),
                 )
             }
         };
-        (status, Json(json!({ "error": message }))).into_response()
+        (status, Json(json!({ "code": code, "error": message }))).into_response()
     }
 }
 
@@ -123,13 +186,18 @@ struct ProvisionRunner {
     cpu_limit: f64,
     memory_limit_mb: i64,
     network: String,
+    capacity_lease: String,
 }
 
 impl ProvisionRunner {
     fn validate(&self) -> Result<(), ManagerError> {
-        if self.runner_id.is_empty() || self.pool_id.is_empty() {
+        if self.runner_id.is_empty()
+            || self.pool_id.is_empty()
+            || self.capacity_lease.is_empty()
+            || self.capacity_lease.len() > 128
+        {
             return Err(ManagerError::BadRequest(
-                "Runner and pool identifiers are required.".into(),
+                "Runner, pool, and capacity lease identifiers are required.".into(),
             ));
         }
         if !valid_docker_name(&self.name) || !valid_docker_name(&self.network) {
@@ -188,6 +256,43 @@ impl ProvisionRunner {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CapacityRequest {
+    runner_id: String,
+    pool_id: String,
+    cpu_limit: f64,
+    memory_limit_mb: i64,
+}
+
+impl CapacityRequest {
+    fn validate(&self) -> Result<(), ManagerError> {
+        if self.runner_id.is_empty()
+            || self.runner_id.len() > 128
+            || self.pool_id.is_empty()
+            || self.pool_id.len() > 128
+        {
+            return Err(ManagerError::BadRequest(
+                "Runner and pool identifiers are invalid.".into(),
+            ));
+        }
+        if !(0.25..=64.0).contains(&self.cpu_limit)
+            || !(256..=262_144).contains(&self.memory_limit_mb)
+        {
+            return Err(ManagerError::BadRequest(
+                "Runner resource limits are outside the supported range.".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagerPolicy {
+    provisioning_paused: bool,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ManagedRunner {
@@ -207,6 +312,93 @@ struct LogsQuery {
     tail: Option<String>,
 }
 
+impl ManagerLimits {
+    fn from_environment(available_cpus: i64, total_memory_bytes: i64) -> Result<Self> {
+        let available_cpus = available_cpus.max(1) as f64;
+        let total_memory_mb = (total_memory_bytes / 1_024 / 1_024).max(512);
+        let default_cpu_budget = (available_cpus * 0.75).floor().max(1.0);
+        let default_memory_budget_mb = (total_memory_mb * 3 / 4).max(512);
+        let cpu_budget = optional_env("GRIDOPS_RUNNER_CPU_BUDGET")?.unwrap_or(default_cpu_budget);
+        let memory_budget_mb =
+            optional_env("GRIDOPS_RUNNER_MEMORY_BUDGET_MB")?.unwrap_or(default_memory_budget_mb);
+        anyhow::ensure!(
+            cpu_budget > 0.0 && cpu_budget <= available_cpus,
+            "GRIDOPS_RUNNER_CPU_BUDGET must be positive and no greater than the Docker host CPU count"
+        );
+        anyhow::ensure!(
+            memory_budget_mb >= 256 && memory_budget_mb <= total_memory_mb,
+            "GRIDOPS_RUNNER_MEMORY_BUDGET_MB must be between 256 MB and Docker host memory"
+        );
+        let default_max_runners = usize::try_from(
+            ((cpu_budget / 2.0).floor() as i64)
+                .min(memory_budget_mb / 2_048)
+                .max(1),
+        )?;
+        let max_runners =
+            optional_env("GRIDOPS_MAX_MANAGED_RUNNERS")?.unwrap_or(default_max_runners);
+        anyhow::ensure!(
+            (1..=1_000).contains(&max_runners),
+            "GRIDOPS_MAX_MANAGED_RUNNERS must be between 1 and 1000"
+        );
+        let min_free_disk_mb = optional_env("GRIDOPS_MIN_FREE_DISK_MB")?.unwrap_or(25_600);
+        let min_free_disk_percent = optional_env("GRIDOPS_MIN_FREE_DISK_PERCENT")?.unwrap_or(15);
+        anyhow::ensure!(
+            min_free_disk_percent <= 95,
+            "GRIDOPS_MIN_FREE_DISK_PERCENT must be between 0 and 95"
+        );
+        let runner_pids_limit = optional_env("GRIDOPS_RUNNER_PIDS_LIMIT")?.unwrap_or(1_024);
+        anyhow::ensure!(
+            (64..=32_768).contains(&runner_pids_limit),
+            "GRIDOPS_RUNNER_PIDS_LIMIT must be between 64 and 32768"
+        );
+        let log_max_size = env::var("GRIDOPS_RUNNER_LOG_MAX_SIZE").unwrap_or_else(|_| "20m".into());
+        anyhow::ensure!(
+            valid_log_size(&log_max_size),
+            "GRIDOPS_RUNNER_LOG_MAX_SIZE must use Docker's positive k, m, or g size syntax"
+        );
+        let log_max_files = optional_env("GRIDOPS_RUNNER_LOG_MAX_FILES")?.unwrap_or(5);
+        anyhow::ensure!(
+            (1..=100).contains(&log_max_files),
+            "GRIDOPS_RUNNER_LOG_MAX_FILES must be between 1 and 100"
+        );
+        let runner_network =
+            env::var("GRIDOPS_RUNNER_NETWORK").unwrap_or_else(|_| "gridops-runners".into());
+        anyhow::ensure!(
+            valid_docker_name(&runner_network),
+            "GRIDOPS_RUNNER_NETWORK is invalid"
+        );
+        Ok(Self {
+            available_cpus,
+            total_memory_mb,
+            cpu_budget,
+            memory_budget_mb,
+            max_runners,
+            min_free_disk_mb,
+            min_free_disk_percent,
+            runner_network,
+            log_max_size,
+            log_max_files,
+            runner_pids_limit,
+        })
+    }
+}
+
+fn optional_env<T>(name: &str) -> Result<Option<T>>
+where
+    T: FromStr,
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
+    env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .parse::<T>()
+                .with_context(|| format!("{name} is invalid"))
+        })
+        .transpose()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
@@ -224,13 +416,39 @@ async fn main() -> Result<()> {
     let bind = env::var("GRIDOPS_MANAGER_BIND").unwrap_or_else(|_| "127.0.0.1:8788".into());
     let docker = Docker::connect_with_socket(&socket, 120, API_DEFAULT_VERSION)
         .context("could not connect to Docker")?;
+    let info = docker
+        .info()
+        .await
+        .context("could not inspect Docker capacity")?;
+    let limits = ManagerLimits::from_environment(
+        info.ncpu.unwrap_or(1),
+        info.mem_total.unwrap_or(512 * 1_024 * 1_024),
+    )?;
+    let provisioning_paused = env::var("GRIDOPS_PROVISIONING_PAUSED")
+        .ok()
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
+    tracing::info!(
+        cpu_budget = limits.cpu_budget,
+        memory_budget_mb = limits.memory_budget_mb,
+        max_runners = limits.max_runners,
+        min_free_disk_mb = limits.min_free_disk_mb,
+        provisioning_paused,
+        "runner host guardrails initialized"
+    );
     let state = ManagerState {
         docker,
         token: SecretString::from(token),
+        limits,
+        reservations: Arc::new(Mutex::new(HashMap::new())),
+        provisioning_paused: Arc::new(AtomicBool::new(provisioning_paused)),
+        provision_lock: Arc::new(Mutex::new(())),
     };
 
     let app = Router::new()
         .route("/v1/health", get(health))
+        .route("/v1/policy", put(update_policy))
+        .route("/v1/admissions", post(reserve_capacity))
+        .route("/v1/admissions/{lease_id}", delete(release_capacity))
         .route("/v1/runners", get(list_runners).post(provision_runner))
         .route("/v1/runners/{container_id}", delete(delete_runner))
         .route("/v1/runners/{container_id}/logs", get(logs))
@@ -254,13 +472,94 @@ async fn health(
 ) -> Result<Json<Value>, ManagerError> {
     state.docker.ping().await?;
     let version = state.docker.version().await?;
-    let info = state.docker.info().await?;
+    let active = active_capacity(&state.docker).await?;
+    let reserved = reserved_capacity(&state).await;
+    let disk = disk_capacity(&state.limits)?;
     Ok(Json(json!({
         "status": "ok",
         "dockerVersion": version.version,
         "apiVersion": version.api_version,
-        "availableCpus": info.ncpu,
+        "availableCpus": state.limits.available_cpus,
+        "totalMemoryMb": state.limits.total_memory_mb,
+        "provisioningPaused": state.provisioning_paused.load(Ordering::Relaxed),
+        "capacity": {
+            "cpuBudget": state.limits.cpu_budget,
+            "memoryBudgetMb": state.limits.memory_budget_mb,
+            "maxRunners": state.limits.max_runners,
+            "active": active,
+            "reserved": reserved,
+        },
+        "disk": disk,
     })))
+}
+
+async fn update_policy(
+    State(state): State<ManagerState>,
+    _auth: ManagerAuth,
+    Json(input): Json<ManagerPolicy>,
+) -> Json<Value> {
+    state
+        .provisioning_paused
+        .store(input.provisioning_paused, Ordering::Relaxed);
+    Json(json!({ "provisioningPaused": input.provisioning_paused }))
+}
+
+async fn reserve_capacity(
+    State(state): State<ManagerState>,
+    _auth: ManagerAuth,
+    Json(input): Json<CapacityRequest>,
+) -> Result<(StatusCode, Json<Value>), ManagerError> {
+    input.validate()?;
+    let _guard = state.provision_lock.lock().await;
+    ensure_provisioning_enabled(&state)?;
+    let active = active_capacity(&state.docker).await?;
+    let disk = disk_capacity(&state.limits)?;
+    let mut reservations = state.reservations.lock().await;
+    reservations.retain(|_, reservation| reservation.expires_at > Instant::now());
+    let reserved =
+        reservations
+            .values()
+            .fold(CapacityUsage::default(), |mut usage, reservation| {
+                usage.active_runners += 1;
+                usage.cpu += reservation.cpu_limit;
+                usage.memory_mb = usage.memory_mb.saturating_add(reservation.memory_limit_mb);
+                usage
+            });
+    enforce_capacity(
+        &state.limits,
+        active,
+        reserved,
+        CapacityUsage {
+            active_runners: 1,
+            cpu: input.cpu_limit,
+            memory_mb: input.memory_limit_mb,
+        },
+        disk,
+    )?;
+    let lease_id = uuid::Uuid::new_v4().to_string();
+    reservations.insert(
+        lease_id.clone(),
+        CapacityReservation {
+            runner_id: input.runner_id,
+            pool_id: input.pool_id,
+            cpu_limit: input.cpu_limit,
+            memory_limit_mb: input.memory_limit_mb,
+            expires_at: Instant::now() + Duration::from_mins(5),
+        },
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "leaseId": lease_id, "expiresInSeconds": 300 })),
+    ))
+}
+
+async fn release_capacity(
+    State(state): State<ManagerState>,
+    Path(lease_id): Path<String>,
+    _auth: ManagerAuth,
+) -> Json<Value> {
+    let released = state.reservations.lock().await.remove(&lease_id).is_some();
+    Json(json!({ "released": released }))
 }
 
 async fn list_runners(
@@ -300,9 +599,28 @@ async fn provision_runner(
     Json(mut input): Json<ProvisionRunner>,
 ) -> Result<(StatusCode, Json<Value>), ManagerError> {
     input.validate()?;
-    let bootstrap_secret = take_bootstrap_secret(&mut input)?;
+    let _guard = state.provision_lock.lock().await;
+    ensure_provisioning_enabled(&state)?;
+    if input.network != state.limits.runner_network {
+        return Err(ManagerError::Forbidden(
+            "Runner containers may only join the configured GridOps runner network.".into(),
+        ));
+    }
+    let lease_id = input.capacity_lease.clone();
+    validate_capacity_lease(&state, &input).await?;
+    let result = provision_runner_inner(&state, &mut input).await;
+    state.reservations.lock().await.remove(&lease_id);
+    result
+}
+
+async fn provision_runner_inner(
+    state: &ManagerState,
+    input: &mut ProvisionRunner,
+) -> Result<(StatusCode, Json<Value>), ManagerError> {
+    let bootstrap_secret = take_bootstrap_secret(input)?;
     ensure_network(&state.docker, &input.network).await?;
     ensure_image(&state.docker, &input.image, input.pull_image).await?;
+    ensure_disk_capacity(&state.limits)?;
 
     let filters = HashMap::from([("name".to_owned(), vec![input.name.clone()])]);
     let existing = state
@@ -326,15 +644,15 @@ async fn provision_runner(
     }
 
     let memory_bytes = input.memory_limit_mb * 1_024 * 1_024;
-    let (cmd, env) = runner_command(&input)?;
+    let (cmd, env) = runner_command(input)?;
     let labels = HashMap::from([
         ("io.gridops.managed".into(), "true".into()),
-        ("io.gridops.runner-id".into(), input.runner_id),
-        ("io.gridops.pool-id".into(), input.pool_id),
-        ("io.gridops.mode".into(), input.mode),
+        ("io.gridops.runner-id".into(), input.runner_id.clone()),
+        ("io.gridops.pool-id".into(), input.pool_id.clone()),
+        ("io.gridops.mode".into(), input.mode.clone()),
     ]);
     let body = ContainerCreateBody {
-        image: Some(input.image),
+        image: Some(input.image.clone()),
         cmd: Some(cmd),
         env: Some(env),
         attach_stdin: Some(true),
@@ -342,13 +660,21 @@ async fn provision_runner(
         labels: Some(labels),
         host_config: Some(HostConfig {
             auto_remove: Some(false),
-            network_mode: Some(input.network),
+            network_mode: Some(input.network.clone()),
             nano_cpus: Some((input.cpu_limit * 1_000_000_000.0) as i64),
             memory: Some(memory_bytes),
             memory_swap: Some(memory_bytes),
-            pids_limit: Some(2_048),
+            pids_limit: Some(state.limits.runner_pids_limit),
             cap_drop: Some(vec!["ALL".into()]),
             security_opt: Some(vec!["no-new-privileges:true".into()]),
+            oom_score_adj: Some(500),
+            log_config: Some(HostConfigLogConfig {
+                typ: Some("json-file".into()),
+                config: Some(HashMap::from([
+                    ("max-size".into(), state.limits.log_max_size.clone()),
+                    ("max-file".into(), state.limits.log_max_files.to_string()),
+                ])),
+            }),
             ..Default::default()
         }),
         ..Default::default()
@@ -444,6 +770,37 @@ async fn control_runner(
         return Err(ManagerError::Conflict(
             "Ephemeral runners cannot be started or restarted; rebuild the runner instead.".into(),
         ));
+    }
+    let _guard = if matches!(action.as_str(), "start" | "resume" | "restart") {
+        Some(state.provision_lock.lock().await)
+    } else {
+        None
+    };
+    if matches!(action.as_str(), "start" | "resume" | "restart") {
+        ensure_provisioning_enabled(&state)?;
+    }
+    if action == "start" {
+        let details = state.docker.inspect_container(&container_id, None).await?;
+        let current_state = details
+            .state
+            .as_ref()
+            .and_then(|value| value.status.as_ref())
+            .map_or_else(String::new, ToString::to_string);
+        if !active_container_state(&current_state) {
+            let host = details.host_config.unwrap_or_default();
+            let requested = CapacityUsage {
+                active_runners: 1,
+                cpu: host.nano_cpus.unwrap_or_default() as f64 / 1_000_000_000.0,
+                memory_mb: host.memory.unwrap_or_default() / 1_024 / 1_024,
+            };
+            enforce_capacity(
+                &state.limits,
+                active_capacity(&state.docker).await?,
+                reserved_capacity(&state).await,
+                requested,
+                disk_capacity(&state.limits)?,
+            )?;
+        }
     }
     let status = match action.as_str() {
         "start" => {
@@ -598,6 +955,209 @@ async fn ensure_image(docker: &Docker, image: &str, pull_image: bool) -> Result<
         }
         Err(error) => Err(error.into()),
     }
+}
+
+fn ensure_provisioning_enabled(state: &ManagerState) -> Result<(), ManagerError> {
+    if state.provisioning_paused.load(Ordering::Relaxed) {
+        return Err(ManagerError::Guardrail {
+            code: "provisioning_paused",
+            message: "Runner provisioning is globally paused.".into(),
+        });
+    }
+    Ok(())
+}
+
+async fn validate_capacity_lease(
+    state: &ManagerState,
+    input: &ProvisionRunner,
+) -> Result<(), ManagerError> {
+    let mut reservations = state.reservations.lock().await;
+    reservations.retain(|_, reservation| reservation.expires_at > Instant::now());
+    let reservation =
+        reservations
+            .get(&input.capacity_lease)
+            .ok_or_else(|| ManagerError::Guardrail {
+                code: "capacity_lease_invalid",
+                message: "Runner capacity reservation is missing or expired.".into(),
+            })?;
+    if reservation.runner_id != input.runner_id
+        || reservation.pool_id != input.pool_id
+        || (reservation.cpu_limit - input.cpu_limit).abs() > f64::EPSILON
+        || reservation.memory_limit_mb != input.memory_limit_mb
+    {
+        return Err(ManagerError::Forbidden(
+            "Runner capacity reservation does not match the provisioning request.".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn active_capacity(docker: &Docker) -> Result<CapacityUsage, ManagerError> {
+    let filters = HashMap::from([(
+        "label".to_owned(),
+        vec!["io.gridops.managed=true".to_owned()],
+    )]);
+    let containers = docker
+        .list_containers(Some(
+            ListContainersOptionsBuilder::default()
+                .all(true)
+                .filters(&filters)
+                .build(),
+        ))
+        .await?;
+    let active_ids = containers
+        .into_iter()
+        .filter(|container| {
+            container
+                .state
+                .as_ref()
+                .is_some_and(|state| active_container_state(state.as_ref()))
+        })
+        .filter_map(|container| container.id)
+        .collect::<Vec<_>>();
+    let details = futures_util::stream::iter(active_ids)
+        .map(|id| async move { docker.inspect_container(&id, None).await })
+        .buffer_unordered(16)
+        .try_collect::<Vec<_>>()
+        .await?;
+    let mut usage = CapacityUsage::default();
+    for details in details {
+        let host = details.host_config.unwrap_or_default();
+        usage.active_runners += 1;
+        usage.cpu += host.nano_cpus.unwrap_or_default() as f64 / 1_000_000_000.0;
+        usage.memory_mb = usage
+            .memory_mb
+            .saturating_add(host.memory.unwrap_or_default() / 1_024 / 1_024);
+    }
+    Ok(usage)
+}
+
+async fn reserved_capacity(state: &ManagerState) -> CapacityUsage {
+    let mut reservations = state.reservations.lock().await;
+    reservations.retain(|_, reservation| reservation.expires_at > Instant::now());
+    reservations
+        .values()
+        .fold(CapacityUsage::default(), |mut usage, reservation| {
+            usage.active_runners += 1;
+            usage.cpu += reservation.cpu_limit;
+            usage.memory_mb = usage.memory_mb.saturating_add(reservation.memory_limit_mb);
+            usage
+        })
+}
+
+fn active_container_state(state: &str) -> bool {
+    matches!(state, "created" | "running" | "restarting" | "paused")
+}
+
+fn disk_capacity(limits: &ManagerLimits) -> Result<DiskCapacity, ManagerError> {
+    let root = FsPath::new("/");
+    let output = Command::new("df")
+        .args(["-Pk", root.as_os_str().to_string_lossy().as_ref()])
+        .output()
+        .map_err(|error| ManagerError::Internal(error.into()))?;
+    if !output.status.success() {
+        return Err(ManagerError::Internal(anyhow::anyhow!(
+            "could not inspect runner-host disk capacity"
+        )));
+    }
+    let stdout =
+        String::from_utf8(output.stdout).map_err(|error| ManagerError::Internal(error.into()))?;
+    let (total_mb, available_mb) = parse_df_capacity(&stdout).ok_or_else(|| {
+        ManagerError::Internal(anyhow::anyhow!("runner-host disk capacity was invalid"))
+    })?;
+    let percent_floor = total_mb.saturating_mul(limits.min_free_disk_percent) / 100;
+    Ok(DiskCapacity {
+        total_mb,
+        available_mb,
+        minimum_free_mb: limits.min_free_disk_mb.max(percent_floor),
+    })
+}
+
+fn parse_df_capacity(output: &str) -> Option<(u64, u64)> {
+    let row = output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .nth(1)?;
+    let columns = row.split_whitespace().collect::<Vec<_>>();
+    let total_kb = columns.get(1)?.parse::<u64>().ok()?;
+    let available_kb = columns.get(3)?.parse::<u64>().ok()?;
+    Some((total_kb / 1_024, available_kb / 1_024))
+}
+
+fn ensure_disk_capacity(limits: &ManagerLimits) -> Result<(), ManagerError> {
+    let disk = disk_capacity(limits)?;
+    if disk.available_mb < disk.minimum_free_mb {
+        return Err(ManagerError::Guardrail {
+            code: "host_disk_guardrail",
+            message: format!(
+                "Runner provisioning stopped because only {} MB disk space remains; {} MB is reserved.",
+                disk.available_mb, disk.minimum_free_mb
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn enforce_capacity(
+    limits: &ManagerLimits,
+    active: CapacityUsage,
+    reserved: CapacityUsage,
+    requested: CapacityUsage,
+    disk: DiskCapacity,
+) -> Result<(), ManagerError> {
+    if disk.available_mb < disk.minimum_free_mb {
+        return Err(ManagerError::Guardrail {
+            code: "host_disk_guardrail",
+            message: format!(
+                "Runner provisioning stopped because only {} MB disk space remains; {} MB is reserved.",
+                disk.available_mb, disk.minimum_free_mb
+            ),
+        });
+    }
+    let projected_runners = active
+        .active_runners
+        .saturating_add(reserved.active_runners)
+        .saturating_add(requested.active_runners);
+    if projected_runners > limits.max_runners {
+        return Err(ManagerError::Guardrail {
+            code: "host_capacity_exhausted",
+            message: format!(
+                "Host runner limit reached ({projected_runners}/{} including reservations).",
+                limits.max_runners
+            ),
+        });
+    }
+    let projected_cpu = active.cpu + reserved.cpu + requested.cpu;
+    if projected_cpu > limits.cpu_budget + f64::EPSILON {
+        return Err(ManagerError::Guardrail {
+            code: "host_capacity_exhausted",
+            message: format!(
+                "Host CPU budget would be exceeded ({projected_cpu:.2}/{:.2} CPUs including reservations).",
+                limits.cpu_budget
+            ),
+        });
+    }
+    let projected_memory = active
+        .memory_mb
+        .saturating_add(reserved.memory_mb)
+        .saturating_add(requested.memory_mb);
+    if projected_memory > limits.memory_budget_mb {
+        return Err(ManagerError::Guardrail {
+            code: "host_capacity_exhausted",
+            message: format!(
+                "Host memory budget would be exceeded ({projected_memory}/{} MB including reservations).",
+                limits.memory_budget_mb
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn valid_log_size(value: &str) -> bool {
+    let Some((number, suffix)) = value.split_at_checked(value.len().saturating_sub(1)) else {
+        return false;
+    };
+    matches!(suffix, "k" | "m" | "g") && number.parse::<u64>().is_ok_and(|size| size > 0)
 }
 
 fn runner_command(input: &ProvisionRunner) -> Result<(Vec<String>, Vec<String>), ManagerError> {
@@ -801,6 +1361,7 @@ mod tests {
             cpu_limit: 2.0,
             memory_limit_mb: 4_096,
             network: "gridops-runners".into(),
+            capacity_lease: "capacity-lease-1".into(),
         }
     }
 
@@ -838,6 +1399,69 @@ mod tests {
         assert!(valid_log_tail("500"));
         assert!(!valid_log_tail("100001"));
         assert!(!valid_log_tail("recent"));
+    }
+
+    #[test]
+    fn enforces_aggregate_runner_budgets() {
+        let limits = ManagerLimits {
+            available_cpus: 10.0,
+            total_memory_mb: 8_192,
+            cpu_budget: 6.0,
+            memory_budget_mb: 6_144,
+            max_runners: 3,
+            min_free_disk_mb: 1_024,
+            min_free_disk_percent: 10,
+            runner_network: "gridops-runners".into(),
+            log_max_size: "20m".into(),
+            log_max_files: 5,
+            runner_pids_limit: 1_024,
+        };
+        let disk = DiskCapacity {
+            total_mb: 100_000,
+            available_mb: 50_000,
+            minimum_free_mb: 10_000,
+        };
+        let active = CapacityUsage {
+            active_runners: 2,
+            cpu: 4.0,
+            memory_mb: 4_096,
+        };
+        let requested = CapacityUsage {
+            active_runners: 1,
+            cpu: 2.0,
+            memory_mb: 2_048,
+        };
+        assert!(
+            enforce_capacity(&limits, active, CapacityUsage::default(), requested, disk).is_ok()
+        );
+        let over_budget = CapacityUsage {
+            active_runners: 1,
+            cpu: 2.0,
+            memory_mb: 2_049,
+        };
+        assert!(matches!(
+            enforce_capacity(&limits, active, CapacityUsage::default(), over_budget, disk),
+            Err(ManagerError::Guardrail {
+                code: "host_capacity_exhausted",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validates_explicit_log_rotation_sizes() {
+        assert!(valid_log_size("20m"));
+        assert!(valid_log_size("1g"));
+        assert!(!valid_log_size("20"));
+        assert!(!valid_log_size("0m"));
+        assert!(!valid_log_size("twentym"));
+    }
+
+    #[test]
+    fn parses_portable_df_capacity_output() {
+        let output = "Filesystem 1024-blocks Used Available Capacity Mounted on\noverlay 104857600 52428800 52428800 50% /\n";
+        assert_eq!(parse_df_capacity(output), Some((102_400, 51_200)));
+        assert_eq!(parse_df_capacity("Filesystem 1024-blocks\ninvalid"), None);
     }
 
     #[test]

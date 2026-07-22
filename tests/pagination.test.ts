@@ -18,4 +18,10 @@ describe("list pagination", () => {
     expect(pageNumbers(10, 10)).toEqual([6, 7, 8, 9, 10]);
     expect(pageNumbers(1, 2)).toEqual([1, 2]);
   });
+
+  it("keeps list summaries separate from the non-wrapping control row", async () => {
+    const source = await import("node:fs/promises").then((fs) => fs.readFile("src/components/list-pagination.tsx", "utf8"));
+    expect(source).toContain("flex max-w-full flex-nowrap");
+    expect(source).not.toContain("sm:flex-row sm:items-center sm:justify-between");
+  });
 });

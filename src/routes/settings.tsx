@@ -87,11 +87,13 @@ function AuthenticatedSettings({ data }: { data: NonNullable<SettingsPage["data"
     try {
       await save({ data: {
         logRetentionDays: Number(form.get("logRetentionDays")),
+        logStorageBudgetMb: Number(form.get("logStorageBudgetMb")),
         webhookRetentionDays: Number(form.get("webhookRetentionDays")),
         auditRetentionDays: Number(form.get("auditRetentionDays")),
         reconcileIntervalSeconds: Number(form.get("reconcileIntervalSeconds")),
         githubSyncIntervalSeconds: Number(form.get("githubSyncIntervalSeconds")),
         autoUpdateImages: form.get("autoUpdateImages") === "on",
+        provisioningPaused: form.get("provisioningPaused") === "on",
       } });
       toast.success("GridOps policy saved.");
       await router.invalidate();
@@ -162,7 +164,11 @@ function AuthenticatedSettings({ data }: { data: NonNullable<SettingsPage["data"
             <InfoRow label="Manager" value={data.manager.ok ? "Authenticated and reachable" : "Unavailable"} />
             <InfoRow label="Docker Engine" value={data.manager.dockerVersion ?? "—"} />
             <InfoRow label="Docker API" value={data.manager.apiVersion ?? "—"} />
-            <InfoRow label="Host capacity" value={data.manager.availableCpus ? `${data.manager.availableCpus} logical CPUs` : "—"} />
+            <InfoRow label="Docker host" value={data.manager.availableCpus ? `${data.manager.availableCpus} CPUs · ${data.manager.totalMemoryMb ? `${Math.round(data.manager.totalMemoryMb / 1024)} GB memory` : "memory unavailable"}` : "—"} />
+            <InfoRow label="Runner budget" value={data.manager.capacity ? `${data.manager.capacity.cpuBudget} CPUs · ${Math.round(data.manager.capacity.memoryBudgetMb / 1024)} GB · ${data.manager.capacity.maxRunners} runners` : "—"} />
+            <InfoRow label="Allocated" value={data.manager.capacity ? `${data.manager.capacity.active.activeRunners + data.manager.capacity.reserved.activeRunners} runners · ${(data.manager.capacity.active.cpu + data.manager.capacity.reserved.cpu).toFixed(1)} CPUs · ${Math.round((data.manager.capacity.active.memoryMb + data.manager.capacity.reserved.memoryMb) / 1024)} GB` : "—"} />
+            <InfoRow label="Disk safety" value={data.manager.disk ? `${Math.round(data.manager.disk.availableMb / 1024)} GB free · ${Math.round(data.manager.disk.minimumFreeMb / 1024)} GB reserved` : "—"} />
+            <InfoRow label="Provisioning" value={data.manager.provisioningPaused ? "Paused globally" : "Enabled within host budget"} />
             <InfoRow label="GitHub control token" value={data.configuration.installationTokens ? "Installation token" : "Authorized user token fallback"} />
             <InfoRow label="Database" value="SQLite · WAL mode" />
             <InfoRow label="Signed in as" value={`${data.user.login} · ${data.user.role}`} />
@@ -204,10 +210,15 @@ function AuthenticatedSettings({ data }: { data: NonNullable<SettingsPage["data"
 
       {isAdmin ? <form className="mt-4" onSubmit={submit}>
         <Card>
-          <CardHeader><div><CardTitle>Retention and reconciliation</CardTitle><p className="mt-1 text-xs text-muted-foreground">Durable system policy stored in SQLite and included in backups.</p></div></CardHeader>
+          <CardHeader><div><CardTitle>Runner safety and retention</CardTitle><p className="mt-1 text-xs text-muted-foreground">The manager enforces host limits; durable policy is stored in SQLite and included in backups.</p></div></CardHeader>
           <CardContent>
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <label className="mb-5 flex items-start gap-3 rounded-lg border border-amber-500/25 bg-amber-500/5 p-4">
+              <input className="mt-0.5 size-4 accent-amber-500" defaultChecked={data.settings.provisioningPaused} name="provisioningPaused" type="checkbox" />
+              <span><span className="block text-sm font-medium">Pause all new runner provisioning</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">Running jobs continue. GridOps still reconciles state and removes idle capacity, but neither automatic nor manual actions can start another runner.</span></span>
+            </label>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               <NumberField defaultValue={data.settings.logRetentionDays} label="Runner log retention" max={3650} name="logRetentionDays" suffix="days" />
+              <NumberField defaultValue={data.settings.logStorageBudgetMb} label="Total retained log budget" max={1048576} min={100} name="logStorageBudgetMb" suffix="MB" />
               <NumberField defaultValue={data.settings.webhookRetentionDays} label="Webhook retention" max={3650} name="webhookRetentionDays" suffix="days" />
               <NumberField defaultValue={data.settings.auditRetentionDays} label="Audit retention" max={3650} name="auditRetentionDays" suffix="days" />
               <NumberField defaultValue={data.settings.reconcileIntervalSeconds} label="Reconcile interval" max={3600} min={5} name="reconcileIntervalSeconds" suffix="seconds" />
@@ -220,7 +231,7 @@ function AuthenticatedSettings({ data }: { data: NonNullable<SettingsPage["data"
             <div className="mt-5 flex justify-end"><Button disabled={pending} type="submit">{pending ? <LoaderCircle className="animate-spin" /> : <Save />}{pending ? "Saving…" : "Save policy"}</Button></div>
           </CardContent>
         </Card>
-      </form> : <Card className="mt-4"><CardHeader><div><CardTitle>Retention and reconciliation</CardTitle><p className="mt-1 text-xs text-muted-foreground">System policy is visible to members and editable by administrators.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><InfoRow label="Runner logs" value={`${data.settings.logRetentionDays} days`} /><InfoRow label="Webhooks" value={`${data.settings.webhookRetentionDays} days`} /><InfoRow label="Audit" value={`${data.settings.auditRetentionDays} days`} /><InfoRow label="Reconcile" value={`${data.settings.reconcileIntervalSeconds} seconds`} /><InfoRow label="GitHub polling" value={`${data.settings.githubSyncIntervalSeconds} seconds`} /></CardContent></Card>}
+      </form> : <Card className="mt-4"><CardHeader><div><CardTitle>Runner safety and retention</CardTitle><p className="mt-1 text-xs text-muted-foreground">System policy is visible to members and editable by administrators.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"><InfoRow label="Provisioning" value={data.settings.provisioningPaused ? "Paused" : "Enabled"} /><InfoRow label="Runner logs" value={`${data.settings.logRetentionDays} days · ${data.settings.logStorageBudgetMb} MB`} /><InfoRow label="Webhooks" value={`${data.settings.webhookRetentionDays} days`} /><InfoRow label="Audit" value={`${data.settings.auditRetentionDays} days`} /><InfoRow label="Reconcile" value={`${data.settings.reconcileIntervalSeconds} seconds`} /><InfoRow label="GitHub polling" value={`${data.settings.githubSyncIntervalSeconds} seconds`} /></CardContent></Card>}
 
       {isAdmin ? <Card className="mt-4">
         <CardHeader><div><CardTitle>Users and access</CardTitle><p className="mt-1 text-xs text-muted-foreground">System administrators manage credentials, backups, policy, and every installation they can access. Members retain read-only visibility unless they administer an individual GitHub installation.</p></div><UsersRound className="size-5 text-primary" /></CardHeader>

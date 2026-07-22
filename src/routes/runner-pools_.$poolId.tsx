@@ -70,6 +70,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
       : { status: "idle", items: [], error: null },
   );
   const maxCpuLimit = pool.maxCpuLimit ?? 64;
+  const maxMemoryLimitMb = pool.maxMemoryLimitMb ?? 262_144;
 
   useEffect(() => {
     if (!shouldLoadRunnerGroups) return;
@@ -282,7 +283,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               <Field label="Minimum runners" hint="Lowest pool target after idle scale-down. Set 0 to scale all the way down."><Input defaultValue={pool.minCount} max="100" min="0" name="minCount" required type="number" /></Field>
               <Field label="Maximum runners" hint={pool.scope === "repository" ? "Highest pool target during scale-up. Must be at least the number of selected repositories." : "Highest pool target autoscaling can request."}><Input max="100" min={Math.max(1, repositoryIds.length)} name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} required type="number" value={maxCount} /></Field>
               <Field label="CPU cores per runner" hint={`Docker CPU limit for each runner. This host has ${maxCpuLimit} logical CPUs available.`}><Input defaultValue={pool.cpuLimit} max={Math.max(maxCpuLimit, pool.cpuLimit)} min="0.25" name="cpuLimit" required step="0.25" type="number" /></Field>
-              <Field label="Memory per runner (MB)" hint="Docker memory limit for each runner, in megabytes."><Input defaultValue={pool.memoryLimitMb} max="262144" min="256" name="memoryLimitMb" required step="256" type="number" /></Field>
+              <Field label="Memory per runner (MB)" hint={`Hard Docker limit. Host runner budget: ${maxMemoryLimitMb} MB.`}><Input defaultValue={pool.memoryLimitMb} max={maxMemoryLimitMb} min="256" name="memoryLimitMb" required step="256" type="number" /></Field>
               <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 xl:col-span-3">
                 <input className="mt-0.5 size-4 accent-emerald-500" defaultChecked={pool.autoscalingEnabled} name="autoscalingEnabled" type="checkbox" />
                 <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Queued workflow jobs raise the target up to Maximum runners. When every runner is idle, the target returns to Minimum runners after the delay below.</span></span>

@@ -1,5 +1,5 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Boxes, Minus, Pause, Play, Plus, RefreshCw, Settings2, Trash2 } from "lucide-react";
+import { Boxes, Minus, Pause, Play, Plus, RefreshCw, RotateCcw, Settings2, Trash2 } from "lucide-react";
 
 import { AsyncActionButton } from "~/components/async-action-button";
 import { ListPagination } from "~/components/list-pagination";
@@ -92,7 +92,10 @@ function RunnerPoolsPage() {
                       {pool.cpuLimit} CPU · {pool.memoryLimitMb} MB
                       <div className="mt-1 max-w-40 truncate text-[11px] text-muted-foreground" title={pool.image}>{pool.image}</div>
                     </TableCell>
-                    <TableCell><StatusBadge status={pool.paused ? "paused" : pool.state} /></TableCell>
+                    <TableCell>
+                      <StatusBadge status={pool.paused ? "paused" : pool.state} />
+                      {pool.provisionCircuitOpen ? <div className="mt-1 text-[11px] text-destructive">Stopped after {pool.provisionFailureCount} failures</div> : pool.provisionRetryAt ? <div className="mt-1 text-[11px] text-amber-400">Retry scheduled</div> : null}
+                    </TableCell>
                     <TableCell>
                       {pool.canManage ? <div className="flex justify-end gap-1">
                         <Link aria-label={`Edit ${pool.name}`} className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" params={{ poolId: pool.id }} title={`Edit ${pool.name}`} to="/runner-pools/$poolId"><Settings2 className="size-4" /></Link>
@@ -120,6 +123,13 @@ function RunnerPoolsPage() {
                           success={pool.paused ? "Pool resumed." : "Pool is draining."}
                           title={`${pool.paused ? "Resume" : "Pause"} ${pool.name}`}
                         ><span className="sr-only">{pool.paused ? "Resume" : "Pause"} {pool.name}</span></AsyncActionButton>
+                        {pool.provisionCircuitOpen ? <AsyncActionButton
+                          action={() => control({ data: { action: "retry", poolId: pool.id } })}
+                          icon={<RotateCcw />}
+                          size="icon"
+                          success="Provisioning circuit reset."
+                          title={`Retry provisioning ${pool.name}`}
+                        ><span className="sr-only">Retry provisioning {pool.name}</span></AsyncActionButton> : null}
                         <AsyncActionButton
                           action={() => control({ data: { action: "reconcile", poolId: pool.id } })}
                           icon={<RefreshCw />}

@@ -39,7 +39,7 @@ export type RunnerPoolOptions = (BaseOptions & {
     image: string; labels: string[]; cpuLimit: number; memoryLimitMb: number;
     desiredCount: number; minCount: number; maxCount: number; autoscalingEnabled: boolean;
     queueScaleFactor: number; idleTimeoutMinutes: number; runnerGroupId: number;
-    maxCpuLimit: number;
+    maxCpuLimit: number; maxMemoryLimitMb: number;
   };
 });
 
@@ -62,6 +62,7 @@ export type RunnerPoolDetail = {
   cpuLimit: number;
   memoryLimitMb: number;
   maxCpuLimit?: number;
+  maxMemoryLimitMb?: number;
   runnerGroupId: number;
   paused: boolean;
   state: string;
@@ -69,6 +70,9 @@ export type RunnerPoolDetail = {
   queueScaleFactor: number;
   idleTimeoutMinutes: number;
   configurationVersion: number;
+  provisionFailureCount: number;
+  provisionRetryAt: string | null;
+  provisionCircuitOpen: boolean;
   canManage: boolean;
 };
 
@@ -97,7 +101,7 @@ export function updateRunnerPoolAction({ data }: { data: UpdateRunnerPoolInput &
 }
 
 export function runnerPoolAction({ data }: { data: {
-  action: "pause" | "resume" | "reconcile" | "delete" | "scale";
+  action: "pause" | "resume" | "retry" | "reconcile" | "delete" | "scale";
   poolId: string;
   desiredCount?: number;
 } }) {

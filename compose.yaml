@@ -20,6 +20,14 @@ services:
     volumes:
       - gridops-data:/app/data
     read_only: true
+    cpus: 1.0
+    mem_limit: 768m
+    pids_limit: 256
+    oom_score_adj: -500
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     tmpfs:
       - /tmp
     healthcheck:
@@ -60,9 +68,27 @@ services:
       GRIDOPS_MANAGER_TOKEN: ${GRIDOPS_MANAGER_TOKEN:?GRIDOPS_MANAGER_TOKEN is required}
       GRIDOPS_DOCKER_SOCKET: /var/run/docker.sock
       GRIDOPS_MANAGER_BIND: 0.0.0.0:8788
+      GRIDOPS_RUNNER_NETWORK: ${GRIDOPS_RUNNER_NETWORK:-gridops-runners}
+      GRIDOPS_RUNNER_CPU_BUDGET: ${GRIDOPS_RUNNER_CPU_BUDGET:-}
+      GRIDOPS_RUNNER_MEMORY_BUDGET_MB: ${GRIDOPS_RUNNER_MEMORY_BUDGET_MB:-}
+      GRIDOPS_MAX_MANAGED_RUNNERS: ${GRIDOPS_MAX_MANAGED_RUNNERS:-}
+      GRIDOPS_MIN_FREE_DISK_MB: ${GRIDOPS_MIN_FREE_DISK_MB:-25600}
+      GRIDOPS_MIN_FREE_DISK_PERCENT: ${GRIDOPS_MIN_FREE_DISK_PERCENT:-15}
+      GRIDOPS_PROVISIONING_PAUSED: ${GRIDOPS_PROVISIONING_PAUSED:-false}
+      GRIDOPS_RUNNER_LOG_MAX_SIZE: ${GRIDOPS_RUNNER_LOG_MAX_SIZE:-20m}
+      GRIDOPS_RUNNER_LOG_MAX_FILES: ${GRIDOPS_RUNNER_LOG_MAX_FILES:-5}
+      GRIDOPS_RUNNER_PIDS_LIMIT: ${GRIDOPS_RUNNER_PIDS_LIMIT:-1024}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     read_only: true
+    cpus: 1.0
+    mem_limit: 384m
+    pids_limit: 128
+    oom_score_adj: -500
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     tmpfs:
       - /tmp
     healthcheck:
@@ -88,6 +114,14 @@ services:
     volumes:
       - gridops-data:/app/data
     read_only: true
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 256
+    oom_score_adj: -500
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     tmpfs:
       - /tmp
     depends_on:

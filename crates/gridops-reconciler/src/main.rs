@@ -38,6 +38,7 @@ struct Pool {
     account_login: String,
     scope: String,
     name: String,
+    state: String,
     mode: String,
     labels: String,
     image: String,
@@ -53,6 +54,9 @@ struct Pool {
     queue_scale_factor: i64,
     idle_timeout_minutes: i64,
     configuration_version: i64,
+    provision_failure_count: i64,
+    provision_retry_at: Option<i64>,
+    provision_circuit_open: bool,
 }
 
 #[derive(Debug, FromRow)]
@@ -110,6 +114,11 @@ struct CreatedRunner {
     state: String,
 }
 
+enum ProvisionAttempt {
+    Provisioned,
+    Deferred,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
@@ -153,6 +162,17 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
     if let Err(error) = retry_github_runner_cleanup(app).await {
         tracing::warn!(error = ?error, "deferred GitHub runner cleanup pass failed");
     }
+    let provisioning_paused = setting_bool(&app.database, "provisioningPaused", false).await;
+    if let Err(error) = manager_request::<Value>(
+        app,
+        Method::PUT,
+        "v1/policy",
+        Some(json!({ "provisioningPaused": provisioning_paused })),
+    )
+    .await
+    {
+        tracing::warn!(error = ?error, "could not synchronize runner provisioning policy");
+    }
     let managed = match manager_request::<ManagerRunners>(app, Method::GET, "v1/runners", None)
         .await
     {
@@ -169,7 +189,8 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
         .collect::<HashMap<_, _>>();
     let pools = load_pools(&app.database).await?;
     for pool in pools {
-        if let Err(error) = reconcile_pool(app, &pool, &container_states).await {
+        if let Err(error) = reconcile_pool(app, &pool, &container_states, provisioning_paused).await
+        {
             tracing::error!(pool_id = %pool.id, pool = %pool.name, error = ?error, "pool reconciliation failed");
             system_event(
                 app,
@@ -200,10 +221,11 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
 
 async fn load_pools(database: &SqlitePool) -> Result<Vec<Pool>> {
     Ok(sqlx::query_as::<_, Pool>(
-        r#"SELECT p.id,p.installation_id,i.account_login,p.scope,p.name,p.mode,p.labels,p.image,p.desired_count,p.min_count,
+        r#"SELECT p.id,p.installation_id,i.account_login,p.scope,p.name,p.state,p.mode,p.labels,p.image,p.desired_count,p.min_count,
           p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,
           p.runner_group_id,p.ephemeral,p.paused,
-          p.autoscaling_enabled,p.queue_scale_factor,p.idle_timeout_minutes,p.configuration_version FROM runner_pools p
+          p.autoscaling_enabled,p.queue_scale_factor,p.idle_timeout_minutes,p.configuration_version,
+          p.provision_failure_count,p.provision_retry_at,p.provision_circuit_open FROM runner_pools p
           JOIN installations i ON i.id=p.installation_id
           WHERE p.state != 'deleting' ORDER BY p.created_at"#,
     )
@@ -215,6 +237,7 @@ async fn reconcile_pool(
     app: &Reconciler,
     pool: &Pool,
     container_states: &HashMap<String, String>,
+    provisioning_paused: bool,
 ) -> Result<()> {
     let known_runners = runners(app, &pool.id).await?;
     for runner in &known_runners {
@@ -254,18 +277,25 @@ async fn reconcile_pool(
         delete_runner(app, pool, runner).await?;
     }
 
+    let retry_deferred = pool
+        .provision_retry_at
+        .is_some_and(|retry_at| retry_at > now_millis());
+    let provisioning_blocked = provisioning_paused || pool.provision_circuit_open || retry_deferred;
     let current = runners(app, &pool.id).await?;
     let mut rotated = 0;
-    if let Some(stale) = current
-        .iter()
-        .find(|runner| !runner.busy && runner_needs_update(pool, runner))
+    if !provisioning_blocked
+        && let Some(stale) = current
+            .iter()
+            .find(|runner| !runner.busy && runner_needs_update(pool, runner))
     {
         delete_runner(app, pool, stale).await?;
         rotated = 1;
     }
 
     let current = runners(app, &pool.id).await?;
-    maybe_scale_up(app, pool, &current).await?;
+    if !provisioning_blocked {
+        maybe_scale_up(app, pool, &current).await?;
+    }
     maybe_scale_down(app, pool, &current).await?;
     let desired = if pool.paused {
         0
@@ -277,7 +307,11 @@ async fn reconcile_pool(
             .get::<i64, _>("desired_count")
             .clamp(pool.min_count, pool.max_count)
     };
-    let rebalanced = rebalance_repository_capacity(app, pool, desired).await?;
+    let rebalanced = if provisioning_blocked {
+        0
+    } else {
+        rebalance_repository_capacity(app, pool, desired).await?
+    };
     let refreshed = runners(app, &pool.id).await?;
     let active = refreshed
         .iter()
@@ -285,10 +319,16 @@ async fn reconcile_pool(
         .collect::<Vec<_>>();
     let mut provisioned = 0;
     let mut removed = 0;
-    if active.len() < desired as usize {
+    let mut capacity_deferred = false;
+    if !provisioning_blocked && active.len() < desired as usize {
         for _ in active.len()..desired as usize {
-            provision(app, pool).await?;
-            provisioned += 1;
+            match provision(app, pool).await? {
+                ProvisionAttempt::Provisioned => provisioned += 1,
+                ProvisionAttempt::Deferred => {
+                    capacity_deferred = true;
+                    break;
+                }
+            }
         }
     } else if active.len() > desired as usize {
         let excess = active.len() - desired as usize;
@@ -313,6 +353,14 @@ async fn reconcile_pool(
     sqlx::query("UPDATE runner_pools SET state=?,updated_at=? WHERE id=?")
         .bind(if pool.paused {
             "paused"
+        } else if provisioning_paused {
+            "provisioning-paused"
+        } else if pool.provision_circuit_open {
+            "blocked"
+        } else if capacity_deferred || (retry_deferred && pool.provision_failure_count == 0) {
+            "waiting"
+        } else if retry_deferred {
+            "backoff"
         } else if outdated_count > 0 {
             "updating"
         } else if active_count > desired as usize {
@@ -815,7 +863,7 @@ fn parse_github_date(value: Option<&str>) -> Option<i64> {
         .map(|date| date.timestamp_millis())
 }
 
-async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
+async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     let runner_id = uuid::Uuid::new_v4().to_string();
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let runner_name = format!("{}-{suffix}", pool.name);
@@ -836,8 +884,20 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
     let token = installation_token(app, target_installation_id)
         .await?
         .context("GitHub App credentials are required for autonomous reconciliation")?;
+    let Some(capacity_lease) = reserve_runner_capacity(
+        app,
+        &runner_id,
+        &pool.id,
+        pool.cpu_limit,
+        pool.memory_limit_mb,
+    )
+    .await?
+    else {
+        defer_pool_capacity(app, pool).await?;
+        return Ok(ProvisionAttempt::Deferred);
+    };
     let now = now_millis();
-    sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,'starting',?,?,?,?)")
+    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,'starting',?,?,?,?)")
         .bind(&runner_id)
         .bind(&pool.id)
         .bind(target_repository.as_ref().map(|repository| repository.repository_id))
@@ -847,7 +907,11 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
         .bind(now)
         .bind(now)
         .execute(&app.database)
-        .await?;
+        .await
+    {
+        release_runner_capacity(app, &capacity_lease).await;
+        return Err(error.into());
+    }
 
     let result = async {
         let labels = serde_json::from_str::<Vec<String>>(&pool.labels).unwrap_or_default();
@@ -870,6 +934,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
             "cpuLimit": pool.cpu_limit,
             "memoryLimitMb": pool.memory_limit_mb,
             "network": app.config.runner_network(),
+            "capacityLease": &capacity_lease,
             "pullImage": setting_bool(&app.database, "autoUpdateImages", false).await,
         });
         let github_runner_id = if pool.ephemeral {
@@ -907,6 +972,14 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
             }
             None
         };
+        if let Some(github_runner_id) = github_runner_id {
+            sqlx::query("UPDATE runners SET github_runner_id=?,updated_at=? WHERE id=?")
+                .bind(github_runner_id)
+                .bind(now_millis())
+                .bind(&runner_id)
+                .execute(&app.database)
+                .await?;
+        }
         let created = manager_request::<CreatedRunner>(
             app,
             Method::POST,
@@ -930,6 +1003,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
     }
     .await;
     if let Err(error) = result {
+        release_runner_capacity(app, &capacity_lease).await;
         let message = error.to_string().chars().take(2_000).collect::<String>();
         sqlx::query("UPDATE runners SET status='failed',failure_reason=?,updated_at=? WHERE id=?")
             .bind(&message)
@@ -946,8 +1020,19 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
             json!({ "runnerId": runner_id }),
         )
         .await?;
+        if deferred_manager_error(&error) {
+            defer_pool_capacity(app, pool).await?;
+            return Ok(ProvisionAttempt::Deferred);
+        }
+        record_provision_failure(app, pool).await?;
         return Err(error);
     }
+    sqlx::query(
+        "UPDATE runner_pools SET provision_failure_count=0,provision_retry_at=NULL,provision_circuit_open=0 WHERE id=?",
+    )
+    .bind(&pool.id)
+    .execute(&app.database)
+    .await?;
     system_audit(
         app,
         "runner.provisioned",
@@ -956,7 +1041,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<()> {
         json!({ "poolId": pool.id, "repositoryId": target_repository.as_ref().map(|repository| repository.repository_id) }),
     )
     .await?;
-    Ok(())
+    Ok(ProvisionAttempt::Provisioned)
 }
 
 async fn delete_runner(app: &Reconciler, pool: &Pool, runner: &Runner) -> Result<()> {
@@ -1094,6 +1179,7 @@ async fn cleanup_retention(app: &Reconciler) -> Result<()> {
         .bind(now)
         .execute(&app.database)
         .await?;
+    enforce_log_storage_budget(app).await?;
     sqlx::query("DELETE FROM webhook_deliveries WHERE received_at < ?")
         .bind(webhook_cutoff)
         .execute(&app.database)
@@ -1106,6 +1192,56 @@ async fn cleanup_retention(app: &Reconciler) -> Result<()> {
         .bind(capacity_cutoff)
         .execute(&app.database)
         .await?;
+    Ok(())
+}
+
+async fn enforce_log_storage_budget(app: &Reconciler) -> Result<()> {
+    let budget_bytes = setting_i64(&app.database, "logStorageBudgetMb", 4_096)
+        .await
+        .clamp(100, 1_048_576)
+        .saturating_mul(1_024 * 1_024);
+    let mut retained_bytes = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(SUM(size_bytes),0) FROM log_streams WHERE complete=1",
+    )
+    .fetch_one(&app.database)
+    .await?;
+    if retained_bytes <= budget_bytes {
+        return Ok(());
+    }
+    let logs = sqlx::query(
+        "SELECT id,path,size_bytes FROM log_streams WHERE complete=1 ORDER BY created_at,id",
+    )
+    .fetch_all(&app.database)
+    .await?;
+    for row in logs {
+        if retained_bytes <= budget_bytes {
+            break;
+        }
+        let id = row.get::<String, _>("id");
+        let filename = row.get::<String, _>("path");
+        let size_bytes = row.get::<i64, _>("size_bytes").max(0);
+        let Some(path) = safe_log_path(app, &filename) else {
+            tracing::warn!(
+                id,
+                filename,
+                "refusing to remove an invalid retained-log path"
+            );
+            continue;
+        };
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(id, filename, error = ?error, "could not remove retained log while enforcing storage budget");
+                continue;
+            }
+        }
+        sqlx::query("DELETE FROM log_streams WHERE id=?")
+            .bind(&id)
+            .execute(&app.database)
+            .await?;
+        retained_bytes = retained_bytes.saturating_sub(size_bytes);
+    }
     Ok(())
 }
 
@@ -1247,15 +1383,138 @@ async fn manager_request<T: serde::de::DeserializeOwned>(
     let status = response.status();
     let text = response.text().await?;
     if !status.is_success() {
+        let payload = serde_json::from_str::<Value>(&text).ok();
+        let code = payload
+            .as_ref()
+            .and_then(|value| value.get("code"))
+            .and_then(Value::as_str)
+            .unwrap_or("manager_error");
+        let message = payload
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(Value::as_str)
+            .unwrap_or(&text);
         if status == StatusCode::NOT_FOUND {
             bail!("runner manager object was not found");
         }
         bail!(
-            "runner manager request failed ({status}): {}",
-            text.chars().take(500).collect::<String>()
+            "runner manager request failed ({status}) [{code}]: {}",
+            message.chars().take(500).collect::<String>()
         );
     }
     Ok(serde_json::from_str(&text)?)
+}
+
+async fn reserve_runner_capacity(
+    app: &Reconciler,
+    runner_id: &str,
+    pool_id: &str,
+    cpu_limit: f64,
+    memory_limit_mb: i64,
+) -> Result<Option<String>> {
+    let response = manager_request::<Value>(
+        app,
+        Method::POST,
+        "v1/admissions",
+        Some(json!({
+            "runnerId": runner_id,
+            "poolId": pool_id,
+            "cpuLimit": cpu_limit,
+            "memoryLimitMb": memory_limit_mb,
+        })),
+    )
+    .await;
+    match response {
+        Ok(value) => Ok(value
+            .get("leaseId")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)),
+        Err(error) if deferred_manager_error(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+async fn release_runner_capacity(app: &Reconciler, lease_id: &str) {
+    if let Err(error) = manager_request::<Value>(
+        app,
+        Method::DELETE,
+        &format!("v1/admissions/{lease_id}"),
+        None,
+    )
+    .await
+    {
+        tracing::warn!(lease_id, error = ?error, "could not release runner capacity reservation");
+    }
+}
+
+fn deferred_manager_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    [
+        "[host_capacity_exhausted]",
+        "[host_disk_guardrail]",
+        "[provisioning_paused]",
+    ]
+    .iter()
+    .any(|code| message.contains(code))
+}
+
+async fn defer_pool_capacity(app: &Reconciler, pool: &Pool) -> Result<()> {
+    let retry_at = now_millis().saturating_add(30_000);
+    sqlx::query(
+        "UPDATE runner_pools SET state='waiting',provision_retry_at=?,updated_at=? WHERE id=?",
+    )
+    .bind(retry_at)
+    .bind(now_millis())
+    .bind(&pool.id)
+    .execute(&app.database)
+    .await?;
+    if pool.state != "waiting" {
+        system_event(
+            app,
+            Some(&pool.id),
+            "warning",
+            "Runner provisioning waiting",
+            "The runner host has no safe capacity available; GridOps will retry without exceeding host limits.",
+            json!({ "retryAt": retry_at }),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn record_provision_failure(app: &Reconciler, pool: &Pool) -> Result<()> {
+    let attempts = pool.provision_failure_count.saturating_add(1);
+    let circuit_open = attempts >= 3;
+    let retry_at =
+        (!circuit_open).then(|| now_millis().saturating_add(provision_backoff_ms(attempts)));
+    sqlx::query(
+        "UPDATE runner_pools SET provision_failure_count=?,provision_retry_at=?,provision_circuit_open=?,state=?,updated_at=? WHERE id=?",
+    )
+    .bind(attempts)
+    .bind(retry_at)
+    .bind(circuit_open)
+    .bind(if circuit_open { "blocked" } else { "backoff" })
+    .bind(now_millis())
+    .bind(&pool.id)
+    .execute(&app.database)
+    .await?;
+    if circuit_open {
+        system_event(
+            app,
+            Some(&pool.id),
+            "error",
+            "Provisioning circuit opened",
+            "GridOps stopped provisioning this pool after three consecutive failures. Retry the pool after correcting the cause.",
+            json!({ "attempts": attempts }),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn provision_backoff_ms(attempts: i64) -> i64 {
+    let exponent = u32::try_from(attempts.saturating_sub(1).clamp(0, 10)).unwrap_or(10);
+    30_000_i64.saturating_mul(2_i64.saturating_pow(exponent))
 }
 
 async fn setting_i64(database: &SqlitePool, key: &str, fallback: i64) -> i64 {
@@ -1396,6 +1655,7 @@ mod tests {
             account_login: "octo-org".into(),
             scope: "organization".into(),
             name: "linux".into(),
+            state: "active".into(),
             mode: "ephemeral".into(),
             labels: "[]".into(),
             image: "runner:latest".into(),
@@ -1411,6 +1671,9 @@ mod tests {
             queue_scale_factor: 1,
             idle_timeout_minutes: 5,
             configuration_version,
+            provision_failure_count: 0,
+            provision_retry_at: None,
+            provision_circuit_open: false,
         }
     }
 
@@ -1482,6 +1745,13 @@ mod tests {
         assert_eq!(github_cleanup_backoff_ms(2), 60_000);
         assert_eq!(github_cleanup_backoff_ms(8), 3_600_000);
         assert_eq!(github_cleanup_backoff_ms(i64::MAX), 3_600_000);
+    }
+
+    #[test]
+    fn provisioning_failures_back_off_before_opening_the_circuit() {
+        assert_eq!(provision_backoff_ms(1), 30_000);
+        assert_eq!(provision_backoff_ms(2), 60_000);
+        assert_eq!(provision_backoff_ms(3), 120_000);
     }
 
     #[tokio::test]

@@ -20,12 +20,12 @@ export function ListPagination({ itemCount, noun, onPageChange, page, perPage, t
   const end = start + itemCount - 1;
 
   return (
-    <nav aria-label={`${noun} pagination`} className="flex flex-col gap-3 border-t border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-      <p className="text-xs text-muted-foreground">
+    <nav aria-label={`${noun} pagination`} className="flex flex-col gap-3 border-t border-border px-4 py-3">
+      <p className="text-xs leading-5 text-muted-foreground">
         Showing {start}–{end} of {total} {noun}
       </p>
       {totalPages > 1 ? (
-        <div className="flex flex-wrap items-center gap-1">
+        <div className="flex max-w-full flex-nowrap items-center gap-1 self-end overflow-x-auto pb-0.5">
           <Button aria-label={`First ${noun} page`} disabled={currentPage === 1} onClick={() => onPageChange(1)} size="icon" variant="outline"><ChevronsLeft /></Button>
           <Button aria-label={`Previous ${noun} page`} disabled={currentPage === 1} onClick={() => onPageChange(currentPage - 1)} size="icon" variant="outline"><ChevronLeft /></Button>
           {pageNumbers(currentPage, totalPages).map((pageNumber) => (

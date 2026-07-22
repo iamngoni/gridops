@@ -219,6 +219,11 @@ mod tests {
                 .iter()
                 .any(|row| { row.get::<String, _>("name") == "autoscaling_enabled" })
         );
+        assert!(
+            columns
+                .iter()
+                .any(|row| row.get::<String, _>("name") == "provision_circuit_open")
+        );
         let runner_columns = sqlx::query("PRAGMA table_info(runners)")
             .fetch_all(&pool)
             .await?;
@@ -333,7 +338,7 @@ mod tests {
             sqlx::query_scalar::<_, String>("SELECT role FROM users WHERE id='legacy-user'")
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(migration_count, 14);
+        assert_eq!(migration_count, 15);
         assert_eq!(preserved, "preserved");
         assert_eq!(migrated_role, "admin");
         pool.close().await;

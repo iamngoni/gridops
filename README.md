@@ -14,6 +14,8 @@ GridOps is a self-hosted control plane for GitHub Actions runners. Connect a Git
 - Editable pool configuration with generation-tracked, busy-safe rolling runner replacement
 - Provision, scale, reconcile, pause, resume, stop, restart, rebuild, drain, and delete controls
 - Queue-driven autoscaling and idle scale-down
+- Host-wide CPU, memory, runner-count, disk, and log-storage guardrails with capacity leases
+- Provisioning backoff, per-pool circuit breaking, and a global provisioning pause
 - Minute-level available, busy, and queued capacity history with 24-hour, 7-day, and 30-day views
 - Workflow runs, jobs, cancellation, reruns, downloadable logs, and runner log streaming
 - Webhook-driven updates plus installation-token polling for localhost and webhook-outage recovery
@@ -72,6 +74,8 @@ GRIDOPS_ENV_FILE=.env.local docker compose --env-file .env.local up --build
 ```
 
 Only `manager` receives `/var/run/docker.sock`. Runner containers do not receive it. The API and reconciler share the `gridops-data` volume for SQLite and retained logs.
+
+The manager is the authoritative capacity boundary. Before GitHub runner credentials are issued, the API or reconciler reserves a short-lived capacity lease; container creation consumes that lease and revalidates the configured runner network and disk watermark. By default GridOps reserves 25% of Docker-host CPU and memory, stops admitting runners below the larger of 25 GB or 15% free disk, limits runner logs to five 20 MB files, and derives a conservative global runner count from a 2 CPU / 2 GB runner shape. Override the `GRIDOPS_RUNNER_*` and `GRIDOPS_MIN_FREE_DISK_*` values from `.env.example` when the Docker host has a deliberately different envelope.
 
 ## Develop
 

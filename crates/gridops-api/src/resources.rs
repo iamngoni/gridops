@@ -39,7 +39,8 @@ const MAX_ARCHIVED_LOG_BYTES: i64 = 100 * 1_024 * 1_024;
 const MAX_ARCHIVED_LOG_VIEW_BYTES: u64 = 1_000_000;
 const MAX_STRUCTURED_LOG_BYTES: usize = 25 * 1_024 * 1_024;
 const DEFAULT_PAGE_SIZE: i64 = 25;
-const FALLBACK_MANAGER_CPU_LIMIT: i64 = 64;
+const FALLBACK_MANAGER_CPU_LIMIT: i64 = 2;
+const FALLBACK_MANAGER_MEMORY_LIMIT_MB: i64 = 2_048;
 
 #[derive(Debug, FromRow)]
 struct PoolAccess {
@@ -67,6 +68,9 @@ struct PoolAccess {
     queue_scale_factor: i64,
     idle_timeout_minutes: i64,
     configuration_version: i64,
+    provision_failure_count: i64,
+    provision_retry_at: Option<i64>,
+    provision_circuit_open: bool,
 }
 
 #[derive(Debug, FromRow)]
@@ -168,11 +172,13 @@ pub(crate) struct LogStreamQuery {
 #[serde(rename_all = "camelCase")]
 pub struct SystemSettings {
     log_retention_days: i64,
+    log_storage_budget_mb: i64,
     webhook_retention_days: i64,
     audit_retention_days: i64,
     reconcile_interval_seconds: i64,
     github_sync_interval_seconds: i64,
     auto_update_images: bool,
+    provisioning_paused: bool,
 }
 
 pub async fn health(State(state): State<AppState>) -> ApiResult<Json<Value>> {
@@ -701,7 +707,8 @@ pub async fn runner_pools(
     let (page, offset) = bounded_pagination(requested_page, total, per_page);
     let rows = sqlx::query(
         r#"SELECT p.id,p.name,p.scope,p.mode,p.labels,p.image,p.desired_count,p.min_count,
-          p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,p.paused,p.state,i.account_login,
+          p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,p.paused,p.state,
+          p.provision_failure_count,p.provision_retry_at,p.provision_circuit_open,i.account_login,
           CASE WHEN NOT EXISTS (
             SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
               AND NOT EXISTS (SELECT 1 FROM user_installations manage
@@ -740,6 +747,9 @@ pub async fn runner_pools(
         "desiredCount": row.get::<i64,_>("desired_count"), "minCount": row.get::<i64,_>("min_count"), "maxCount": row.get::<i64,_>("max_count"),
         "cpuLimit": row.get::<f64,_>("cpu_limit"), "memoryLimitMb": row.get::<i64,_>("memory_limit_mb"),
         "paused": row.get::<bool,_>("paused"), "state": row.get::<String,_>("state"), "accountLogin": row.get::<String,_>("account_login"),
+        "provisionFailureCount": row.get::<i64,_>("provision_failure_count"),
+        "provisionRetryAt": iso_optional(row.try_get::<Option<i64>,_>("provision_retry_at").ok().flatten()),
+        "provisionCircuitOpen": row.get::<bool,_>("provision_circuit_open"),
         "repository": row.try_get::<Option<String>,_>("repository").ok().flatten(), "repositoryCount": row.get::<i64,_>("repository_count"),
         "accountCount": row.get::<i64,_>("account_count"), "totalRunners": row.get::<i64,_>("total_runners"),
         "onlineRunners": row.get::<i64,_>("online_runners"), "busyRunners": row.get::<i64,_>("busy_runners"),
@@ -802,7 +812,7 @@ pub async fn runner_pool(
         .iter()
         .filter_map(|repository| repository.get("id").and_then(Value::as_i64))
         .collect::<Vec<_>>();
-    let max_cpu_limit = manager_cpu_capacity(&state).await;
+    let (max_cpu_limit, max_memory_limit_mb) = manager_resource_capacity(&state).await;
     Ok(Json(json!({
         "id": pool_id,
         "installationId": pool.installation_id,
@@ -828,7 +838,11 @@ pub async fn runner_pool(
         "queueScaleFactor": pool.queue_scale_factor,
         "idleTimeoutMinutes": pool.idle_timeout_minutes,
         "maxCpuLimit": max_cpu_limit,
+        "maxMemoryLimitMb": max_memory_limit_mb,
         "configurationVersion": pool.configuration_version,
+        "provisionFailureCount": pool.provision_failure_count,
+        "provisionRetryAt": iso_optional(pool.provision_retry_at),
+        "provisionCircuitOpen": pool.provision_circuit_open,
         "canManage": user.role == "admin" || pool.installation_permission == "admin",
     })))
 }
@@ -844,10 +858,15 @@ pub async fn update_runner_pool(
     input.validate().map_err(ApiError::BadRequest)?;
     let pool = pool_access(&state, &user, &pool_id).await?;
     assert_pool_admin(&state, &user, &pool_id).await?;
-    let max_cpu_limit = manager_cpu_capacity(&state).await;
+    let (max_cpu_limit, max_memory_limit_mb) = manager_resource_capacity(&state).await;
     if input.cpu_limit > max_cpu_limit as f64 {
         return Err(ApiError::BadRequest(format!(
             "CPU limit cannot exceed host CPU capacity ({max_cpu_limit})."
+        )));
+    }
+    if input.memory_limit_mb > max_memory_limit_mb {
+        return Err(ApiError::BadRequest(format!(
+            "Memory limit cannot exceed host runner budget ({max_memory_limit_mb} MB)."
         )));
     }
     let existing_repository_ids = sqlx::query_scalar::<_, i64>(
@@ -921,6 +940,7 @@ pub async fn update_runner_pool(
           autoscaling_enabled=?,queue_scale_factor=?,idle_timeout_minutes=?,
           repository_id=?,
           configuration_version=configuration_version+?,
+          provision_failure_count=0,provision_retry_at=NULL,provision_circuit_open=0,
           state=CASE WHEN ?=1 AND paused=0 THEN 'updating' ELSE state END,updated_at=? WHERE id=?"#,
     )
     .bind(primary_installation_id)
@@ -1388,11 +1408,11 @@ pub async fn runner_pool_options(
         })
         .collect::<Vec<_>>();
     let app_slug = state.github_app_slug().await.map_err(ApiError::Internal)?;
-    let max_cpu_limit = manager_cpu_capacity(&state).await;
+    let (max_cpu_limit, max_memory_limit_mb) = manager_resource_capacity(&state).await;
     Ok(Json(json!({
         "authenticated": true, "installations": installations, "repositories": [], "runnerGroups": [],
         "installUrl": format!("https://github.com/apps/{app_slug}/installations/new"),
-        "defaults": runner_pool_defaults(state.config.runner_image(), max_cpu_limit)
+        "defaults": runner_pool_defaults(state.config.runner_image(), max_cpu_limit, max_memory_limit_mb)
     })))
 }
 
@@ -1506,10 +1526,15 @@ pub async fn create_runner_pool(
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     assert_same_origin(&state, &headers)?;
     input.validate().map_err(ApiError::BadRequest)?;
-    let max_cpu_limit = manager_cpu_capacity(&state).await;
+    let (max_cpu_limit, max_memory_limit_mb) = manager_resource_capacity(&state).await;
     if input.cpu_limit > max_cpu_limit as f64 {
         return Err(ApiError::BadRequest(format!(
             "CPU limit cannot exceed host CPU capacity ({max_cpu_limit})."
+        )));
+    }
+    if input.memory_limit_mb > max_memory_limit_mb {
+        return Err(ApiError::BadRequest(format!(
+            "Memory limit cannot exceed host runner budget ({max_memory_limit_mb} MB)."
         )));
     }
     let repository_ids = input.selected_repository_ids();
@@ -1600,6 +1625,24 @@ pub async fn runner_pool_action(
     match input.action.as_str() {
         "pause" => set_pool_paused(&state, &user, &pool_id, true).await?,
         "resume" => set_pool_paused(&state, &user, &pool_id, false).await?,
+        "retry" => {
+            pool_access(&state, &user, &pool_id).await?;
+            assert_pool_admin(&state, &user, &pool_id).await?;
+            sqlx::query("UPDATE runner_pools SET provision_failure_count=0,provision_retry_at=NULL,provision_circuit_open=0,state='active',updated_at=? WHERE id=?")
+                .bind(now_millis())
+                .bind(&pool_id)
+                .execute(&state.database)
+                .await?;
+            audit(
+                &state,
+                &user,
+                "runner_pool.provisioning_retried",
+                "runner_pool",
+                Some(&pool_id),
+                json!({}),
+            )
+            .await?;
+        }
         "reconcile" => return Ok(Json(reconcile_pool(&state, &user, &pool_id).await?)),
         "scale" => {
             let pool = pool_access(&state, &user, &pool_id).await?;
@@ -2169,6 +2212,10 @@ pub async fn settings(
                 "dockerVersion": value.get("dockerVersion"),
                 "apiVersion": value.get("apiVersion"),
                 "availableCpus": value.get("availableCpus"),
+                "totalMemoryMb": value.get("totalMemoryMb"),
+                "provisioningPaused": value.get("provisioningPaused"),
+                "capacity": value.get("capacity"),
+                "disk": value.get("disk"),
             })
         }
         Err(error) => json!({ "ok": false, "error": error.to_string() }),
@@ -2247,11 +2294,13 @@ pub async fn settings(
         "manager": manager,
         "settings": {
             "logRetentionDays": stored_i64(&stored, "logRetentionDays", 30),
+            "logStorageBudgetMb": stored_i64(&stored, "logStorageBudgetMb", 4096),
             "webhookRetentionDays": stored_i64(&stored, "webhookRetentionDays", 90),
             "auditRetentionDays": stored_i64(&stored, "auditRetentionDays", 365),
             "reconcileIntervalSeconds": stored_i64(&stored, "reconcileIntervalSeconds", 30),
             "githubSyncIntervalSeconds": stored_i64(&stored, "githubSyncIntervalSeconds", 60),
             "autoUpdateImages": stored.get("autoUpdateImages").and_then(Value::as_bool).unwrap_or(false),
+            "provisioningPaused": stored.get("provisioningPaused").and_then(Value::as_bool).unwrap_or(false),
         }, "user": { "id": user.id, "login": user.login, "role": user.role }, "users": users
     }})))
 }
@@ -2265,6 +2314,7 @@ pub async fn save_settings(
     assert_same_origin(&state, &headers)?;
     require_system_admin(&user)?;
     if !(1..=3_650).contains(&input.log_retention_days)
+        || !(100..=1_048_576).contains(&input.log_storage_budget_mb)
         || !(1..=3_650).contains(&input.webhook_retention_days)
         || !(1..=3_650).contains(&input.audit_retention_days)
         || !(5..=3_600).contains(&input.reconcile_interval_seconds)
@@ -2276,6 +2326,7 @@ pub async fn save_settings(
     }
     let values = [
         ("logRetentionDays", json!(input.log_retention_days)),
+        ("logStorageBudgetMb", json!(input.log_storage_budget_mb)),
         ("webhookRetentionDays", json!(input.webhook_retention_days)),
         ("auditRetentionDays", json!(input.audit_retention_days)),
         (
@@ -2287,6 +2338,7 @@ pub async fn save_settings(
             json!(input.github_sync_interval_seconds),
         ),
         ("autoUpdateImages", json!(input.auto_update_images)),
+        ("provisioningPaused", json!(input.provisioning_paused)),
     ];
     let now = now_millis();
     let mut transaction = state.database.begin().await?;
@@ -2295,11 +2347,23 @@ pub async fn save_settings(
             .bind(key).bind(value.to_string()).bind(&user.id).bind(now).execute(&mut *transaction).await?;
     }
     transaction.commit().await?;
+    if let Err(error) = manager_json(
+        &state,
+        Method::PUT,
+        "v1/policy",
+        Some(json!({ "provisioningPaused": input.provisioning_paused })),
+    )
+    .await
+    {
+        tracing::warn!(error = ?error, "saved provisioning policy but manager synchronization is pending");
+    }
     audit(&state, &user, "settings.updated", "system", Some("gridops"), json!({
-        "logRetentionDays": input.log_retention_days, "webhookRetentionDays": input.webhook_retention_days,
+        "logRetentionDays": input.log_retention_days, "logStorageBudgetMb": input.log_storage_budget_mb,
+        "webhookRetentionDays": input.webhook_retention_days,
         "auditRetentionDays": input.audit_retention_days, "reconcileIntervalSeconds": input.reconcile_interval_seconds,
         "githubSyncIntervalSeconds": input.github_sync_interval_seconds,
         "autoUpdateImages": input.auto_update_images,
+        "provisioningPaused": input.provisioning_paused,
     })).await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -2351,6 +2415,11 @@ async fn provision(
     if pool.paused {
         return Err(ApiError::Conflict("Runner pool is paused.".into()));
     }
+    if setting_bool(state, "provisioningPaused", false).await {
+        return Err(ApiError::Conflict(
+            "Runner provisioning is globally paused.".into(),
+        ));
+    }
     let runner_id = uuid::Uuid::new_v4().to_string();
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let runner_name = format!("{}-{suffix}", pool.name);
@@ -2392,12 +2461,24 @@ async fn provision(
     } else {
         None
     };
+    let capacity_lease = reserve_runner_capacity(
+        state,
+        &runner_id,
+        pool_id,
+        pool.cpu_limit,
+        pool.memory_limit_mb,
+    )
+    .await?;
     let now = now_millis();
-    sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,'starting',?,?,?,?)")
+    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,'starting',?,?,?,?)")
         .bind(&runner_id).bind(pool_id)
         .bind(target_repository.as_ref().map(|repository| repository.repository_id))
         .bind(&runner_name).bind(pool.ephemeral)
-        .bind(pool.configuration_version).bind(now).bind(now).execute(&state.database).await?;
+        .bind(pool.configuration_version).bind(now).bind(now).execute(&state.database).await
+    {
+        release_runner_capacity(state, &capacity_lease).await;
+        return Err(error.into());
+    }
     let result = async {
         let target_installation_id = target_repository
             .as_ref()
@@ -2415,6 +2496,7 @@ async fn provision(
             "runnerId": runner_id, "poolId": pool_id, "name": runner_name, "image": pool.image,
             "mode": pool.mode, "labels": &labels, "cpuLimit": pool.cpu_limit,
             "memoryLimitMb": pool.memory_limit_mb, "network": state.config.runner_network(),
+            "capacityLease": &capacity_lease,
             "pullImage": setting_bool(state, "autoUpdateImages", false).await,
         });
         let github_runner_id = if pool.ephemeral {
@@ -2440,6 +2522,14 @@ async fn provision(
             }
             None
         };
+        if let Some(github_runner_id) = github_runner_id {
+            sqlx::query("UPDATE runners SET github_runner_id=?,updated_at=? WHERE id=?")
+                .bind(github_runner_id)
+                .bind(now_millis())
+                .bind(&runner_id)
+                .execute(&state.database)
+                .await?;
+        }
         let manager = manager_json(state, Method::POST, "v1/runners", Some(request)).await?;
         let container_id = manager.get("id").and_then(Value::as_str).ok_or_else(|| ApiError::ServiceUnavailable("Runner manager returned an invalid container identifier.".into()))?;
         let status = if manager.get("state").and_then(Value::as_str) == Some("running") { "online" } else { "starting" };
@@ -2454,6 +2544,7 @@ async fn provision(
         Ok::<Value, ApiError>(json!({ "runnerId": runner_id, "status": status }))
     }.await;
     if let Err(error) = &result {
+        release_runner_capacity(state, &capacity_lease).await;
         let message = error.to_string().chars().take(2_000).collect::<String>();
         sqlx::query("UPDATE runners SET status='failed',failure_reason=?,updated_at=? WHERE id=?")
             .bind(&message)
@@ -2482,6 +2573,12 @@ async fn set_pool_paused(
         .bind(pool_id)
         .execute(&state.database)
         .await?;
+    if !paused {
+        sqlx::query("UPDATE runner_pools SET provision_failure_count=0,provision_retry_at=NULL,provision_circuit_open=0 WHERE id=?")
+            .bind(pool_id)
+            .execute(&state.database)
+            .await?;
+    }
     if paused {
         for runner in runners_for_pool(state, pool_id)
             .await?
@@ -2790,7 +2887,8 @@ async fn pool_access(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiRes
       p.mode,p.labels,p.image,p.desired_count,p.min_count,p.max_count,
       CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,
       p.runner_group_id,p.ephemeral,p.paused,p.state,p.autoscaling_enabled,p.queue_scale_factor,
-      p.idle_timeout_minutes,p.configuration_version
+      p.idle_timeout_minutes,p.configuration_version,p.provision_failure_count,
+      p.provision_retry_at,p.provision_circuit_open
       FROM runner_pools p JOIN installations i ON i.id=p.installation_id
       LEFT JOIN repositories repo ON repo.id=p.repository_id
       WHERE p.id=?
@@ -2883,13 +2981,56 @@ async fn manager_json(
             .unwrap_or_else(|| format!("Runner manager request failed ({status})."));
         return Err(if status == StatusCode::NOT_FOUND {
             ApiError::NotFound(message)
-        } else if status == StatusCode::CONFLICT {
+        } else if matches!(status, StatusCode::CONFLICT | StatusCode::TOO_MANY_REQUESTS) {
             ApiError::Conflict(message)
         } else {
             ApiError::ServiceUnavailable(message)
         });
     }
     serde_json::from_str(&text).map_err(|error| ApiError::Internal(error.into()))
+}
+
+async fn reserve_runner_capacity(
+    state: &AppState,
+    runner_id: &str,
+    pool_id: &str,
+    cpu_limit: f64,
+    memory_limit_mb: i64,
+) -> ApiResult<String> {
+    let response = manager_json(
+        state,
+        Method::POST,
+        "v1/admissions",
+        Some(json!({
+            "runnerId": runner_id,
+            "poolId": pool_id,
+            "cpuLimit": cpu_limit,
+            "memoryLimitMb": memory_limit_mb,
+        })),
+    )
+    .await?;
+    response
+        .get("leaseId")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            ApiError::ServiceUnavailable(
+                "Runner manager returned an invalid capacity reservation.".into(),
+            )
+        })
+}
+
+async fn release_runner_capacity(state: &AppState, lease_id: &str) {
+    if let Err(error) = manager_json(
+        state,
+        Method::DELETE,
+        &format!("v1/admissions/{lease_id}"),
+        None,
+    )
+    .await
+    {
+        tracing::warn!(lease_id, error = ?error, "could not release runner capacity reservation");
+    }
 }
 
 async fn manager_text(state: &AppState, path: &str) -> ApiResult<String> {
@@ -3161,27 +3302,43 @@ fn normalized_pool_labels(name: &str, additional: &[String]) -> ApiResult<Vec<St
     Ok(labels)
 }
 
-fn runner_pool_defaults(image: &str, max_cpu_limit: i64) -> Value {
+fn runner_pool_defaults(image: &str, max_cpu_limit: i64, max_memory_limit_mb: i64) -> Value {
     json!({
         "image": image, "labels": ["gridops"], "cpuLimit": 2,
-        "memoryLimitMb": 4096, "desiredCount": 1, "minCount": 0, "maxCount": 10,
+        "memoryLimitMb": 2048, "desiredCount": 1, "minCount": 0, "maxCount": 10,
         "autoscalingEnabled": true, "queueScaleFactor": 1, "idleTimeoutMinutes": 5,
-        "runnerGroupId": 1, "maxCpuLimit": max_cpu_limit,
+        "runnerGroupId": 1, "maxCpuLimit": max_cpu_limit, "maxMemoryLimitMb": max_memory_limit_mb,
     })
 }
 
-async fn manager_cpu_capacity(state: &AppState) -> i64 {
-    let available = manager_json(state, Method::GET, "v1/health", None)
+async fn manager_resource_capacity(state: &AppState) -> (i64, i64) {
+    let manager = manager_json(state, Method::GET, "v1/health", None)
         .await
-        .ok()
+        .ok();
+    let cpu = manager
+        .as_ref()
         .and_then(|value| {
             value
-                .get("availableCpus")
-                .and_then(Value::as_i64)
+                .get("capacity")
+                .and_then(|capacity| capacity.get("cpuBudget"))
+                .and_then(Value::as_f64)
+                .map(|cpus| cpus.floor() as i64)
                 .filter(|cpus| *cpus > 0)
         })
-        .unwrap_or(FALLBACK_MANAGER_CPU_LIMIT);
-    available.clamp(1, FALLBACK_MANAGER_CPU_LIMIT)
+        .unwrap_or(FALLBACK_MANAGER_CPU_LIMIT)
+        .clamp(1, FALLBACK_MANAGER_CPU_LIMIT);
+    let memory = manager
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("capacity")
+                .and_then(|capacity| capacity.get("memoryBudgetMb"))
+                .and_then(Value::as_i64)
+                .filter(|memory| *memory >= 256)
+        })
+        .unwrap_or(FALLBACK_MANAGER_MEMORY_LIMIT_MB)
+        .clamp(256, FALLBACK_MANAGER_MEMORY_LIMIT_MB);
+    (cpu, memory)
 }
 
 fn capacity_window(window: &str) -> Option<(i64, i64)> {
@@ -3610,7 +3767,7 @@ mod tests {
 
     #[test]
     fn new_runner_pools_start_with_one_runner_but_can_scale_to_zero() {
-        let defaults = runner_pool_defaults("runner:latest", 64);
+        let defaults = runner_pool_defaults("runner:latest", 64, 262_144);
 
         assert_eq!(defaults["desiredCount"], 1);
         assert_eq!(defaults["minCount"], 0);

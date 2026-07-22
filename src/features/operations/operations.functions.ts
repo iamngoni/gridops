@@ -23,6 +23,7 @@ export type RunnerPool = {
   id: string; name: string; scope: string; mode: string; labels: string[]; image: string;
   desiredCount: number; minCount: number; maxCount: number; cpuLimit: number; memoryLimitMb: number;
   paused: boolean; state: string; accountLogin: string; repository: string | null; repositoryCount: number;
+  provisionFailureCount: number; provisionRetryAt: string | null; provisionCircuitOpen: boolean;
   accountCount: number;
   totalRunners: number; onlineRunners: number; busyRunners: number; failedRunners: number;
   outdatedRunners: number; createdAt: string; canManage: boolean;
@@ -99,9 +100,18 @@ export type SettingsPage = {
       repositorySelection: string; permission: string; suspended: boolean; lastSyncedAt: string | null;
       poolCount: number; manageUrl: string;
     }>;
-    manager: { ok: boolean; dockerVersion?: string; apiVersion?: string; availableCpus?: number; error?: string };
-    settings: { logRetentionDays: number; webhookRetentionDays: number; auditRetentionDays: number;
-      reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean };
+    manager: {
+      ok: boolean; dockerVersion?: string; apiVersion?: string; availableCpus?: number;
+      totalMemoryMb?: number; provisioningPaused?: boolean; error?: string;
+      capacity?: {
+        cpuBudget: number; memoryBudgetMb: number; maxRunners: number;
+        active: { activeRunners: number; cpu: number; memoryMb: number };
+        reserved: { activeRunners: number; cpu: number; memoryMb: number };
+      };
+      disk?: { totalMb: number; availableMb: number; minimumFreeMb: number };
+    };
+    settings: { logRetentionDays: number; logStorageBudgetMb: number; webhookRetentionDays: number; auditRetentionDays: number;
+      reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean; provisioningPaused: boolean };
     user: { id: string; login: string; role: "admin" | "member" };
     users: Array<{ id: string; login: string; name: string | null; avatarUrl: string | null;
       role: "admin" | "member"; lastLoginAt: string; canDemote: boolean }>;
@@ -144,8 +154,8 @@ export const retryWebhookAction = ({ data }: { data: { deliveryId: string } }) =
 export const getWebhookPayloadAction = ({ data }: { data: { deliveryId: string } }) =>
   api<WebhookPayload>(`/api/v1/webhooks/${encodeURIComponent(data.deliveryId)}`);
 export const saveSettingsAction = ({ data }: { data: {
-  logRetentionDays: number; webhookRetentionDays: number; auditRetentionDays: number;
-  reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean;
+  logRetentionDays: number; logStorageBudgetMb: number; webhookRetentionDays: number; auditRetentionDays: number;
+  reconcileIntervalSeconds: number; githubSyncIntervalSeconds: number; autoUpdateImages: boolean; provisioningPaused: boolean;
 } }) => api<{ ok: true }>("/api/v1/settings", { method: "PUT", body: data });
 export const updateUserRoleAction = ({ data }: { data: { userId: string; role: "admin" | "member" } }) =>
   api<{ ok: true }>(`/api/v1/users/${encodeURIComponent(data.userId)}/role`, { method: "PUT", body: { role: data.role } });
