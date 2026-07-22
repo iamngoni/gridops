@@ -66,24 +66,43 @@ manifest_file="${cache_root}/manifest.json"
 completed_file="${cache_root}/completed-layers"
 mkdir -p "${staging_dir}"
 touch "${completed_file}"
+current_input_file=""
+
+cleanup_sensitive_input() {
+  if [[ -n "${current_input_file}" && -f "${current_input_file}" ]]; then
+    command rm -- "${current_input_file}"
+  fi
+}
+trap cleanup_sensitive_input EXIT INT TERM
 
 github_user="$(gh api user --jq .login)"
 github_token="$(gh auth token)"
 
 registry_token() {
-  curl --fail --silent --show-error \
-    --user "${github_user}:${github_token}" \
-    "https://ghcr.io/token?scope=repository:${repository}:pull" |
+  curl --config - <<CURL_CONFIG |
+fail
+silent
+show-error
+user = "${github_user}:${github_token}"
+url = "https://ghcr.io/token?scope=repository:${repository}:pull"
+CURL_CONFIG
     jq -er '.token'
 }
 
 print "Resolving ${source_image}…"
 token="$(registry_token)"
-curl --fail --silent --show-error --location --retry 8 --retry-all-errors \
-  -H "Authorization: Bearer ${token}" \
-  -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
-  "https://ghcr.io/v2/${repository}/manifests/${reference}" \
-  -o "${manifest_file}"
+curl --config - <<CURL_CONFIG
+fail
+silent
+show-error
+location
+retry = 8
+retry-all-errors
+header = "Authorization: Bearer ${token}"
+header = "Accept: application/vnd.oci.image.manifest.v1+json"
+url = "https://ghcr.io/v2/${repository}/manifests/${reference}"
+output = "${manifest_file}"
+CURL_CONFIG
 
 if [[ "$(jq -r '.mediaType // empty' "${manifest_file}")" != "application/vnd.oci.image.manifest.v1+json" ]]; then
   print -u2 "The resolved image is not a Tart OCI manifest."
@@ -135,6 +154,8 @@ download_batch() {
   local -a batch=("$@")
   local input_file
   input_file="$(mktemp "${cache_root}/aria2-input.XXXXXX")"
+  chmod 600 "${input_file}"
+  current_input_file="${input_file}"
   token="$(registry_token)"
 
   for layer in "${batch[@]}"; do
@@ -143,6 +164,7 @@ download_batch() {
     print -r -- "https://ghcr.io/v2/${repository}/blobs/${digest}" >> "${input_file}"
     print -r -- "  dir=${cache_root}" >> "${input_file}"
     print -r -- "  out=${blob_name}" >> "${input_file}"
+    print -r -- "  header=Authorization: Bearer ${token}" >> "${input_file}"
   done
 
   print "Downloading ${#batch[@]} verified disk layer(s)…"
@@ -159,8 +181,7 @@ download_batch() {
     --timeout=30 \
     --connect-timeout=15 \
     --summary-interval=15 \
-    --console-log-level=warn \
-    --header="Authorization: Bearer ${token}"
+    --console-log-level=warn
 
   for layer in "${batch[@]}"; do
     IFS=$'\t' read -r layer_index layer_offset digest compressed_size uncompressed_size uncompressed_digest <<< "${layer}"
@@ -198,6 +219,7 @@ download_batch() {
   done
 
   command rm -- "${input_file}"
+  current_input_file=""
 }
 
 typeset -a batch
@@ -219,14 +241,22 @@ fi
 download_auxiliary_layer() {
   local media_type="$1"
   local destination="$2"
-  local descriptor digest expected_size blob_file
+  local descriptor digest expected_size blob_file input_file
   descriptor="$(jq -cer --arg media_type "${media_type}" '.layers[] | select(.mediaType == $media_type)' "${manifest_file}")"
   digest="$(print -r -- "${descriptor}" | jq -r '.digest')"
   expected_size="$(print -r -- "${descriptor}" | jq -r '.size')"
   blob_file="${cache_root}/${digest#sha256:}.blob"
   token="$(registry_token)"
+  input_file="$(mktemp "${cache_root}/aria2-input.XXXXXX")"
+  chmod 600 "${input_file}"
+  current_input_file="${input_file}"
+  print -r -- "https://ghcr.io/v2/${repository}/blobs/${digest}" >> "${input_file}"
+  print -r -- "  dir=${cache_root}" >> "${input_file}"
+  print -r -- "  out=${digest#sha256:}.blob" >> "${input_file}"
+  print -r -- "  header=Authorization: Bearer ${token}" >> "${input_file}"
 
   aria2c \
+    --input-file="${input_file}" \
     --continue=true \
     --max-connection-per-server="${connections_per_download}" \
     --split="${connections_per_download}" \
@@ -236,11 +266,7 @@ download_auxiliary_layer() {
     --retry-wait=1 \
     --timeout=30 \
     --connect-timeout=15 \
-    --console-log-level=warn \
-    --header="Authorization: Bearer ${token}" \
-    --dir="${cache_root}" \
-    --out="${digest#sha256:}.blob" \
-    "https://ghcr.io/v2/${repository}/blobs/${digest}"
+    --console-log-level=warn
 
   if [[ "$(stat -f '%z' "${blob_file}")" != "${expected_size}" ]] || \
      [[ "$(shasum -a 256 "${blob_file}" | awk '{print $1}')" != "${digest#sha256:}" ]]; then
@@ -250,6 +276,8 @@ download_auxiliary_layer() {
   cp "${blob_file}" "${destination}"
   command rm -- "${blob_file}"
   [[ ! -e "${blob_file}.aria2" ]] || command rm -- "${blob_file}.aria2"
+  command rm -- "${input_file}"
+  current_input_file=""
 }
 
 sync
@@ -264,4 +292,5 @@ fi
 
 mkdir -p "${HOME}/.tart/vms"
 mv "${staging_dir}" "${local_vm_dir}"
+trap - EXIT INT TERM
 print "Assembled verified local Tart VM ${base_name}."
