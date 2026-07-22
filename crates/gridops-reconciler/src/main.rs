@@ -109,6 +109,8 @@ struct ManagerRunners {
 struct ManagedRunner {
     id: String,
     state: String,
+    #[serde(default)]
+    labels: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +189,9 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
             return Ok(());
         }
     };
+    if let Err(error) = cleanup_orphaned_manager_containers(app, &managed).await {
+        tracing::warn!(error = ?error, "could not complete orphaned runner container cleanup");
+    }
     let container_states = managed
         .into_iter()
         .map(|runner| (runner.id, runner.state))
@@ -1072,6 +1077,14 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     if let Err(error) = result {
         release_runner_capacity(app, &capacity_lease).await;
         let message = error.to_string().chars().take(2_000).collect::<String>();
+        let manager_cleanup = match cleanup_unrecorded_manager_runner(app, &runner_id).await {
+            Ok(Some(container_id)) => json!({ "status": "removed", "containerId": container_id }),
+            Ok(None) => json!({ "status": "not-found" }),
+            Err(cleanup_error) => {
+                tracing::warn!(runner_id = %runner_id, error = ?cleanup_error, "could not recover manager container after failed provisioning");
+                json!({ "status": "failed", "error": cleanup_error.to_string().chars().take(500).collect::<String>() })
+            }
+        };
         sqlx::query("UPDATE runners SET status='failed',failure_reason=?,updated_at=? WHERE id=?")
             .bind(&message)
             .bind(now_millis())
@@ -1084,7 +1097,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
             "error",
             "Runner provisioning failed",
             &message,
-            json!({ "runnerId": runner_id }),
+            json!({ "runnerId": runner_id, "managerContainerCleanup": manager_cleanup }),
         )
         .await?;
         if deferred_manager_error(&error) {
@@ -1201,6 +1214,85 @@ async fn remove_manager_container(app: &Reconciler, container_id: &str) -> Resul
         "runner manager deletion failed ({status}): {}",
         detail.chars().take(500).collect::<String>()
     )
+}
+
+async fn cleanup_unrecorded_manager_runner(
+    app: &Reconciler,
+    runner_id: &str,
+) -> Result<Option<String>> {
+    let managed = manager_request::<ManagerRunners>(app, Method::GET, "v1/runners", None).await?;
+    let Some(container_id) = managed
+        .runners
+        .into_iter()
+        .find(|runner| {
+            runner
+                .labels
+                .get("io.gridops.runner-id")
+                .is_some_and(|id| id == runner_id)
+        })
+        .map(|runner| runner.id)
+    else {
+        return Ok(None);
+    };
+    remove_manager_container(app, &container_id).await?;
+    Ok(Some(container_id))
+}
+
+async fn cleanup_orphaned_manager_containers(
+    app: &Reconciler,
+    managed: &[ManagedRunner],
+) -> Result<()> {
+    let live_runner_ids =
+        sqlx::query_scalar::<_, String>("SELECT id FROM runners WHERE deleted_at IS NULL")
+            .fetch_all(&app.database)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+    for runner in orphaned_manager_containers(managed, &live_runner_ids) {
+        let runner_id = runner
+            .labels
+            .get("io.gridops.runner-id")
+            .expect("orphaned manager runner has a runner id label");
+        let pool_id = runner.labels.get("io.gridops.pool-id").map(String::as_str);
+        match remove_manager_container(app, &runner.id).await {
+            Ok(()) => {
+                tracing::info!(container_id = %runner.id, runner_id, "removed orphaned runner container");
+                system_event(
+                    app,
+                    pool_id,
+                    "warning",
+                    "Orphaned runner container removed",
+                    "GridOps removed an unreferenced stopped runner container before it could consume host capacity.",
+                    json!({ "runnerId": runner_id, "containerId": runner.id, "state": runner.state }),
+                )
+                .await?;
+            }
+            Err(error) => {
+                tracing::warn!(container_id = %runner.id, runner_id, error = ?error, "could not remove orphaned runner container");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn orphaned_manager_containers<'a>(
+    managed: &'a [ManagedRunner],
+    live_runner_ids: &HashSet<String>,
+) -> Vec<&'a ManagedRunner> {
+    managed
+        .iter()
+        .filter(|runner| {
+            matches!(runner.state.as_str(), "created" | "exited" | "dead")
+                && runner
+                    .labels
+                    .get("io.gridops.managed")
+                    .is_some_and(|managed| managed == "true")
+                && runner
+                    .labels
+                    .get("io.gridops.runner-id")
+                    .is_some_and(|runner_id| !live_runner_ids.contains(runner_id))
+        })
+        .collect()
 }
 
 async fn runners(app: &Reconciler, pool_id: &str) -> Result<Vec<Runner>> {
@@ -1827,6 +1919,30 @@ mod tests {
         let five_minutes = 5 * 60_000;
         assert!(!idle_period_elapsed(1_000 + five_minutes - 1, 5, 1_000));
         assert!(idle_period_elapsed(1_000 + five_minutes, 5, 1_000));
+    }
+
+    #[test]
+    fn selects_only_stopped_manager_containers_without_live_runner_records() {
+        let manager_runner = |id: &str, state: &str, runner_id: &str| ManagedRunner {
+            id: id.into(),
+            state: state.into(),
+            labels: HashMap::from([
+                ("io.gridops.managed".into(), "true".into()),
+                ("io.gridops.runner-id".into(), runner_id.into()),
+            ]),
+        };
+        let managed = vec![
+            manager_runner("created-orphan", "created", "deleted-runner"),
+            manager_runner("exited-orphan", "exited", "missing-runner"),
+            manager_runner("running-orphan", "running", "missing-running"),
+            manager_runner("live-runner", "created", "live-runner"),
+        ];
+        let live = HashSet::from(["live-runner".to_owned()]);
+        let ids = orphaned_manager_containers(&managed, &live)
+            .into_iter()
+            .map(|runner| runner.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["created-orphan", "exited-orphan"]);
     }
 
     #[test]
