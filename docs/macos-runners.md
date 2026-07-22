@@ -43,6 +43,16 @@ GridOps starts VMs without graphics, audio, clipboard sharing, or shared host di
 
 The installer fails closed when `softnet` is selected but its binary is unavailable. GridOps never silently falls back to NAT.
 
+Tart currently requires the Softnet executable to be owned by root with its SUID bit set for unattended VM launches. After installing the Homebrew dependency, resolve the versioned binary and apply the documented privilege:
+
+```sh
+softnet_binary="$(realpath "$(command -v softnet)")"
+sudo chown root:wheel "${softnet_binary}"
+sudo chmod u+s "${softnet_binary}"
+```
+
+The installer verifies both conditions. Recheck them after a Softnet upgrade because Homebrew installs a new versioned executable.
+
 ## Install the native agent
 
 Generate a token independently from the manager token. The native agent stores its copy in a mode-0600 file; the Docker manager receives the same value through the deployment environment.

@@ -37,6 +37,15 @@ if [[ "${network_mode}" == "softnet" ]] && ! command -v softnet >/dev/null 2>&1;
   print -u2 "Install and privilege openai/softnet, or explicitly use GRIDOPS_TART_NETWORK_MODE=nat."
   exit 1
 fi
+if [[ "${network_mode}" == "softnet" ]]; then
+  softnet_binary="$(realpath "$(command -v softnet)")"
+  if [[ "$(stat -f '%u' "${softnet_binary}")" != "0" || ! -u "${softnet_binary}" ]]; then
+    print -u2 "Softnet is installed but is not owned by root with its SUID bit set."
+    print -u2 "Run: sudo chown root:wheel ${softnet_binary}"
+    print -u2 "Then: sudo chmod u+s ${softnet_binary}"
+    exit 1
+  fi
+fi
 if [[ ! "${bind}" =~ '^[A-Za-z0-9.:-]+$' ]]; then
   print -u2 "GRIDOPS_TART_AGENT_BIND contains unsupported characters."
   exit 1
