@@ -66,6 +66,7 @@ describe("runner pool validation", () => {
   it("rejects unsafe names and excessive resources", () => {
     expect(createRunnerPoolSchema.safeParse({ ...validPool, name: "Bad Pool" }).success).toBe(false);
     expect(createRunnerPoolSchema.safeParse({ ...validPool, cpuLimit: 128 }).success).toBe(false);
+    expect(createRunnerPoolSchema.safeParse({ ...validPool, labels: ["macOS"] }).success).toBe(false);
   });
 
   it("enforces Tart's ephemeral VM resource shape", () => {

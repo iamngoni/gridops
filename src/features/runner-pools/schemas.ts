@@ -10,7 +10,10 @@ const configurationShape = {
   mode: z.enum(["ephemeral", "persistent"]),
   provider: z.enum(["docker", "tart"]),
   providers: z.array(z.enum(["docker", "tart"])).min(1).max(2),
-  labels: z.array(z.string().trim().min(1).max(64)).max(20),
+  labels: z.array(z.string().trim().min(1).max(64).refine(
+    (label) => !["self-hosted", "linux", "macos", "windows", "x64", "arm64", "arm", "x86"].includes(label.toLowerCase()),
+    "System labels are assigned automatically by the selected provider.",
+  )).max(20),
   image: z.string().trim().min(1).max(300),
   dockerImage: z.string().trim().min(1).max(300),
   tartImage: z.string().trim().min(1).max(300),

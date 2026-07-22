@@ -43,9 +43,10 @@ pub fn effective_runner_labels(provider: &str, configured: &[String]) -> Vec<Str
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
     for label in configured {
-        if !labels
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(label))
+        if !is_runner_system_label(label)
+            && !labels
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(label))
         {
             labels.push(label.clone());
         }
@@ -79,7 +80,7 @@ pub fn provider_supports_labels(
         if requested.eq_ignore_ascii_case("self-hosted") {
             return true;
         }
-        if system_label(requested) {
+        if is_runner_system_label(requested) {
             return runner_supports_system_label(provider, requested);
         }
         configured
@@ -88,10 +89,19 @@ pub fn provider_supports_labels(
     })
 }
 
-fn system_label(label: &str) -> bool {
-    ["linux", "macos", "windows", "x64", "arm64", "arm", "x86"]
-        .iter()
-        .any(|system| system.eq_ignore_ascii_case(label))
+pub fn is_runner_system_label(label: &str) -> bool {
+    [
+        "self-hosted",
+        "linux",
+        "macos",
+        "windows",
+        "x64",
+        "arm64",
+        "arm",
+        "x86",
+    ]
+    .iter()
+    .any(|system| system.eq_ignore_ascii_case(label))
 }
 
 pub fn scale_up_target(desired: i64, busy: i64, queued: i64, factor: i64, maximum: i64) -> i64 {
@@ -438,6 +448,11 @@ mod tests {
         assert!(runner_supports_system_label("tart", "macOS"));
         assert!(runner_supports_system_label("tart", "arm64"));
         assert!(!runner_supports_system_label("tart", "linux"));
+        assert!(
+            !effective_runner_labels("docker", &["macOS".into()])
+                .iter()
+                .any(|label| label.eq_ignore_ascii_case("macos"))
+        );
     }
 
     #[test]

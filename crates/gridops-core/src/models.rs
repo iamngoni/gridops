@@ -283,6 +283,12 @@ fn validate_pool_configuration(
     {
         return Err("Use at most 20 runner labels of 1-64 characters each.".into());
     }
+    if labels
+        .iter()
+        .any(|label| crate::autoscaling::is_runner_system_label(label))
+    {
+        return Err("System runner labels are assigned by the selected provider.".into());
+    }
     let selected_docker_image = selected_image("docker", provider, image, docker_image);
     let selected_tart_image = selected_image("tart", provider, image, tart_image);
     if selected.iter().any(|provider| provider == "docker") && !valid_image(&selected_docker_image)

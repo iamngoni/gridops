@@ -46,7 +46,9 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
     () => filterSearchableOptions(options, query),
     [options, query],
   );
-  const selectedOptions = options.filter((option) => values.includes(option.value));
+  const selectedOptions = values
+    .map((value) => options.find((option) => option.value === value))
+    .filter((option): option is SearchableSelectOption<TValue> => option !== undefined);
 
   useEffect(() => {
     function closeOnOutsidePointer(event: PointerEvent) {
