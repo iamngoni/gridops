@@ -140,6 +140,35 @@ for layer in "${raw_layers[@]}"; do
 done
 disk_size="${offset}"
 
+if [[ -s "${completed_file}" ]] && grep -Fqv $'\t' "${completed_file}"; then
+  if grep -Fq $'\t' "${completed_file}"; then
+    print -u2 "The layer checkpoint contains mixed marker formats. Move ${cache_root} aside before retrying."
+    exit 1
+  fi
+
+  typeset -a legacy_markers
+  legacy_markers=("${(@f)$(< "${completed_file}")}")
+  if (( ${#legacy_markers[@]} > ${#disk_layers[@]} )); then
+    print -u2 "The legacy layer checkpoint contains too many entries."
+    exit 1
+  fi
+
+  migrated_file="$(mktemp "${cache_root}/completed-layers.XXXXXX")"
+  chmod 600 "${migrated_file}"
+  for (( marker_position = 1; marker_position <= ${#legacy_markers[@]}; marker_position++ )); do
+    layer="${disk_layers[${marker_position}]}"
+    IFS=$'\t' read -r layer_index layer_offset digest compressed_size uncompressed_size uncompressed_digest <<< "${layer}"
+    if [[ "${legacy_markers[${marker_position}]}" != "${digest}" ]]; then
+      command rm -- "${migrated_file}"
+      print -u2 "The legacy checkpoint does not match disk layer ${layer_index}."
+      exit 1
+    fi
+    print -r -- "${layer_index}"$'\t'"${digest}" >> "${migrated_file}"
+  done
+  mv "${migrated_file}" "${completed_file}"
+  print "Migrated layer checkpoints to offset-safe markers."
+fi
+
 disk_file="${staging_dir}/disk.img"
 if [[ -e "${disk_file}" ]]; then
   if [[ "$(stat -f '%z' "${disk_file}")" != "${disk_size}" ]]; then
@@ -152,6 +181,7 @@ fi
 
 download_batch() {
   local -a batch=("$@")
+  local -A requested_digests
   local input_file
   input_file="$(mktemp "${cache_root}/aria2-input.XXXXXX")"
   chmod 600 "${input_file}"
@@ -160,6 +190,10 @@ download_batch() {
 
   for layer in "${batch[@]}"; do
     IFS=$'\t' read -r layer_index layer_offset digest compressed_size uncompressed_size uncompressed_digest <<< "${layer}"
+    if [[ -n "${requested_digests[${digest}]-}" ]]; then
+      continue
+    fi
+    requested_digests[${digest}]=1
     blob_name="${digest#sha256:}.blob"
     print -r -- "https://ghcr.io/v2/${repository}/blobs/${digest}" >> "${input_file}"
     print -r -- "  dir=${cache_root}" >> "${input_file}"
@@ -167,11 +201,12 @@ download_batch() {
     print -r -- "  header=Authorization: Bearer ${token}" >> "${input_file}"
   done
 
-  print "Downloading ${#batch[@]} verified disk layer(s)…"
+  print "Downloading ${#requested_digests[@]} unique blob(s) for ${#batch[@]} verified disk layer(s)…"
   aria2c \
     --input-file="${input_file}" \
     --continue=true \
-    --max-concurrent-downloads="${#batch[@]}" \
+    --auto-file-renaming=false \
+    --max-concurrent-downloads="${#requested_digests[@]}" \
     --max-connection-per-server="${connections_per_download}" \
     --split="${connections_per_download}" \
     --min-split-size=1M \
@@ -212,10 +247,15 @@ download_batch() {
     fi
 
     dd if="${raw_file}" of="${disk_file}" bs=4194304 seek=$((layer_offset / 4194304)) conv=notrunc status=none
-    print -r -- "${digest}" >> "${completed_file}"
-    command rm -- "${raw_file}" "${blob_file}"
-    [[ ! -e "${blob_file}.aria2" ]] || command rm -- "${blob_file}.aria2"
+    print -r -- "${layer_index}"$'\t'"${digest}" >> "${completed_file}"
+    command rm -- "${raw_file}"
     print "Assembled disk layer $((layer_index + 1))/${#disk_layers[@]}."
+  done
+
+  for digest in ${(k)requested_digests}; do
+    blob_file="${cache_root}/${digest#sha256:}.blob"
+    command rm -- "${blob_file}"
+    [[ ! -e "${blob_file}.aria2" ]] || command rm -- "${blob_file}.aria2"
   done
 
   command rm -- "${input_file}"
@@ -225,7 +265,7 @@ download_batch() {
 typeset -a batch
 for layer in "${disk_layers[@]}"; do
   IFS=$'\t' read -r layer_index layer_offset digest compressed_size uncompressed_size uncompressed_digest <<< "${layer}"
-  if grep -Fqx -- "${digest}" "${completed_file}"; then
+  if grep -Fqx -- "${layer_index}"$'\t'"${digest}" "${completed_file}"; then
     continue
   fi
   batch+=("${layer}")
@@ -258,6 +298,7 @@ download_auxiliary_layer() {
   aria2c \
     --input-file="${input_file}" \
     --continue=true \
+    --auto-file-renaming=false \
     --max-connection-per-server="${connections_per_download}" \
     --split="${connections_per_download}" \
     --min-split-size=1M \
