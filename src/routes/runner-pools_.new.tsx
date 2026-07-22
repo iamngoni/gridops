@@ -1,5 +1,5 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Github, LoaderCircle, Server } from "lucide-react";
+import { ArrowLeft, Github, LoaderCircle, Server, TriangleAlert } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -18,6 +18,7 @@ import {
   getInstallationRunnerGroups,
   getRunnerPoolRepositories,
 } from "~/features/runner-pools/runner-pools.functions";
+import { formatResourceNumber, hostResourceWarning } from "~/features/runner-pools/resource-risk";
 import { cn } from "~/lib/utils";
 
 export const Route = createFileRoute("/runner-pools_/new")({
@@ -150,6 +151,9 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
   const [dockerImage, setDockerImage] = useState(options.defaults.dockerImage);
   const [tartImage, setTartImage] = useState(options.defaults.tartImage);
   const [maxCount, setMaxCount] = useState(options.defaults.maxCount);
+  const [desiredCount, setDesiredCount] = useState(options.defaults.desiredCount);
+  const [cpuLimit, setCpuLimit] = useState(options.defaults.cpuLimit);
+  const [memoryLimitMb, setMemoryLimitMb] = useState(options.defaults.memoryLimitMb);
   const initialInstallation = options.installations.find((installation) => installation.id === installationId);
   const [repositoryLoad, setRepositoryLoad] = useState<AsyncOptions<RepositoryOption>>(
     { status: "loading", items: [], error: null },
@@ -165,6 +169,13 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
   const runnerGroups = runnerGroupLoad.items;
   const defaultRunnerGroup = runnerGroups.find((group) => group.isDefault) ?? runnerGroups[0];
   const [runnerGroupId, setRunnerGroupId] = useState(options.defaults.runnerGroupId);
+  const resourceWarning = hostResourceWarning({
+    runnerCount: desiredCount,
+    cpuLimit,
+    memoryLimitMb,
+    cpuBudget: options.defaults.maxCpuLimit,
+    memoryBudgetMb: options.defaults.maxMemoryLimitMb,
+  });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -409,11 +420,12 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
           <Card>
             <CardHeader><CardTitle>Pool capacity and per-runner limits</CardTitle></CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              <Field label="Target runners" hint="Runners GridOps should keep active now. Autoscaling may change this between the minimum and maximum."><Input defaultValue={options.defaults.desiredCount} min="0" max="100" name="desiredCount" type="number" required /></Field>
+              <Field label="Target runners" hint="Runners GridOps should keep active now. Autoscaling may change this between the minimum and maximum."><Input min="0" max="100" name="desiredCount" onChange={(event) => setDesiredCount(Number(event.target.value))} type="number" required value={desiredCount} /></Field>
               <Field label="Minimum runners" hint="Lowest pool target after idle scale-down. Set 0 to scale all the way down."><Input defaultValue={options.defaults.minCount} min="0" max="100" name="minCount" type="number" required /></Field>
               <Field label="Maximum runners" hint={scope === "repository" ? "Highest pool target during scale-up. Must be at least the number of selected repositories." : "Highest pool target autoscaling can request."}><Input min={Math.max(1, repositoryIds.length)} max="100" name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} type="number" required value={maxCount} /></Field>
-              <Field label="CPU cores per runner" hint={includesTart ? "Applied to every backend; Tart requires whole cores." : "Applied to each Docker runner."}><Input defaultValue={options.defaults.cpuLimit} step={includesTart ? "1" : "0.25"} name="cpuLimit" type="number" required /></Field>
-              <Field label="Memory per runner (MB)" hint="Assigned to each runner. Host availability is checked when a runner starts."><Input defaultValue={options.defaults.memoryLimitMb} step="256" name="memoryLimitMb" type="number" required /></Field>
+              <Field label="CPU cores per runner" hint={includesTart ? "Applied to every backend; Tart requires whole cores." : "Applied to each Docker runner."}><Input onChange={(event) => setCpuLimit(Number(event.target.value))} step={includesTart ? "1" : "0.25"} name="cpuLimit" type="number" required value={cpuLimit} /></Field>
+              <Field label="Memory per runner (MB)" hint="Assigned to each runner. Host availability is checked when a runner starts."><Input onChange={(event) => setMemoryLimitMb(Number(event.target.value))} step="256" name="memoryLimitMb" type="number" required value={memoryLimitMb} /></Field>
+              {resourceWarning ? <HostResourceWarning warning={resourceWarning} /> : null}
               <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 xl:col-span-3">
                 <input className="mt-0.5 size-4 accent-emerald-500" defaultChecked={options.defaults.autoscalingEnabled} name="autoscalingEnabled" type="checkbox" />
                 <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Queued workflow jobs raise the target up to Maximum runners. When every runner is idle, the target returns to Minimum runners after the delay below.</span></span>
@@ -435,6 +447,20 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
         </form>
       </div>
     </AppShell>
+  );
+}
+
+function HostResourceWarning({ warning }: { warning: NonNullable<ReturnType<typeof hostResourceWarning>> }) {
+  return (
+    <div className="flex gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-950 dark:text-amber-100 sm:col-span-2 xl:col-span-3" role="alert">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-300" />
+      <div>
+        <p className="font-medium">Current target exceeds this host’s safe capacity</p>
+        <p className="mt-1 text-xs leading-5">
+          {warning.runnerCount} runners would request {formatResourceNumber(warning.cpuRequested)} CPU cores and {warning.memoryRequestedMb.toLocaleString()} MB memory; this host safely offers {formatResourceNumber(warning.cpuBudget)} CPU cores and {warning.memoryBudgetMb.toLocaleString()} MB. Saving is allowed, but GridOps will not start runners beyond that budget.
+        </p>
+      </div>
+    </div>
   );
 }
 
