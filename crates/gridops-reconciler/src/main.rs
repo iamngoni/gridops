@@ -942,7 +942,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     let token = installation_token(app, target_installation_id)
         .await?
         .context("GitHub App credentials are required for autonomous reconciliation")?;
-    let Some(capacity_lease) = reserve_runner_capacity(
+    let admission = reserve_runner_capacity(
         app,
         &runner_id,
         &pool.id,
@@ -950,9 +950,9 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         pool.cpu_limit,
         pool.memory_limit_mb,
     )
-    .await?
-    else {
-        defer_pool_capacity(app, pool).await?;
+    .await?;
+    let Some(capacity_lease) = admission.lease_id else {
+        defer_pool_capacity(app, pool, admission.reason.as_deref()).await?;
         return Ok(ProvisionAttempt::Deferred);
     };
     let now = now_millis();
@@ -1068,7 +1068,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
             .await?;
         Result::<()>::Ok(())
     }
-    .await;
+        .await;
     if let Err(error) = result {
         release_runner_capacity(app, &capacity_lease).await;
         let message = error.to_string().chars().take(2_000).collect::<String>();
@@ -1088,7 +1088,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         )
         .await?;
         if deferred_manager_error(&error) {
-            defer_pool_capacity(app, pool).await?;
+            defer_pool_capacity(app, pool, Some(&message)).await?;
             return Ok(ProvisionAttempt::Deferred);
         }
         record_provision_failure(app, pool).await?;
@@ -1474,6 +1474,11 @@ async fn manager_request<T: serde::de::DeserializeOwned>(
     Ok(serde_json::from_str(&text)?)
 }
 
+struct CapacityAdmission {
+    lease_id: Option<String>,
+    reason: Option<String>,
+}
+
 async fn reserve_runner_capacity(
     app: &Reconciler,
     runner_id: &str,
@@ -1481,7 +1486,7 @@ async fn reserve_runner_capacity(
     provider: &str,
     cpu_limit: f64,
     memory_limit_mb: i64,
-) -> Result<Option<String>> {
+) -> Result<CapacityAdmission> {
     let response = manager_request::<Value>(
         app,
         Method::POST,
@@ -1496,11 +1501,17 @@ async fn reserve_runner_capacity(
     )
     .await;
     match response {
-        Ok(value) => Ok(value
-            .get("leaseId")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)),
-        Err(error) if deferred_manager_error(&error) => Ok(None),
+        Ok(value) => Ok(CapacityAdmission {
+            lease_id: value
+                .get("leaseId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            reason: None,
+        }),
+        Err(error) if deferred_manager_error(&error) => Ok(CapacityAdmission {
+            lease_id: None,
+            reason: Some(error.to_string()),
+        }),
         Err(error) => Err(error),
     }
 }
@@ -1529,7 +1540,7 @@ fn deferred_manager_error(error: &anyhow::Error) -> bool {
     .any(|code| message.contains(code))
 }
 
-async fn defer_pool_capacity(app: &Reconciler, pool: &Pool) -> Result<()> {
+async fn defer_pool_capacity(app: &Reconciler, pool: &Pool, reason: Option<&str>) -> Result<()> {
     let retry_at = now_millis().saturating_add(30_000);
     sqlx::query(
         "UPDATE runner_pools SET state='waiting',provision_retry_at=?,updated_at=? WHERE id=?",
@@ -1540,13 +1551,17 @@ async fn defer_pool_capacity(app: &Reconciler, pool: &Pool) -> Result<()> {
     .execute(&app.database)
     .await?;
     if pool.state != "waiting" {
+        let mut metadata = json!({ "retryAt": retry_at });
+        if let Some(reason) = reason {
+            metadata["reason"] = Value::String(reason.chars().take(2_000).collect());
+        }
         system_event(
             app,
             Some(&pool.id),
             "warning",
             "Runner provisioning waiting",
             "The runner host has no safe capacity available; GridOps will retry without exceeding host limits.",
-            json!({ "retryAt": retry_at }),
+            metadata,
         )
         .await?;
     }
