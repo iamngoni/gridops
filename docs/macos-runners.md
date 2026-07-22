@@ -32,6 +32,20 @@ The script obtains the latest runner release and its SHA-256 digest from GitHub,
 
 Remote image pulls use eight concurrent transfers by default. Set `GRIDOPS_TART_PULL_CONCURRENCY` between 1 and 32 when the registry or network needs a different balance.
 
+Tart's standard pull resumes interrupted layer transfers. On a connection where the registry repeatedly drops large layers, GridOps also includes a verified segmented path. It downloads GHCR blobs with resumable ranges, verifies the compressed and uncompressed layer digests, and assembles the same local VM before the preparation step:
+
+```sh
+brew install aria2
+./scripts/pull-tart-image-resumable.sh \
+  ghcr.io/cirruslabs/macos-tahoe-base:latest \
+  gridops-macos-tahoe-base
+./scripts/prepare-tart-runner-image.sh \
+  ghcr.io/cirruslabs/macos-tahoe-base:latest \
+  gridops-macos-tahoe-base
+```
+
+Interrupted segmented pulls resume from `~/Library/Caches/GridOps/tart-images`. The default uses four simultaneous layers with eight ranged connections each. Tune the bounded `GRIDOPS_TART_DOWNLOAD_PARALLELISM` and `GRIDOPS_TART_DOWNLOAD_CONNECTIONS` values when necessary.
+
 Use an `-xcode` Tart image instead when workflows require a preinstalled Xcode toolchain. The pool's **Tart base VM** field must contain the local prepared VM name, not the remote OCI reference.
 
 ## Network isolation
