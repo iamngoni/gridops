@@ -254,7 +254,7 @@ function CapacityPanel({ data }: { data: DashboardOverview }) {
           {history.length > 0 ? (
             <div className="h-64 w-full p-3">
               <ResponsiveContainer height="100%" width="100%">
-                <AreaChart data={history} margin={{ bottom: 0, left: -22, right: 8, top: 8 }}>
+                <AreaChart data={history} margin={{ bottom: 0, left: 0, right: 8, top: 8 }}>
                   <defs>
                     <linearGradient id="available-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="5%" stopColor="#34d399" stopOpacity={0.25} /><stop offset="95%" stopColor="#34d399" stopOpacity={0} /></linearGradient>
                     <linearGradient id="busy-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="5%" stopColor="#60a5fa" stopOpacity={0.22} /><stop offset="95%" stopColor="#60a5fa" stopOpacity={0} /></linearGradient>
@@ -262,7 +262,7 @@ function CapacityPanel({ data }: { data: DashboardOverview }) {
                   </defs>
                   <CartesianGrid stroke="rgba(148,163,184,0.10)" vertical={false} />
                   <XAxis axisLine={false} dataKey="recordedAt" minTickGap={40} tick={{ fill: "#718078", fontSize: 10 }} tickFormatter={(value: string) => formatCapacityTick(value, capacityWindow)} tickLine={false} />
-                  <YAxis allowDecimals={false} axisLine={false} tick={{ fill: "#718078", fontSize: 10 }} tickLine={false} width={36} />
+                  <YAxis allowDecimals={false} axisLine={false} tick={{ fill: "#718078", fontSize: 10 }} tickLine={false} tickMargin={6} width={42} />
                   <Tooltip contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--popover-foreground)", fontSize: 11 }} labelFormatter={(value) => new Date(String(value)).toLocaleString()} />
                   <Area dataKey="available" fill="url(#available-fill)" name="Available" stroke="#34d399" strokeWidth={2} type="monotone" />
                   <Area dataKey="busy" fill="url(#busy-fill)" name="Busy" stroke="#60a5fa" strokeWidth={2} type="monotone" />
