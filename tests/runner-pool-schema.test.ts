@@ -63,9 +63,9 @@ describe("runner pool validation", () => {
     expect(createRunnerPoolSchema.safeParse({ ...validPool, desiredCount: 11 }).success).toBe(false);
   });
 
-  it("rejects unsafe names and excessive resources", () => {
+  it("rejects unsafe names while allowing resource values above the old configuration cap", () => {
     expect(createRunnerPoolSchema.safeParse({ ...validPool, name: "Bad Pool" }).success).toBe(false);
-    expect(createRunnerPoolSchema.safeParse({ ...validPool, cpuLimit: 128 }).success).toBe(false);
+    expect(createRunnerPoolSchema.safeParse({ ...validPool, cpuLimit: 128 }).success).toBe(true);
     expect(createRunnerPoolSchema.safeParse({ ...validPool, labels: ["macOS"] }).success).toBe(false);
   });
 
@@ -79,7 +79,7 @@ describe("runner pool validation", () => {
     expect(createRunnerPoolSchema.safeParse(tartPool).success).toBe(true);
     expect(createRunnerPoolSchema.safeParse({ ...tartPool, mode: "persistent" }).success).toBe(false);
     expect(createRunnerPoolSchema.safeParse({ ...tartPool, cpuLimit: 1.5 }).success).toBe(false);
-    expect(createRunnerPoolSchema.safeParse({ ...tartPool, memoryLimitMb: 1_024 }).success).toBe(false);
+    expect(createRunnerPoolSchema.safeParse({ ...tartPool, memoryLimitMb: 1_024 }).success).toBe(true);
   });
 
   it("accepts a mixed Docker and Tart pool with one shared capacity limit", () => {

@@ -137,12 +137,13 @@ impl ProvisionRunner {
                 "Runner JIT configuration is invalid.".into(),
             ));
         }
-        if !(1.0..=64.0).contains(&self.cpu_limit)
+        if !self.cpu_limit.is_finite()
+            || self.cpu_limit <= 0.0
             || self.cpu_limit.fract() != 0.0
-            || !(2_048..=262_144).contains(&self.memory_limit_mb)
+            || self.memory_limit_mb <= 0
         {
             return Err(AgentError::BadRequest(
-                "Tart runners require whole CPU cores and at least 2048 MB of memory.".into(),
+                "Tart runners require whole CPU cores and positive memory.".into(),
             ));
         }
         Ok(())

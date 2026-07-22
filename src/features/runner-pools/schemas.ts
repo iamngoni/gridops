@@ -23,8 +23,8 @@ const configurationShape = {
   autoscalingEnabled: z.boolean().default(true),
   queueScaleFactor: z.number().int().min(1).max(20).default(1),
   idleTimeoutMinutes: z.number().int().min(1).max(1_440).default(5),
-  cpuLimit: z.number().min(0.25).max(64),
-  memoryLimitMb: z.number().int().min(256).max(262_144),
+  cpuLimit: z.number().positive(),
+  memoryLimitMb: z.number().int().positive(),
   runnerGroupId: z.number().int().positive().default(1),
 } as const;
 
@@ -70,9 +70,6 @@ function validateProvider(
   }
   if (includesTart && !Number.isInteger(value.cpuLimit)) {
     context.addIssue({ code: "custom", path: ["cpuLimit"], message: "Tart runners require whole CPU cores." });
-  }
-  if (includesTart && value.memoryLimitMb < 2_048) {
-    context.addIssue({ code: "custom", path: ["memoryLimitMb"], message: "Tart runners require at least 2048 MB of memory." });
   }
 }
 

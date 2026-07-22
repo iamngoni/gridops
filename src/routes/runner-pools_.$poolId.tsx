@@ -77,8 +77,6 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
       ? { status: "loading", items: [], error: null }
       : { status: "idle", items: [], error: null },
   );
-  const maxCpuLimit = pool.maxCpuLimit ?? 64;
-  const maxMemoryLimitMb = pool.maxMemoryLimitMb ?? 262_144;
   const primaryProvider = providers[0] ?? "docker";
   const includesTart = providers.includes("tart");
 
@@ -322,8 +320,8 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               <Field label="Target runners" hint="Runners GridOps should keep active now. Autoscaling may change this between the minimum and maximum."><Input defaultValue={pool.desiredCount} max="100" min="0" name="desiredCount" required type="number" /></Field>
               <Field label="Minimum runners" hint="Lowest pool target after idle scale-down. Set 0 to scale all the way down."><Input defaultValue={pool.minCount} max="100" min="0" name="minCount" required type="number" /></Field>
               <Field label="Maximum runners" hint={pool.scope === "repository" ? "Highest pool target during scale-up. Must be at least the number of selected repositories." : "Highest pool target autoscaling can request."}><Input max="100" min={Math.max(1, repositoryIds.length)} name="maxCount" onChange={(event) => setMaxCount(Number(event.target.value))} required type="number" value={maxCount} /></Field>
-              <Field label="CPU cores per runner" hint={includesTart ? `Whole CPU cores per runner because this pool includes macOS VMs. Shared host budget: ${maxCpuLimit}.` : `Hard Docker CPU limit for each runner. Shared host budget: ${maxCpuLimit} logical CPUs.`}><Input defaultValue={pool.cpuLimit} max={Math.max(maxCpuLimit, pool.cpuLimit)} min={includesTart ? "1" : "0.25"} name="cpuLimit" required step={includesTart ? "1" : "0.25"} type="number" /></Field>
-              <Field label="Memory per runner (MB)" hint={includesTart ? `Memory assigned to each runner. macOS VMs require at least 2048 MB; shared host budget: ${maxMemoryLimitMb} MB.` : `Hard Docker memory limit. Shared host budget: ${maxMemoryLimitMb} MB.`}><Input defaultValue={Math.max(includesTart ? 2_048 : 256, pool.memoryLimitMb)} max={maxMemoryLimitMb} min={includesTart ? "2048" : "256"} name="memoryLimitMb" required step="256" type="number" /></Field>
+              <Field label="CPU cores per runner" hint={includesTart ? "Whole CPU cores per runner because this pool includes macOS VMs." : "Applied to each Docker runner."}><Input defaultValue={pool.cpuLimit} name="cpuLimit" required step={includesTart ? "1" : "0.25"} type="number" /></Field>
+              <Field label="Memory per runner (MB)" hint="Assigned to each runner. Host availability is checked when a runner starts."><Input defaultValue={pool.memoryLimitMb} name="memoryLimitMb" required step="256" type="number" /></Field>
               <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 xl:col-span-3">
                 <input className="mt-0.5 size-4 accent-emerald-500" defaultChecked={pool.autoscalingEnabled} name="autoscalingEnabled" type="checkbox" />
                 <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Queued workflow jobs raise the target up to Maximum runners. When every runner is idle, the target returns to Minimum runners after the delay below.</span></span>

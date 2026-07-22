@@ -264,11 +264,11 @@ fn validate_pool_configuration(
     if min_count < 0 || desired_count < min_count || desired_count > max_count || max_count > 100 {
         return Err("Capacity must satisfy 0 <= minimum <= desired <= maximum <= 100.".into());
     }
-    if !(0.25..=64.0).contains(&cpu_limit) || !(256..=262_144).contains(&memory_limit_mb) {
-        return Err("Runner resource limits are outside the supported range.".into());
+    if !cpu_limit.is_finite() || cpu_limit <= 0.0 || memory_limit_mb <= 0 {
+        return Err("Runner CPU and memory must be positive values.".into());
     }
-    if includes_tart && (cpu_limit.fract() != 0.0 || memory_limit_mb < 2_048) {
-        return Err("Tart runners require whole CPU cores and at least 2048 MB of memory.".into());
+    if includes_tart && cpu_limit.fract() != 0.0 {
+        return Err("Tart runners require whole CPU cores.".into());
     }
     if !(1..=20).contains(&queue_scale_factor) || !(1..=1_440).contains(&idle_timeout_minutes) {
         return Err("Autoscaling settings are outside the supported range.".into());

@@ -1249,10 +1249,9 @@ async fn cleanup_orphaned_manager_containers(
             .into_iter()
             .collect::<HashSet<_>>();
     for runner in orphaned_manager_containers(managed, &live_runner_ids) {
-        let runner_id = runner
-            .labels
-            .get("io.gridops.runner-id")
-            .expect("orphaned manager runner has a runner id label");
+        let Some(runner_id) = runner.labels.get("io.gridops.runner-id") else {
+            continue;
+        };
         let pool_id = runner.labels.get("io.gridops.pool-id").map(String::as_str);
         match remove_manager_container(app, &runner.id).await {
             Ok(()) => {

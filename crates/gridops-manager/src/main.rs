@@ -282,11 +282,9 @@ impl ProvisionRunner {
                 "Tart runner pools must be ephemeral.".into(),
             ));
         }
-        if !(0.25..=64.0).contains(&self.cpu_limit)
-            || !(256..=262_144).contains(&self.memory_limit_mb)
-        {
+        if !self.cpu_limit.is_finite() || self.cpu_limit <= 0.0 || self.memory_limit_mb <= 0 {
             return Err(ManagerError::BadRequest(
-                "Runner resource limits are outside the supported range.".into(),
+                "Runner CPU and memory must be positive values.".into(),
             ));
         }
         Ok(())
@@ -315,11 +313,9 @@ impl CapacityRequest {
                 "Runner and pool identifiers are invalid.".into(),
             ));
         }
-        if !(0.25..=64.0).contains(&self.cpu_limit)
-            || !(256..=262_144).contains(&self.memory_limit_mb)
-        {
+        if !self.cpu_limit.is_finite() || self.cpu_limit <= 0.0 || self.memory_limit_mb <= 0 {
             return Err(ManagerError::BadRequest(
-                "Runner resource limits are outside the supported range.".into(),
+                "Runner CPU and memory must be positive values.".into(),
             ));
         }
         if !matches!(self.provider.as_str(), "docker" | "tart") {
