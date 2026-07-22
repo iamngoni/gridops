@@ -83,6 +83,11 @@ export type RunnerPoolDetail = {
 export type RunnerPoolEvent = {
   id: string; runnerId: string | null; level: "info" | "warning" | "error"; event: string;
   message: string; metadata: string; createdAt: string;
+  capacitySnapshot?: {
+    cpuBudget: number; memoryBudgetMb: number; maxRunners: number;
+    active: { activeRunners: number; cpu: number; memoryMb: number };
+    reserved: { activeRunners: number; cpu: number; memoryMb: number };
+  };
 };
 
 export const getCreateRunnerPoolOptions = () => api<RunnerPoolOptions>("/api/v1/runner-pools/options");

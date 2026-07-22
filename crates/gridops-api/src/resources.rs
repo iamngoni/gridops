@@ -885,10 +885,21 @@ pub async fn runner_pool_events(
     .bind(offset)
     .fetch_all(&state.database)
     .await?;
+    let capacity_snapshot = if rows
+        .iter()
+        .any(|row| row.get::<String, _>("event") == "Runner provisioning waiting")
+    {
+        manager_json(&state, Method::GET, "v1/health", None)
+            .await
+            .ok()
+            .and_then(|value| value.get("capacity").cloned())
+    } else {
+        None
+    };
     let items = rows
         .iter()
         .map(|row| {
-            json!({
+            let mut item = json!({
                 "id": row.get::<String, _>("id"),
                 "runnerId": row.try_get::<Option<String>, _>("runner_id").ok().flatten(),
                 "level": row.get::<String, _>("level"),
@@ -896,7 +907,13 @@ pub async fn runner_pool_events(
                 "message": row.get::<String, _>("message"),
                 "metadata": row.get::<String, _>("metadata"),
                 "createdAt": iso(row.get::<i64, _>("created_at")),
-            })
+            });
+            if row.get::<String, _>("event") == "Runner provisioning waiting"
+                && let Some(snapshot) = &capacity_snapshot
+            {
+                item["capacitySnapshot"] = snapshot.clone();
+            }
+            item
         })
         .collect::<Vec<_>>();
     Ok(paginated_page(&items, total, page, per_page))
