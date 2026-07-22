@@ -30,6 +30,8 @@ The default non-vanilla Cirrus Labs images include the Tart guest agent, which a
 
 The script obtains the latest runner release and its SHA-256 digest from GitHub, verifies the archive inside the guest, installs it at `/Users/admin/actions-runner`, and stops the VM. Rerun the script to refresh an existing stopped base image.
 
+Remote image pulls use eight concurrent transfers by default. Set `GRIDOPS_TART_PULL_CONCURRENCY` between 1 and 32 when the registry or network needs a different balance.
+
 Use an `-xcode` Tart image instead when workflows require a preinstalled Xcode toolchain. The pool's **Tart base VM** field must contain the local prepared VM name, not the remote OCI reference.
 
 ## Network isolation

@@ -5,6 +5,7 @@ source_image="${1:-ghcr.io/cirruslabs/macos-tahoe-base:latest}"
 base_name="${2:-gridops-macos-tahoe-base}"
 tart_binary="${GRIDOPS_TART_BINARY:-$(command -v tart || true)}"
 runner_root="${GRIDOPS_TART_RUNNER_ROOT:-/Users/admin/actions-runner}"
+pull_concurrency="${GRIDOPS_TART_PULL_CONCURRENCY:-8}"
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
   print -u2 "A Tart macOS runner image must be prepared on Apple Silicon macOS."
@@ -22,11 +23,15 @@ if [[ ! "${base_name}" =~ '^[A-Za-z0-9._-]+$' ]]; then
   print -u2 "The local Tart base name contains unsupported characters."
   exit 1
 fi
+if [[ ! "${pull_concurrency}" =~ '^[1-9][0-9]*$' ]] || (( pull_concurrency > 32 )); then
+  print -u2 "GRIDOPS_TART_PULL_CONCURRENCY must be between 1 and 32."
+  exit 1
+fi
 
 vm_state="$(${tart_binary} list --source local --format json | jq -r --arg name "${base_name}" '.[] | select(.Name == $name) | .State' | head -n 1)"
 if [[ -z "${vm_state}" ]]; then
   print "Cloning ${source_image} to ${base_name}; the first pull is approximately 25 GB…"
-  "${tart_binary}" clone "${source_image}" "${base_name}"
+  "${tart_binary}" clone "${source_image}" "${base_name}" --concurrency "${pull_concurrency}"
 elif [[ "${vm_state}" != "stopped" ]]; then
   print -u2 "${base_name} is ${vm_state}; stop it before preparing the base image."
   exit 1
