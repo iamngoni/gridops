@@ -17,6 +17,13 @@ export type DashboardOverview = {
     queuedJobs: number;
     successRate: number | null;
   };
+  slo: {
+    windowHours: number;
+    queue: { oldestSeconds: number | null; p95Seconds: number | null };
+    startLatency: { sampleSize: number; p50Seconds: number | null; p95Seconds: number | null };
+    failures: Array<{ reason: string; count: number }>;
+    alerts: Array<{ level: "warning" | "error"; title: string; detail: string; href: "/workflow-runs" | "/runner-pools" | "/webhooks" }>;
+  };
   pools: Array<{
     id: string;
     name: string;

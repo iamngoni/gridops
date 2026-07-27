@@ -4,6 +4,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { AppShell } from "~/components/app-shell";
+import { PoolPlanPreview } from "~/components/pool-plan-preview";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { Button, buttonVariants } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
@@ -154,6 +155,8 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
   const [desiredCount, setDesiredCount] = useState(options.defaults.desiredCount);
   const [cpuLimit, setCpuLimit] = useState(options.defaults.cpuLimit);
   const [memoryLimitMb, setMemoryLimitMb] = useState(options.defaults.memoryLimitMb);
+  const [poolName, setPoolName] = useState("");
+  const [labels, setLabels] = useState(options.defaults.labels.join(", "));
   const initialInstallation = options.installations.find((installation) => installation.id === installationId);
   const [repositoryLoad, setRepositoryLoad] = useState<AsyncOptions<RepositoryOption>>(
     { status: "loading", items: [], error: null },
@@ -227,12 +230,12 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
             ? selectedRepositories[0]?.installationId ?? 0
             : installationId,
           repositoryIds: scope === "repository" ? repositoryIds : [],
-          name: String(form.get("name") ?? ""),
+          name: poolName,
           scope,
           mode,
           provider,
           providers,
-          labels: String(form.get("labels") ?? "")
+          labels: labels
             .split(",")
             .map((label) => label.trim())
             .filter(Boolean),
@@ -347,7 +350,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
             <CardHeader><CardTitle>Runner definition</CardTitle></CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2">
               <Field label="Pool name" hint="Used as a runner label.">
-                <Input name="name" placeholder={providers.length > 1 ? "cross-platform" : provider === "tart" ? "macos-arm64" : "linux-general"} required pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" />
+                <Input name="name" onChange={(event) => setPoolName(event.target.value)} placeholder={providers.length > 1 ? "cross-platform" : provider === "tart" ? "macos-arm64" : "linux-general"} required pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" value={poolName} />
               </Field>
               <Field label="Runner providers" hint="Jobs are routed to the first selected provider whose system labels match. Capacity limits remain shared by the pool.">
                 <SearchableMultiSelect
@@ -389,7 +392,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                 <Input name="tartImage" onChange={(event) => setTartImage(event.target.value)} required value={tartImage} />
               </Field> : null}
               <Field className="md:col-span-2" label="Additional labels" hint="Comma-separated custom labels shared by every provider. GridOps adds the provider-specific OS and architecture labels automatically.">
-                <Input defaultValue={options.defaults.labels.join(", ")} name="labels" placeholder={providers.length > 1 ? "build, release" : provider === "tart" ? "xcode, apple-silicon" : "docker, build"} />
+                <Input name="labels" onChange={(event) => setLabels(event.target.value)} placeholder={providers.length > 1 ? "build, release" : provider === "tart" ? "xcode, apple-silicon" : "docker, build"} value={labels} />
               </Field>
               {scope === "organization" ? (
                 <Field label="Runner group" hint={runnerGroupLoad.status === "loading" ? "Loading runner groups from GitHub…" : runnerGroups.length ? "Groups available to this GitHub App installation." : "Enter the GitHub runner group ID."}>
@@ -426,6 +429,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
               <Field label="CPU cores per runner" hint={includesTart ? "Applied to every backend; Tart requires whole cores." : "Applied to each Docker runner."}><Input onChange={(event) => setCpuLimit(Number(event.target.value))} step={includesTart ? "1" : "0.25"} name="cpuLimit" type="number" required value={cpuLimit} /></Field>
               <Field label="Memory per runner (MB)" hint="Assigned to each runner. Host availability is checked when a runner starts."><Input onChange={(event) => setMemoryLimitMb(Number(event.target.value))} step="256" name="memoryLimitMb" type="number" required value={memoryLimitMb} /></Field>
               {resourceWarning ? <HostResourceWarning warning={resourceWarning} /> : null}
+              <PoolPlanPreview desiredCount={desiredCount} labels={labels.split(",").map((label) => label.trim()).filter(Boolean)} maxCount={maxCount} name={poolName} providers={providers} repositoryCount={repositoryIds.length} scope={scope} />
               <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 xl:col-span-3">
                 <input className="mt-0.5 size-4 accent-emerald-500" defaultChecked={options.defaults.autoscalingEnabled} name="autoscalingEnabled" type="checkbox" />
                 <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Queued workflow jobs raise the target up to Maximum runners. When every runner is idle, the target returns to Minimum runners after the delay below.</span></span>

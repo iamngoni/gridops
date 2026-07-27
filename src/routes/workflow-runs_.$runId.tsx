@@ -1,5 +1,5 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { ExternalLink, FileArchive, GitBranch, GitPullRequestArrow, OctagonX, RefreshCw, RotateCcw, Square, Terminal } from "lucide-react";
+import { CircleCheck, CircleX, ExternalLink, FileArchive, GitBranch, GitPullRequestArrow, OctagonX, RefreshCw, RotateCcw, Square, Terminal, TriangleAlert } from "lucide-react";
 
 import { AppShell } from "~/components/app-shell";
 import { AsyncActionButton } from "~/components/async-action-button";
@@ -9,7 +9,7 @@ import { Badge } from "~/components/ui/badge";
 import { buttonVariants } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
-import { getWorkflowRunDetailAction, workflowRunAction } from "~/features/operations/operations.functions";
+import { type WorkflowRunDetail, getWorkflowRunDetailAction, workflowRunAction } from "~/features/operations/operations.functions";
 import { formatDuration, formatRelativeTime } from "~/lib/utils";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
@@ -56,7 +56,7 @@ function WorkflowRunDetailPage() {
         <Card><CardHeader><CardTitle>Jobs</CardTitle></CardHeader><CardContent className="px-0 pb-0">
           {run.jobs.length ? <Table><TableHeader><TableRow><TableHead>Job</TableHead><TableHead>Runner</TableHead><TableHead>Labels</TableHead><TableHead>Duration</TableHead><TableHead>Status</TableHead><TableHead /></TableRow></TableHeader><TableBody>
             {run.jobs.map((job) => <TableRow key={job.id}>
-              <TableCell className="font-medium">{job.name}</TableCell>
+              <TableCell className="font-medium"><div>{job.name}</div>{job.diagnosis ? <JobDiagnosis diagnosis={job.diagnosis} /> : null}</TableCell>
               <TableCell>{job.liveRunnerId || job.archivedLogId ? <Link className="font-mono text-xs font-medium hover:text-primary" search={{ target: job.liveRunnerId ?? job.archivedLogId ?? undefined }} to="/live-logs">{job.runnerName ?? "Assigned runner"}</Link> : <div className="font-mono text-xs">{job.runnerName ?? "Unassigned"}</div>}<div className="mt-1 text-[11px] text-muted-foreground">{job.runnerGroupName ?? "—"}</div></TableCell>
               <TableCell><div className="flex max-w-80 flex-wrap gap-1">{job.labels.map((label) => <Badge key={label} variant="outline">{label}</Badge>)}</div></TableCell>
               <TableCell className="text-xs">{formatDuration(job.startedAt, job.completedAt)}</TableCell>
@@ -71,6 +71,19 @@ function WorkflowRunDetailPage() {
       </div>
     </AppShell>
   );
+}
+
+function JobDiagnosis({ diagnosis }: { diagnosis: NonNullable<WorkflowRunDetail["jobs"][number]["diagnosis"]> }) {
+  return <div className="mt-2 max-w-md rounded-md border border-amber-500/25 bg-amber-500/5 p-2.5 text-[11px] font-normal leading-5">
+    <div className="flex gap-2"><TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" /><span>{diagnosis.summary}</span></div>
+    {diagnosis.candidates.length ? <div className="mt-2 space-y-1.5 border-t border-border pt-2">
+      {diagnosis.candidates.map((candidate) => <div className="flex items-center gap-2" key={candidate.id}>
+        {candidate.status === "ready" ? <CircleCheck className="size-3.5 shrink-0 text-emerald-500" /> : <CircleX className="size-3.5 shrink-0 text-muted-foreground" />}
+        <span className="font-medium">{candidate.name}</span>
+        <span className="text-muted-foreground">{candidate.status === "ready" ? `${candidate.availableCapacity} slot${candidate.availableCapacity === 1 ? "" : "s"} available` : candidate.status.replaceAll("_", " ")}</span>
+      </div>)}
+    </div> : null}
+  </div>;
 }
 
 function Summary({ label, value, icon }: { label: string; value: string; icon?: React.ReactNode }) {

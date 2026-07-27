@@ -17,7 +17,8 @@ use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use gridops_core::{
     ConfigurationState, CreateRunnerPool, GitHubRepository, GitHubWorkflowJob, GitHubWorkflowStep,
     JitRequest, RepositoryCapacity, RepositoryPage, RunnerTarget, UpdateRunnerPool,
-    effective_runner_labels, next_runner_provider, next_runner_repository, now_millis,
+    compatible_runner_provider, effective_runner_labels, next_runner_provider,
+    next_runner_repository, now_millis,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -206,6 +207,12 @@ pub async fn overview(
             "authenticated": false,
             "configuration": configuration,
             "metrics": { "runners": 0, "online": 0, "busy": 0, "queuedJobs": 0, "successRate": null },
+            "slo": {
+              "windowHours": 24,
+              "queue": { "oldestSeconds": null, "p95Seconds": null },
+              "startLatency": { "sampleSize": 0, "p50Seconds": null, "p95Seconds": null },
+              "failures": [], "alerts": [],
+            },
             "pools": [], "runs": [], "activity": [], "installations": 0,
         })));
     };
@@ -244,6 +251,98 @@ pub async fn overview(
         ((metrics.get::<i64, _>("successful_runs") as f64 / completed as f64) * 1_000.0).round()
             / 10.0
     });
+    let now = now_millis();
+    let slo_rows = sqlx::query(
+        r#"SELECT wj.status,wj.conclusion,wj.created_at,wj.started_at
+          FROM workflow_jobs wj
+          JOIN workflow_runs wr ON wr.id=wj.run_id
+          JOIN repositories repo ON repo.id=wr.repository_id
+          JOIN user_installations ui ON ui.installation_id=repo.installation_id
+          WHERE ui.user_id=? AND wj.created_at>=?"#,
+    )
+    .bind(&user.id)
+    .bind(now.saturating_sub(24 * 60 * 60 * 1_000))
+    .fetch_all(&state.database)
+    .await?;
+    let mut queue_ages = Vec::new();
+    let mut start_latencies = Vec::new();
+    let mut failure_reasons = HashMap::<String, i64>::new();
+    for row in &slo_rows {
+        let created_at = row.get::<i64, _>("created_at");
+        if row.get::<String, _>("status") == "queued" {
+            queue_ages.push(now.saturating_sub(created_at));
+        }
+        if let Some(started_at) = row.try_get::<Option<i64>, _>("started_at").ok().flatten()
+            && started_at >= created_at
+        {
+            start_latencies.push(started_at.saturating_sub(created_at));
+        }
+        if let Some(conclusion) = row
+            .try_get::<Option<String>, _>("conclusion")
+            .ok()
+            .flatten()
+            && conclusion != "success"
+            && conclusion != "skipped"
+        {
+            *failure_reasons.entry(conclusion).or_default() += 1;
+        }
+    }
+    let oldest_queue_age_ms = queue_ages.iter().copied().max();
+    let queue_p95_ms = percentile_millis(&queue_ages, 95);
+    let start_p50_ms = percentile_millis(&start_latencies, 50);
+    let start_p95_ms = percentile_millis(&start_latencies, 95);
+    let mut failures = failure_reasons.into_iter().collect::<Vec<_>>();
+    failures.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    failures.truncate(3);
+
+    let provisioning = sqlx::query(
+        r#"SELECT
+          SUM(CASE WHEN p.provision_circuit_open=1 THEN 1 ELSE 0 END) AS open_circuits,
+          SUM(p.provision_failure_count) AS failures
+        FROM runner_pools p
+        WHERE EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations access
+                WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+          )"#,
+    )
+    .bind(&user.id)
+    .fetch_one(&state.database)
+    .await?;
+    let failed_webhooks = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM webhook_deliveries wd
+          WHERE wd.status='failed' AND wd.received_at>=?
+            AND (wd.installation_id IS NULL OR EXISTS (SELECT 1 FROM user_installations ui
+              WHERE ui.installation_id=wd.installation_id AND ui.user_id=?))"#,
+    )
+    .bind(now.saturating_sub(24 * 60 * 60 * 1_000))
+    .bind(&user.id)
+    .fetch_one(&state.database)
+    .await?;
+    let mut alerts = Vec::new();
+    if oldest_queue_age_ms.is_some_and(|age| age >= 5 * 60 * 1_000) {
+        alerts.push(json!({
+            "level": "warning", "title": "Jobs have been waiting for over five minutes",
+            "detail": format_duration_millis(oldest_queue_age_ms.unwrap_or_default()),
+            "href": "/workflow-runs",
+        }));
+    }
+    let open_circuits = provisioning.get::<i64, _>("open_circuits");
+    if open_circuits > 0 {
+        alerts.push(json!({
+            "level": "error", "title": format!("{open_circuits} provisioning circuit(s) open"),
+            "detail": "GridOps is pausing repeated failed runner starts until the pool is retried.",
+            "href": "/runner-pools",
+        }));
+    }
+    if failed_webhooks > 0 {
+        alerts.push(json!({
+            "level": "warning", "title": format!("{failed_webhooks} webhook delivery failure(s) in 24h"),
+            "detail": "Polling continues to synchronize Actions data, but delivery failures should be reviewed.",
+            "href": "/webhooks",
+        }));
+    }
 
     let pool_rows = sqlx::query(
         r#"SELECT p.id,p.name,p.scope,p.desired_count,p.mode,p.state,p.paused,
@@ -348,6 +447,20 @@ pub async fn overview(
             "runners": metrics.get::<i64, _>("runners"), "online": metrics.get::<i64, _>("online"),
             "busy": metrics.get::<i64, _>("busy"), "queuedJobs": metrics.get::<i64, _>("queued_jobs"),
             "successRate": success_rate,
+        },
+        "slo": {
+            "windowHours": 24,
+            "queue": {
+                "oldestSeconds": oldest_queue_age_ms.map(millis_to_seconds),
+                "p95Seconds": queue_p95_ms.map(millis_to_seconds),
+            },
+            "startLatency": {
+                "sampleSize": start_latencies.len(),
+                "p50Seconds": start_p50_ms.map(millis_to_seconds),
+                "p95Seconds": start_p95_ms.map(millis_to_seconds),
+            },
+            "failures": failures.into_iter().map(|(reason, count)| json!({ "reason": reason, "count": count })).collect::<Vec<_>>(),
+            "alerts": alerts,
         },
         "pools": pools, "runs": runs, "activity": activity, "installations": installations,
     })))
@@ -1216,7 +1329,8 @@ pub async fn workflow_run(
     let run = sqlx::query(
         r#"SELECT wr.id,wr.workflow_name,wr.run_number,wr.run_attempt,wr.event,wr.status,
           wr.conclusion,wr.head_branch,wr.head_sha,wr.actor_login,wr.html_url,wr.started_at,
-          wr.completed_at,wr.github_created_at,repo.full_name,ui.permission AS installation_permission
+          wr.completed_at,wr.github_created_at,repo.id AS repository_id,repo.installation_id,
+          repo.full_name,ui.permission AS installation_permission
         FROM workflow_runs wr JOIN repositories repo ON repo.id=wr.repository_id
         JOIN user_installations ui ON ui.installation_id=repo.installation_id
         WHERE wr.id=? AND ui.user_id=?"#,
@@ -1240,15 +1354,35 @@ pub async fn workflow_run(
     .bind(run_id)
     .fetch_all(&state.database)
     .await?;
-    let jobs = jobs.iter().map(|row| json!({
-        "id": row.get::<i64,_>("id"), "name": row.get::<String,_>("name"), "status": row.get::<String,_>("status"),
-        "conclusion": row.try_get::<Option<String>,_>("conclusion").ok().flatten(), "runnerName": row.try_get::<Option<String>,_>("runner_name").ok().flatten(),
-        "runnerGroupName": row.try_get::<Option<String>,_>("runner_group_name").ok().flatten(), "labels": json_array(row.get::<&str,_>("labels")),
-        "htmlUrl": row.get::<String,_>("html_url"), "startedAt": iso_optional(row.try_get::<Option<i64>,_>("started_at").ok().flatten()),
-        "completedAt": iso_optional(row.try_get::<Option<i64>,_>("completed_at").ok().flatten()),
-        "liveRunnerId": row.try_get::<Option<String>,_>("live_runner_id").ok().flatten(),
-        "archivedLogId": row.try_get::<Option<String>,_>("archived_log_id").ok().flatten(),
-    })).collect::<Vec<_>>();
+    let mut job_items = Vec::with_capacity(jobs.len());
+    for row in &jobs {
+        let status = row.get::<String, _>("status");
+        let labels = json_array(row.get::<&str, _>("labels"));
+        let diagnosis = if status == "queued" {
+            Some(
+                diagnose_queued_job(
+                    &state,
+                    &user,
+                    run.get::<i64, _>("repository_id"),
+                    run.get::<i64, _>("installation_id"),
+                    &labels,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        job_items.push(json!({
+            "id": row.get::<i64,_>("id"), "name": row.get::<String,_>("name"), "status": status,
+            "conclusion": row.try_get::<Option<String>,_>("conclusion").ok().flatten(), "runnerName": row.try_get::<Option<String>,_>("runner_name").ok().flatten(),
+            "runnerGroupName": row.try_get::<Option<String>,_>("runner_group_name").ok().flatten(), "labels": labels,
+            "htmlUrl": row.get::<String,_>("html_url"), "startedAt": iso_optional(row.try_get::<Option<i64>,_>("started_at").ok().flatten()),
+            "completedAt": iso_optional(row.try_get::<Option<i64>,_>("completed_at").ok().flatten()),
+            "liveRunnerId": row.try_get::<Option<String>,_>("live_runner_id").ok().flatten(),
+            "archivedLogId": row.try_get::<Option<String>,_>("archived_log_id").ok().flatten(),
+            "diagnosis": diagnosis,
+        }));
+    }
     Ok(Json(json!({
         "id": run.get::<i64,_>("id"), "workflowName": run.get::<String,_>("workflow_name"), "runNumber": run.get::<i64,_>("run_number"),
         "runAttempt": run.get::<i64,_>("run_attempt"), "event": run.get::<String,_>("event"), "status": run.get::<String,_>("status"),
@@ -1256,7 +1390,7 @@ pub async fn workflow_run(
         "headSha": run.get::<String,_>("head_sha"), "actorLogin": run.try_get::<Option<String>,_>("actor_login").ok().flatten(),
         "htmlUrl": run.get::<String,_>("html_url"), "startedAt": iso_optional(run.try_get::<Option<i64>,_>("started_at").ok().flatten()),
         "completedAt": iso_optional(run.try_get::<Option<i64>,_>("completed_at").ok().flatten()), "createdAt": iso(run.get::<i64,_>("github_created_at")),
-        "repository": run.get::<String,_>("full_name"), "jobs": jobs,
+        "repository": run.get::<String,_>("full_name"), "jobs": job_items,
         "canManage": user.role == "admin" || run.get::<String,_>("installation_permission") == "admin",
     })))
 }
@@ -3343,6 +3477,110 @@ fn workflow_run_json(row: &sqlx::sqlite::SqliteRow, system_admin: bool) -> Value
     })
 }
 
+async fn diagnose_queued_job(
+    state: &AppState,
+    user: &AuthUser,
+    repository_id: i64,
+    installation_id: i64,
+    requested_labels: &[String],
+) -> ApiResult<Value> {
+    let rows = sqlx::query(
+        r#"SELECT p.id,p.name,p.labels,p.providers,p.paused,p.provision_circuit_open,p.max_count,
+          COUNT(CASE WHEN r.deleted_at IS NULL AND r.status IN ('starting','online','idle','busy','paused','stopped') THEN 1 END) AS active_runners,
+          COUNT(CASE WHEN r.deleted_at IS NULL AND r.busy=1 THEN 1 END) AS busy_runners
+          FROM runner_pools p
+          LEFT JOIN runners r ON r.pool_id=p.id
+          WHERE (
+            EXISTS (SELECT 1 FROM runner_pool_repositories membership
+              WHERE membership.pool_id=p.id AND membership.repository_id=?)
+            OR p.repository_id=?
+            OR (p.scope='organization' AND p.installation_id=?)
+          )
+          AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
+              AND NOT EXISTS (SELECT 1 FROM user_installations access
+                WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
+          )
+          GROUP BY p.id ORDER BY p.name"#,
+    )
+    .bind(repository_id)
+    .bind(repository_id)
+    .bind(installation_id)
+    .bind(&user.id)
+    .fetch_all(&state.database)
+    .await?;
+    let mut compatible = 0_i64;
+    let mut ready = 0_i64;
+    let candidates = rows
+        .iter()
+        .map(|row| {
+            let pool_name = row.get::<String, _>("name");
+            let mut configured_labels = json_array(row.get::<&str, _>("labels"));
+            if !configured_labels
+                .iter()
+                .any(|label| label.eq_ignore_ascii_case(&pool_name))
+            {
+                configured_labels.push(pool_name.clone());
+            }
+            let providers = json_array(row.get::<&str, _>("providers"));
+            let matching_provider =
+                compatible_runner_provider(&providers, requested_labels, &configured_labels);
+            let active = row.get::<i64, _>("active_runners");
+            let maximum = row.get::<i64, _>("max_count");
+            let paused = row.get::<bool, _>("paused");
+            let status = if paused {
+                "paused"
+            } else if matching_provider.is_none() {
+                "incompatible"
+            } else if row.get::<bool, _>("provision_circuit_open") {
+                "circuit_open"
+            } else if active >= maximum {
+                "at_capacity"
+            } else {
+                "ready"
+            };
+            if matching_provider.is_some() && !paused && status != "circuit_open" {
+                compatible += 1;
+                if status == "ready" {
+                    ready += 1;
+                }
+            }
+            let available_capacity = maximum.saturating_sub(active);
+            json!({
+                "id": row.get::<String, _>("id"), "name": pool_name,
+                "status": status, "provider": matching_provider,
+                "activeRunners": active, "busyRunners": row.get::<i64, _>("busy_runners"),
+                "maximumRunners": maximum, "availableCapacity": available_capacity,
+            })
+        })
+        .collect::<Vec<_>>();
+    let summary = if candidates.is_empty() {
+        "No accessible runner pool is assigned to this repository.".to_owned()
+    } else if compatible == 0 {
+        if candidates
+            .iter()
+            .any(|candidate| candidate["status"] == "circuit_open")
+        {
+            "A matching pool needs a provisioning retry before GridOps can start another runner."
+                .to_owned()
+        } else {
+            "No assigned pool matches every requested runner label.".to_owned()
+        }
+    } else if ready == 0 {
+        "A matching pool exists, but every compatible pool is currently at its configured limit."
+            .to_owned()
+    } else {
+        "A matching pool has configured headroom; GridOps will attempt capacity admission on its next reconcile."
+            .to_owned()
+    };
+    Ok(json!({
+        "summary": summary,
+        "requestedLabels": requested_labels,
+        "candidates": candidates,
+    }))
+}
+
 fn workflow_action_endpoint(action: &str) -> ApiResult<&'static str> {
     match action {
         "cancel" => Ok("cancel"),
@@ -3467,6 +3705,33 @@ fn capacity_window(window: &str) -> Option<(i64, i64)> {
         "7d" => Some((7 * 86_400_000, 30 * 60_000)),
         "30d" => Some((30 * 86_400_000, 2 * 60 * 60_000)),
         _ => None,
+    }
+}
+
+fn percentile_millis(values: &[i64], percentile: usize) -> Option<i64> {
+    let mut values = values.to_vec();
+    values.sort_unstable();
+    let index = values
+        .len()
+        .saturating_mul(percentile.clamp(1, 100))
+        .saturating_add(99)
+        / 100;
+    let index = index.checked_sub(1)?;
+    values.get(index).copied()
+}
+
+fn millis_to_seconds(value: i64) -> i64 {
+    value.saturating_add(999) / 1_000
+}
+
+fn format_duration_millis(value: i64) -> String {
+    let seconds = millis_to_seconds(value);
+    if seconds >= 3_600 {
+        format!("{}h {}m", seconds / 3_600, (seconds % 3_600) / 60)
+    } else if seconds >= 60 {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
     }
 }
 
@@ -3871,6 +4136,16 @@ mod tests {
         assert_eq!(capacity_window("7d"), Some((604_800_000, 1_800_000)));
         assert_eq!(capacity_window("30d"), Some((2_592_000_000, 7_200_000)));
         assert_eq!(capacity_window("1y"), None);
+    }
+
+    #[test]
+    fn slo_percentiles_use_sorted_observations_and_seconds_round_up() {
+        let values = [9_900, 100, 4_000, 2_001];
+        assert_eq!(percentile_millis(&values, 50), Some(2_001));
+        assert_eq!(percentile_millis(&values, 95), Some(9_900));
+        assert_eq!(percentile_millis(&[], 95), None);
+        assert_eq!(millis_to_seconds(2_001), 3);
+        assert_eq!(format_duration_millis(61_001), "1m 2s");
     }
 
     #[test]

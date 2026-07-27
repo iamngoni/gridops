@@ -4,6 +4,7 @@ import { type FormEvent, useEffect, useState } from "react";
 
 import { AppShell } from "~/components/app-shell";
 import { ListPagination } from "~/components/list-pagination";
+import { PoolPlanPreview } from "~/components/pool-plan-preview";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { StatusBadge } from "~/components/status-badge";
 import { Badge } from "~/components/ui/badge";
@@ -68,6 +69,8 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
   const [desiredCount, setDesiredCount] = useState(pool.desiredCount);
   const [cpuLimit, setCpuLimit] = useState(pool.cpuLimit);
   const [memoryLimitMb, setMemoryLimitMb] = useState(pool.memoryLimitMb);
+  const [poolName, setPoolName] = useState(pool.name);
+  const [labels, setLabels] = useState(pool.labels.join(", "));
   const [runnerGroupId, setRunnerGroupId] = useState(pool.runnerGroupId);
   const shouldLoadRepositories = pool.canManage && pool.scope === "repository";
   const [repositoryLoad, setRepositoryLoad] = useState<RepositoryLoadState>(
@@ -137,11 +140,11 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
         data: {
           poolId: pool.id,
           repositoryIds: pool.scope === "repository" ? repositoryIds : undefined,
-          name: String(form.get("name") ?? ""),
+          name: poolName,
           mode,
           provider: primaryProvider,
           providers,
-          labels: String(form.get("labels") ?? "")
+          labels: labels
             .split(",")
             .map((label) => label.trim())
             .filter(Boolean),
@@ -230,7 +233,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
             <CardHeader><CardTitle>Runner definition</CardTitle></CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2">
               <Field label="Pool name" hint="Also used as a runner label.">
-                <Input defaultValue={pool.name} name="name" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" required />
+                <Input name="name" onChange={(event) => setPoolName(event.target.value)} pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" required value={poolName} />
               </Field>
               <Field className="md:col-span-2" label="Runner providers" hint="Select every execution environment this pool may use. GridOps routes each queued job to the first compatible provider; the first provider handles jobs that only request self-hosted.">
                 <SearchableMultiSelect
@@ -271,7 +274,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
                 <Input onChange={(event) => setTartImage(event.target.value)} required value={tartImage} />
               </Field> : null}
               <Field className="md:col-span-2" label="Additional labels" hint="Comma-separated custom labels. GridOps adds self-hosted, the provider operating system and architecture, and the pool name automatically.">
-                <Input defaultValue={pool.labels.join(", ")} name="labels" />
+                <Input name="labels" onChange={(event) => setLabels(event.target.value)} value={labels} />
               </Field>
               {pool.scope === "organization" ? (
                 <Field
@@ -334,6 +337,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               <Field label="CPU cores per runner" hint={includesTart ? "Whole CPU cores per runner because this pool includes macOS VMs." : "Applied to each Docker runner."}><Input name="cpuLimit" onChange={(event) => setCpuLimit(Number(event.target.value))} required step={includesTart ? "1" : "0.25"} type="number" value={cpuLimit} /></Field>
               <Field label="Memory per runner (MB)" hint="Assigned to each runner. Host availability is checked when a runner starts."><Input name="memoryLimitMb" onChange={(event) => setMemoryLimitMb(Number(event.target.value))} required step="256" type="number" value={memoryLimitMb} /></Field>
               {resourceWarning ? <HostResourceWarning warning={resourceWarning} /> : null}
+              <PoolPlanPreview desiredCount={desiredCount} labels={labels.split(",").map((label) => label.trim()).filter(Boolean)} maxCount={maxCount} name={poolName} providers={providers} repositoryCount={repositoryIds.length} scope={pool.scope} />
               <label className="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2 xl:col-span-3">
                 <input className="mt-0.5 size-4 accent-emerald-500" defaultChecked={pool.autoscalingEnabled} name="autoscalingEnabled" type="checkbox" />
                 <span><span className="block text-xs font-medium">Autoscale from queued jobs</span><span className="mt-1 block text-[11px] text-muted-foreground">Queued workflow jobs raise the target up to Maximum runners. When every runner is idle, the target returns to Minimum runners after the delay below.</span></span>

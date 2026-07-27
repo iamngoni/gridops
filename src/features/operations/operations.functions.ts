@@ -48,7 +48,12 @@ export type WorkflowRun = {
 export type WorkflowRunDetail = Omit<WorkflowRun, "jobCount" | "activeJobs" | "failedJobs"> & {
   jobs: Array<{ id: number; name: string; status: string; conclusion: string | null; runnerName: string | null;
     runnerGroupName: string | null; labels: string[]; htmlUrl: string; startedAt: string | null; completedAt: string | null;
-    liveRunnerId: string | null; archivedLogId: string | null }>;
+    liveRunnerId: string | null; archivedLogId: string | null;
+    diagnosis: null | {
+      summary: string; requestedLabels: string[];
+      candidates: Array<{ id: string; name: string; status: "paused" | "circuit_open" | "incompatible" | "at_capacity" | "ready"; provider: string | null;
+        activeRunners: number; busyRunners: number; maximumRunners: number; availableCapacity: number }>;
+    } }>;
 };
 
 export type WebhookDelivery = {

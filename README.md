@@ -110,3 +110,5 @@ docker compose --env-file .env.local config
 ```
 
 Back up the `gridops-data` volume or use the database backup control in Settings. SQLite runs in WAL mode; the download endpoint uses SQLite's consistent `VACUUM INTO` snapshot operation. Backups contain encrypted GitHub credentials, so treat them as sensitive and retain the matching `GRIDOPS_ENCRYPTION_KEY`; without that key the credentials cannot be recovered.
+
+See [the disaster-recovery guide](docs/disaster-recovery.md) for backup verification, guarded restore steps, and recovery drills.

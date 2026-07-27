@@ -17,6 +17,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  portable:
+    name: Portable validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Verify web application
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          npm run lint
+          npm test
+
+      - name: Verify Rust workspace
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
+
+      - name: Validate recovery helper syntax
+        run: sh -n scripts/restore-database-backup.sh
+
   web:
     name: Web build, lint, and tests
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository

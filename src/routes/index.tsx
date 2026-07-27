@@ -35,7 +35,7 @@ import {
 import { getCapacityHistory, getDashboardOverview } from "~/features/dashboard/dashboard.functions";
 import { syncGitHubAction } from "~/features/operations/operations.functions";
 import type { CapacityHistory, CapacityWindow, DashboardOverview } from "~/features/dashboard/types";
-import { formatDuration, formatRelativeTime } from "~/lib/utils";
+import { cn, formatDuration, formatRelativeTime } from "~/lib/utils";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
 export const Route = createFileRoute("/")({
@@ -115,6 +115,8 @@ function OverviewPage() {
           />
         </section>
 
+        {data.authenticated ? <ServiceLevelPanel data={data} /> : null}
+
         <section className="flex flex-col gap-4 2xl:grid 2xl:grid-cols-[minmax(0,1.3fr)_minmax(520px,1fr)] 2xl:items-start">
           <div className="contents 2xl:block 2xl:min-w-0 2xl:space-y-4">
             <div className="order-1"><CapacityPanel data={data} /></div>
@@ -128,6 +130,47 @@ function OverviewPage() {
       </div>
     </AppShell>
   );
+}
+
+function ServiceLevelPanel({ data }: { data: DashboardOverview }) {
+  const { alerts, failures, queue, startLatency, windowHours } = data.slo;
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
+          <div>
+            <CardTitle className="flex items-center gap-2"><Activity className="size-4 text-primary" />Service level</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">Job hand-off health across the last {windowHours} hours.</p>
+          </div>
+          <Link className={buttonVariants({ size: "sm", variant: "outline" })} to="/workflow-runs">Investigate jobs <ArrowRight /></Link>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <SloMetric label="Oldest queued job" value={formatSeconds(queue.oldestSeconds)} hint={queue.p95Seconds === null ? "Queue is clear" : `p95 observed ${formatSeconds(queue.p95Seconds)}`} />
+          <SloMetric label="Observed start latency" value={formatSeconds(startLatency.p50Seconds)} hint={startLatency.sampleSize ? `p95 ${formatSeconds(startLatency.p95Seconds)} · ${startLatency.sampleSize} starts` : "No starts in window"} />
+          <SloMetric label="Top failed outcomes" value={failures.length ? `${failures.reduce((total, item) => total + item.count, 0)}` : "0"} hint={failures.length ? failures.map((item) => `${item.count} ${item.reason}`).join(" · ") : "No failed outcomes"} />
+        </div>
+        {alerts.length ? <div className="grid gap-2">
+          {alerts.map((alert) => <Link className={cn("flex items-start gap-3 rounded-md border p-3 text-sm transition-colors hover:bg-accent/50", alert.level === "error" ? "border-red-500/30 bg-red-500/5" : "border-amber-500/30 bg-amber-500/5")} key={`${alert.href}-${alert.title}`} to={alert.href}>
+            <TriangleAlert className={cn("mt-0.5 size-4 shrink-0", alert.level === "error" ? "text-red-500" : "text-amber-500")} />
+            <span className="min-w-0"><span className="block font-medium">{alert.title}</span><span className="mt-0.5 block text-xs leading-5 text-muted-foreground">{alert.detail}</span></span><ArrowRight className="ml-auto mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          </Link>)}
+        </div> : <p className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-800 dark:text-emerald-200">No active runner-control incidents detected.</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SloMetric({ label, value, hint }: { label: string; value: string; hint: string }) {
+  return <div className="rounded-md border border-border bg-muted/15 p-3"><p className="text-[11px] font-medium text-muted-foreground">{label}</p><p className="mt-1 text-xl font-semibold tracking-tight">{value}</p><p className="mt-1 truncate text-[11px] text-muted-foreground" title={hint}>{hint}</p></div>;
+}
+
+function formatSeconds(value: number | null) {
+  if (value === null) return "—";
+  if (value >= 3_600) return `${Math.floor(value / 3_600)}h ${Math.floor((value % 3_600) / 60)}m`;
+  if (value >= 60) return `${Math.floor(value / 60)}m ${value % 60}s`;
+  return `${value}s`;
 }
 
 function ConfigurationBanner({ data }: { data: DashboardOverview }) {
