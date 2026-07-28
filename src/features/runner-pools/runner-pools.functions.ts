@@ -10,6 +10,7 @@ type BaseOptions = {
   installations: Array<{ id: number; accountLogin: string; accountType: string }>;
   repositories: Array<{ id: number; installationId: number; fullName: string; private: boolean }>;
   runnerGroups: Array<{ installationId: number; id: number; name: string; visibility: string; isDefault: boolean }>;
+  bitbucketConnections: Array<{ id: string; name: string; workspace: string; workspaceUuid: string }>;
 };
 
 export type RunnerGroupOption = {
@@ -50,6 +51,8 @@ export type RunnerPoolDetail = {
   repository: string | null;
   repositoryIds: number[];
   repositories: RepositoryOption[];
+  bitbucketConnections: Array<{ id: string; name: string; workspace: string; workspaceUuid: string }>;
+  bitbucketConnectionIds: string[];
   accountLogin: string;
   name: string;
   scope: "repository" | "organization";

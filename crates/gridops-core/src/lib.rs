@@ -1,4 +1,5 @@
 pub mod autoscaling;
+pub mod bitbucket;
 pub mod config;
 pub mod crypto;
 pub mod db;
@@ -11,6 +12,10 @@ pub use autoscaling::{
     provider_capacities, provider_capacity_deficit, provider_supports_labels,
     repository_capacities, repository_capacity_deficit, runner_arch_label,
     runner_supports_system_label, runner_system_labels, scale_up_target,
+};
+pub use bitbucket::{
+    BitbucketClient, BitbucketRunner, BitbucketRunnerOAuthClient, BitbucketRunnerState,
+    BitbucketRunnerTarget, BitbucketWorkspace,
 };
 pub use config::Config;
 pub use crypto::Vault;

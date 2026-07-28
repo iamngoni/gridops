@@ -31,8 +31,8 @@ export type RunnerPool = {
 };
 
 export type Runner = {
-  id: string; name: string; provider: "docker" | "tart"; status: string; busy: boolean; ephemeral: boolean; os: string;
-  architecture: string; containerId: string | null; githubRunnerId: number | null;
+  id: string; name: string; provider: "docker" | "tart"; platform: "github" | "bitbucket"; status: string; busy: boolean; ephemeral: boolean; os: string;
+  architecture: string; containerId: string | null; githubRunnerId: number | null; bitbucketRunnerUuid: string | null;
   failureReason: string | null; registeredAt: string | null; lastHeartbeatAt: string | null;
   createdAt: string; poolId: string; poolName: string; poolPaused: boolean; accountLogin: string;
   repository: string | null; currentJobName: string | null; currentRunId: number | null; canManage: boolean;

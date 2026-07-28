@@ -44,6 +44,8 @@ pub struct CreateRunnerPool {
     pub repository_id: Option<i64>,
     #[serde(default)]
     pub repository_ids: Vec<i64>,
+    #[serde(default)]
+    pub bitbucket_connection_ids: Vec<String>,
     pub name: String,
     pub scope: String,
     pub mode: String,
@@ -101,6 +103,13 @@ impl CreateRunnerPool {
                     .into(),
             );
         }
+        validate_bitbucket_connections(
+            &self.bitbucket_connection_ids,
+            &self.providers,
+            &self.provider,
+            &self.labels,
+            self.max_count,
+        )?;
         if repositories.len() > 1_000
             || repositories.iter().any(|repository_id| *repository_id <= 0)
         {
@@ -140,6 +149,8 @@ impl CreateRunnerPool {
 pub struct UpdateRunnerPool {
     #[serde(default)]
     pub repository_ids: Option<Vec<i64>>,
+    #[serde(default)]
+    pub bitbucket_connection_ids: Option<Vec<String>>,
     pub name: String,
     pub mode: String,
     pub provider: String,
@@ -188,6 +199,15 @@ impl UpdateRunnerPool {
                 }
         }) {
             return Err("Choose between 1 and 1,000 unique repositories for the pool.".into());
+        }
+        if let Some(bitbucket_connection_ids) = &self.bitbucket_connection_ids {
+            validate_bitbucket_connections(
+                bitbucket_connection_ids,
+                &self.providers,
+                &self.provider,
+                &self.labels,
+                self.max_count,
+            )?;
         }
         if self.repository_ids.as_ref().is_some_and(|repositories| {
             i64::try_from(repositories.len()).unwrap_or(i64::MAX) > self.max_count
@@ -304,6 +324,52 @@ fn validate_pool_configuration(
     Ok(())
 }
 
+fn validate_bitbucket_connections(
+    connections: &[String],
+    providers: &[String],
+    provider: &str,
+    labels: &[String],
+    max_count: i64,
+) -> Result<(), String> {
+    if connections.len() > 100
+        || connections
+            .iter()
+            .any(|connection| uuid::Uuid::parse_str(connection).is_err() || connection.len() > 64)
+    {
+        return Err("Choose up to 100 valid Bitbucket workspace connections.".into());
+    }
+    let mut unique = connections.to_vec();
+    unique.sort();
+    unique.dedup();
+    if unique.len() != connections.len() {
+        return Err("Bitbucket workspace connections must be unique.".into());
+    }
+    if connections.is_empty() {
+        return Ok(());
+    }
+    let selected = selected_providers(provider, providers);
+    if !selected.iter().any(|item| item == "tart") {
+        return Err(
+            "Bitbucket macOS runners require the Tart provider in this first adapter release."
+                .into(),
+        );
+    }
+    if i64::try_from(connections.len()).unwrap_or(i64::MAX) > max_count {
+        return Err("Bitbucket workspace count cannot exceed maximum runner capacity.".into());
+    }
+    if labels.iter().any(|label| {
+        label.is_empty()
+            || !label.chars().all(|character| {
+                character.is_ascii_lowercase() || character.is_ascii_digit() || character == '.'
+            })
+    }) {
+        return Err(
+            "Bitbucket-compatible pool labels use lowercase letters, numbers, and dots.".into(),
+        );
+    }
+    Ok(())
+}
+
 fn selected_providers(provider: &str, providers: &[String]) -> Vec<String> {
     if providers.is_empty() {
         vec![provider.to_owned()]
@@ -341,6 +407,7 @@ mod tests {
             installation_id: 1,
             repository_id: Some(2),
             repository_ids: Vec::new(),
+            bitbucket_connection_ids: Vec::new(),
             name: "linux-general".into(),
             scope: "repository".into(),
             mode: "ephemeral".into(),
@@ -401,6 +468,7 @@ mod tests {
         let original = pool();
         let update = UpdateRunnerPool {
             repository_ids: None,
+            bitbucket_connection_ids: None,
             name: original.name,
             mode: original.mode,
             provider: original.provider,
@@ -425,5 +493,13 @@ mod tests {
         undersized.repository_ids = Some(vec![2, 3]);
         undersized.max_count = 1;
         assert!(undersized.validate().is_err());
+
+        let mut bitbucket = pool();
+        bitbucket.providers = vec!["docker".into(), "tart".into()];
+        bitbucket.bitbucket_connection_ids = vec!["a39d4e94-a0cc-4e71-9548-741f1fd54820".into()];
+        bitbucket.labels = vec!["release.ios".into()];
+        assert!(bitbucket.validate().is_ok());
+        bitbucket.providers = vec!["docker".into()];
+        assert!(bitbucket.validate().is_err());
     }
 }

@@ -15,7 +15,7 @@ use axum::{
     http::{HeaderName, HeaderValue, Method, Request, StatusCode, header},
     routing::{any, get, post},
 };
-use gridops_core::{Config, GitHubClient, Vault, connect_database};
+use gridops_core::{BitbucketClient, Config, GitHubClient, Vault, connect_database};
 use tower::ServiceBuilder;
 use tower_http::{
     catch_panic::CatchPanicLayer,
@@ -47,7 +47,8 @@ async fn main() -> Result<()> {
     let database = connect_database(&config).await?;
     let vault = Vault::from_config(&config)?;
     let github = GitHubClient::new(config.clone())?;
-    let state = AppState::new(config.clone(), database, vault, github)?;
+    let bitbucket = BitbucketClient::new()?;
+    let state = AppState::new(config.clone(), database, vault, github, bitbucket)?;
     state.validate_api().await?;
     let request_id = HeaderName::from_static("x-request-id");
     let origin: HeaderValue = config.base_url().origin().ascii_serialization().parse()?;
@@ -176,6 +177,10 @@ async fn main() -> Result<()> {
         .route(
             "/api/v1/settings",
             get(resources::settings).put(resources::save_settings),
+        )
+        .route(
+            "/api/v1/platform-connections/bitbucket",
+            get(resources::bitbucket_connections).post(resources::create_bitbucket_connection),
         )
         .route(
             "/api/v1/github-app/manifest",

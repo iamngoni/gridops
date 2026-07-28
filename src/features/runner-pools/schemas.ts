@@ -29,6 +29,7 @@ const configurationShape = {
 } as const;
 
 const repositoryIds = z.array(z.number().int().positive()).max(1_000);
+const bitbucketConnectionIds = z.array(z.string().uuid()).max(100);
 
 function validateCapacity(
   value: { desiredCount: number; minCount: number; maxCount: number },
@@ -74,7 +75,7 @@ function validateProvider(
 }
 
 export const updateRunnerPoolSchema = z
-  .object({ repositoryIds: repositoryIds.optional(), ...configurationShape })
+  .object({ repositoryIds: repositoryIds.optional(), bitbucketConnectionIds: bitbucketConnectionIds.optional(), ...configurationShape })
   .superRefine((value, context) => {
     if (value.repositoryIds?.length === 0) {
       context.addIssue({
@@ -90,6 +91,7 @@ export const updateRunnerPoolSchema = z
         message: "Repository count cannot exceed maximum runner capacity.",
       });
     }
+    validateBitbucketConnections(value, context);
     validateCapacity(value, context);
     validateProvider(value, context);
   });
@@ -98,6 +100,7 @@ export const createRunnerPoolSchema = z
   .object({
     installationId: z.number().int().positive(),
     repositoryIds: repositoryIds.default([]),
+    bitbucketConnectionIds: bitbucketConnectionIds.default([]),
     scope: z.enum(["repository", "organization"]),
     ...configurationShape,
   })
@@ -123,6 +126,7 @@ export const createRunnerPoolSchema = z
         message: "Repository count cannot exceed maximum runner capacity.",
       });
     }
+    validateBitbucketConnections(value, context);
     validateCapacity(value, context);
     validateProvider(value, context);
   });
@@ -133,6 +137,23 @@ export function parseCreateRunnerPoolInput(input: unknown) {
     throw new Error(result.error.issues[0]?.message ?? "Runner pool configuration is invalid.");
   }
   return result.data;
+}
+
+function validateBitbucketConnections(
+  value: { bitbucketConnectionIds?: string[]; providers: Array<"docker" | "tart">; labels: string[]; maxCount: number },
+  context: z.RefinementCtx,
+) {
+  const connections = value.bitbucketConnectionIds;
+  if (!connections?.length) return;
+  if (!value.providers.includes("tart")) {
+    context.addIssue({ code: "custom", path: ["bitbucketConnectionIds"], message: "Bitbucket macOS runners require Tart in this first adapter release." });
+  }
+  if (connections.length > value.maxCount) {
+    context.addIssue({ code: "custom", path: ["bitbucketConnectionIds"], message: "Bitbucket workspace count cannot exceed maximum runner capacity." });
+  }
+  if (value.labels.some((label) => !/^[a-z0-9.]+$/.test(label))) {
+    context.addIssue({ code: "custom", path: ["labels"], message: "Bitbucket-compatible labels use lowercase letters, numbers, and dots." });
+  }
 }
 
 export function parseUpdateRunnerPoolInput(input: unknown) {

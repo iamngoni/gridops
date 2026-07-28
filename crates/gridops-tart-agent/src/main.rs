@@ -38,6 +38,7 @@ struct AgentState {
     tart_binary: PathBuf,
     home: PathBuf,
     runner_root: String,
+    bitbucket_runner_root: String,
     network_mode: NetworkMode,
     limits: AgentLimits,
     records: Arc<RwLock<HashMap<String, TartRecord>>>,
@@ -106,16 +107,33 @@ struct ProvisionRunner {
     image: String,
     mode: String,
     provider: String,
+    #[serde(default = "default_platform")]
+    platform: String,
     jit_config: Option<String>,
+    bitbucket: Option<BitbucketBootstrap>,
+    bitbucket_oauth_client_secret: Option<String>,
     cpu_limit: f64,
     memory_limit_mb: i64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BitbucketBootstrap {
+    account_uuid: String,
+    repository_uuid: Option<String>,
+    runner_uuid: String,
+    oauth_client_id: String,
+}
+
+fn default_platform() -> String {
+    "github".into()
+}
+
 impl ProvisionRunner {
     fn validate(&self) -> Result<(), AgentError> {
-        if self.provider != "tart" || self.mode != "ephemeral" {
+        if self.provider != "tart" {
             return Err(AgentError::BadRequest(
-                "The Tart provider supports ephemeral macOS runners only.".into(),
+                "This agent manages Tart macOS runners only.".into(),
             ));
         }
         if self.runner_id.is_empty()
@@ -130,12 +148,51 @@ impl ProvisionRunner {
                 "Runner identity or Tart image is invalid.".into(),
             ));
         }
-        if self.jit_config.as_ref().is_none_or(|value| {
-            !(20..=900_000).contains(&value.len()) || value.contains(['\n', '\r'])
-        }) {
-            return Err(AgentError::BadRequest(
-                "Runner JIT configuration is invalid.".into(),
-            ));
+        match (self.platform.as_str(), self.mode.as_str()) {
+            ("github", "ephemeral") => {
+                if self.jit_config.as_ref().is_none_or(|value| {
+                    !(20..=900_000).contains(&value.len()) || value.contains(['\n', '\r'])
+                }) {
+                    return Err(AgentError::BadRequest(
+                        "Runner JIT configuration is invalid.".into(),
+                    ));
+                }
+            }
+            ("bitbucket", "persistent") => {
+                let valid_value = |value: &str| {
+                    !value.is_empty() && value.len() <= 255 && !value.contains(['\n', '\r'])
+                };
+                if self.bitbucket.as_ref().is_none_or(|bootstrap| {
+                    !valid_value(&bootstrap.account_uuid)
+                        || bootstrap
+                            .repository_uuid
+                            .as_deref()
+                            .is_some_and(|value| !valid_value(value))
+                        || !valid_value(&bootstrap.runner_uuid)
+                        || !valid_value(&bootstrap.oauth_client_id)
+                }) || self
+                    .bitbucket_oauth_client_secret
+                    .as_ref()
+                    .is_none_or(|secret| {
+                        !(20..=2_048).contains(&secret.len()) || secret.contains(['\n', '\r'])
+                    })
+                {
+                    return Err(AgentError::BadRequest(
+                        "Bitbucket macOS runner registration is invalid.".into(),
+                    ));
+                }
+            }
+            ("github", _) => {
+                return Err(AgentError::BadRequest(
+                    "Tart GitHub runners must be ephemeral.".into(),
+                ));
+            }
+            ("bitbucket", _) => {
+                return Err(AgentError::BadRequest(
+                    "Bitbucket Tart runners must be persistent.".into(),
+                ));
+            }
+            _ => return Err(AgentError::BadRequest("Runner platform is invalid.".into())),
         }
         if !self.cpu_limit.is_finite()
             || self.cpu_limit <= 0.0
@@ -249,6 +306,12 @@ async fn main() -> Result<()> {
         valid_guest_path(&runner_root),
         "GRIDOPS_TART_RUNNER_ROOT is invalid"
     );
+    let bitbucket_runner_root = env::var("GRIDOPS_TART_BITBUCKET_RUNNER_ROOT")
+        .unwrap_or_else(|_| "/Users/admin/atlassian-bitbucket-pipelines-runner".into());
+    anyhow::ensure!(
+        valid_guest_path(&bitbucket_runner_root),
+        "GRIDOPS_TART_BITBUCKET_RUNNER_ROOT is invalid"
+    );
     let network_mode = match env::var("GRIDOPS_TART_NETWORK_MODE")
         .unwrap_or_else(|_| "softnet".into())
         .to_ascii_lowercase()
@@ -286,6 +349,7 @@ async fn main() -> Result<()> {
         tart_binary,
         home,
         runner_root,
+        bitbucket_runner_root,
         network_mode,
         limits,
         records: Arc::new(RwLock::new(records)),
@@ -482,13 +546,34 @@ async fn provision_runner(
             .insert(id.clone(), record.clone());
         start_vm(&state, &record)?;
         wait_for_guest_agent(&state, &record).await?;
-        let jit_config = SecretString::from(
-            input
-                .jit_config
-                .take()
-                .context("validated JIT configuration disappeared")?,
-        );
-        start_runner(&state, &record, &jit_config).await?;
+        let (script, bootstrap_secret) = match input.platform.as_str() {
+            "github" => (
+                runner_script(&state.runner_root),
+                SecretString::from(
+                    input
+                        .jit_config
+                        .take()
+                        .context("validated JIT configuration disappeared")?,
+                ),
+            ),
+            "bitbucket" => (
+                bitbucket_runner_script(
+                    &state.bitbucket_runner_root,
+                    input
+                        .bitbucket
+                        .as_ref()
+                        .context("validated Bitbucket bootstrap disappeared")?,
+                ),
+                SecretString::from(
+                    input
+                        .bitbucket_oauth_client_secret
+                        .take()
+                        .context("validated Bitbucket OAuth secret disappeared")?,
+                ),
+            ),
+            _ => anyhow::bail!("validated runner platform disappeared"),
+        };
+        start_runner(&state, &record, &script, &bootstrap_secret).await?;
         Result::<()>::Ok(())
     }
     .await;
@@ -659,9 +744,9 @@ async fn wait_for_guest_agent(state: &AgentState, record: &TartRecord) -> Result
 async fn start_runner(
     state: &AgentState,
     record: &TartRecord,
-    jit_config: &SecretString,
+    script: &str,
+    bootstrap_secret: &SecretString,
 ) -> Result<()> {
-    let script = runner_script(&state.runner_root);
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -674,7 +759,7 @@ async fn start_runner(
             record.vm_name.as_str(),
             "/bin/bash",
             "-lc",
-            script.as_str(),
+            script,
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::from(log))
@@ -685,7 +770,7 @@ async fn start_runner(
         .take()
         .context("Tart runner stdin was unavailable")?;
     stdin
-        .write_all(jit_config.expose_secret().as_bytes())
+        .write_all(bootstrap_secret.expose_secret().as_bytes())
         .await?;
     stdin.write_all(b"\n").await?;
     stdin.shutdown().await?;
@@ -702,6 +787,35 @@ async fn start_runner(
             .await;
     });
     Ok(())
+}
+
+fn bitbucket_runner_script(runner_root: &str, bootstrap: &BitbucketBootstrap) -> String {
+    let repository_argument = bootstrap
+        .repository_uuid
+        .as_ref()
+        .map_or_else(String::new, |repository_uuid| {
+            format!(" --repositoryUuid {}", shell_single_quote(repository_uuid))
+        });
+    format!(
+        r#"set -euo pipefail
+runner_root={runner_root}
+if [ ! -x "$runner_root/bin/start.sh" ]; then
+  printf 'GridOps macOS runner image is missing %s/bin/start.sh. Prepare the Bitbucket runner in this Tart base image first.\n' "$runner_root" >&2
+  exit 78
+fi
+IFS= read -r GRIDOPS_BOOTSTRAP_SECRET
+[ -n "$GRIDOPS_BOOTSTRAP_SECRET" ]
+cd "$runner_root/bin"
+exec ./start.sh --accountUuid {account_uuid}{repository_argument} --runnerUuid {runner_uuid} --OAuthClientId {oauth_client_id} --OAuthClientSecret "$GRIDOPS_BOOTSTRAP_SECRET" --runtime macos-bash --workingDirectory "$runner_root/temp""#,
+        runner_root = shell_single_quote(runner_root),
+        account_uuid = shell_single_quote(&bootstrap.account_uuid),
+        runner_uuid = shell_single_quote(&bootstrap.runner_uuid),
+        oauth_client_id = shell_single_quote(&bootstrap.oauth_client_id),
+    )
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\\"'\\\"'"))
 }
 
 fn runner_script(runner_root: &str) -> String {
@@ -1004,6 +1118,22 @@ mod tests {
         assert!(script.contains("mkdir -p \"$runner_root/_diag\""));
         assert!(script.contains("_diag/pages/*.log"));
         assert!(!script.contains("fake-jit"));
+    }
+
+    #[test]
+    fn generated_bitbucket_script_reads_its_one_time_secret_from_stdin() {
+        let script = bitbucket_runner_script(
+            "/Users/admin/atlassian-bitbucket-pipelines-runner",
+            &BitbucketBootstrap {
+                account_uuid: "{account}".into(),
+                repository_uuid: None,
+                runner_uuid: "{runner}".into(),
+                oauth_client_id: "client".into(),
+            },
+        );
+        assert!(script.contains("read -r GRIDOPS_BOOTSTRAP_SECRET"));
+        assert!(script.contains("--OAuthClientSecret \"$GRIDOPS_BOOTSTRAP_SECRET\""));
+        assert!(!script.contains("fake-secret"));
     }
 
     #[tokio::test]

@@ -5,6 +5,7 @@ import {
   Boxes,
   ChevronDown,
   CircleGauge,
+  CloudCog,
   FileClock,
   Github,
   GitPullRequestArrow,
@@ -47,7 +48,7 @@ const navigation = [
   },
   {
     label: "System",
-    items: [{ label: "Settings", to: "/settings", icon: Settings }],
+    items: [{ label: "Platform connections", to: "/platform-connections", icon: CloudCog }, { label: "Settings", to: "/settings", icon: Settings }],
   },
 ] as const;
 

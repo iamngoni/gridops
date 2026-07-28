@@ -200,18 +200,31 @@ struct ProvisionRunner {
     mode: String,
     #[serde(default = "default_provider")]
     provider: String,
+    #[serde(default = "default_platform")]
+    platform: String,
     jit_config: Option<String>,
     registration_token: Option<String>,
     registration_url: Option<String>,
     #[serde(default)]
     labels: Vec<String>,
     runner_group: Option<String>,
+    bitbucket: Option<BitbucketBootstrap>,
+    bitbucket_oauth_client_secret: Option<String>,
     #[serde(default)]
     pull_image: bool,
     cpu_limit: f64,
     memory_limit_mb: i64,
     network: String,
     capacity_lease: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BitbucketBootstrap {
+    account_uuid: String,
+    repository_uuid: Option<String>,
+    runner_uuid: String,
+    oauth_client_id: String,
 }
 
 impl ProvisionRunner {
@@ -235,8 +248,8 @@ impl ProvisionRunner {
         if self.image.trim().is_empty() || self.image.len() > 512 {
             return Err(ManagerError::BadRequest("Runner image is invalid.".into()));
         }
-        match self.mode.as_str() {
-            "ephemeral" => {
+        match (self.platform.as_str(), self.mode.as_str()) {
+            ("github", "ephemeral") => {
                 if self.jit_config.as_ref().is_none_or(|value| {
                     !(20..=900_000).contains(&value.len()) || value.contains(['\n', '\r'])
                 }) {
@@ -245,7 +258,7 @@ impl ProvisionRunner {
                     ));
                 }
             }
-            "persistent" => {
+            ("github", "persistent") => {
                 if self.registration_token.as_ref().is_none_or(|value| {
                     !(20..=2_048).contains(&value.len()) || value.contains(['\n', '\r'])
                 }) || self
@@ -266,9 +279,45 @@ impl ProvisionRunner {
                     ));
                 }
             }
-            _ => {
+            ("github", _) => {
                 return Err(ManagerError::BadRequest(
                     "Runner mode must be ephemeral or persistent.".into(),
+                ));
+            }
+            ("bitbucket", "persistent") => {
+                let valid_value = |value: &str| {
+                    !value.is_empty() && value.len() <= 255 && !value.contains(['\n', '\r'])
+                };
+                if self.provider != "tart"
+                    || self.bitbucket.as_ref().is_none_or(|bootstrap| {
+                        !valid_value(&bootstrap.account_uuid)
+                            || bootstrap
+                                .repository_uuid
+                                .as_deref()
+                                .is_some_and(|value| !valid_value(value))
+                            || !valid_value(&bootstrap.runner_uuid)
+                            || !valid_value(&bootstrap.oauth_client_id)
+                    })
+                    || self
+                        .bitbucket_oauth_client_secret
+                        .as_ref()
+                        .is_none_or(|secret| {
+                            !(20..=2_048).contains(&secret.len()) || secret.contains(['\n', '\r'])
+                        })
+                {
+                    return Err(ManagerError::BadRequest(
+                        "Bitbucket macOS runner registration is invalid.".into(),
+                    ));
+                }
+            }
+            ("bitbucket", _) => {
+                return Err(ManagerError::BadRequest(
+                    "Bitbucket runners are persistent until their VM is drained.".into(),
+                ));
+            }
+            _ => {
+                return Err(ManagerError::BadRequest(
+                    "Runner platform is invalid.".into(),
                 ));
             }
         }
@@ -277,7 +326,7 @@ impl ProvisionRunner {
                 "Runner provider must be Docker or Tart.".into(),
             ));
         }
-        if self.provider == "tart" && self.mode != "ephemeral" {
+        if self.provider == "tart" && self.platform == "github" && self.mode != "ephemeral" {
             return Err(ManagerError::BadRequest(
                 "Tart runner pools must be ephemeral.".into(),
             ));
@@ -348,6 +397,10 @@ struct ManagedRunner {
 
 fn default_provider() -> String {
     "docker".into()
+}
+
+fn default_platform() -> String {
+    "github".into()
 }
 
 #[derive(Deserialize)]
@@ -1665,12 +1718,15 @@ mod tests {
             name: "runner-1".into(),
             image: "ghcr.io/actions/actions-runner:latest".into(),
             mode: mode.into(),
+            platform: "github".into(),
             jit_config: (mode == "ephemeral").then(|| "fake-jit-credential-123456".into()),
             registration_token: (mode == "persistent").then(|| "fake-registration-123456".into()),
             registration_url: (mode == "persistent")
                 .then(|| "https://github.com/iamngoni/gridops".into()),
             labels: vec!["self-hosted".into(), "linux".into()],
             runner_group: None,
+            bitbucket: None,
+            bitbucket_oauth_client_secret: None,
             pull_image: false,
             cpu_limit: 2.0,
             memory_limit_mb: 4_096,

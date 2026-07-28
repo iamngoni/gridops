@@ -118,6 +118,25 @@ These are native-host limits, separate from the Docker container limits. The cen
 
 Each macOS runner receives only a short-lived GitHub JIT configuration over stdin. It is never placed in a command-line argument or persisted by the Tart agent. When the job ends, the VM is stopped; the reconciler deletes the clone and its retained management record. The base VM remains stopped and unchanged.
 
+## Bitbucket Cloud workspaces
+
+GridOps can attach Bitbucket Cloud workspaces to the same mixed Docker/Tart pool. The workspace runner remains a macOS Tart VM, uses the pool's existing CPU, memory, disk, and runner-count guardrails, and is isolated from GitHub runner credentials and workspaces.
+
+Bitbucket's runner protocol differs from GitHub's JIT protocol: Bitbucket creates a runner with a one-time OAuth secret, then keeps that runner online. GridOps therefore treats a Bitbucket macOS runner as a persistent VM within the pool and deletes its Bitbucket registration before deleting the VM. This is a platform lifecycle distinction, not a separate physical host or pool.
+
+Prepare a stopped Tart base image containing the Bitbucket runner. In Bitbucket Cloud, begin adding a macOS runner and copy only the runner archive URL from the setup dialog—do not copy its registration command or secret into a shell history. Then run:
+
+```sh
+./scripts/prepare-tart-bitbucket-runner-image.sh \
+  gridops-macos-tahoe-base \
+  gridops-macos-tahoe-bitbucket \
+  'https://product-downloads.atlassian.com/.../atlassian-bitbucket-pipelines-runner-<version>.tar.gz'
+```
+
+The guest needs the Java version currently required by Bitbucket and Git. The preparation script checks both rather than installing packages implicitly. Configure `GRIDOPS_TART_BITBUCKET_RUNNER_ROOT` only if the runner is installed somewhere other than `/Users/admin/atlassian-bitbucket-pipelines-runner`.
+
+In **System → Platform connections**, add an API token restricted to the target workspace with workspace read and Pipelines runner read/write permissions. GridOps verifies the workspace before storing the token encrypted at rest. In the pool form, select the workspace under **Bitbucket Cloud workspaces** and choose the prepared Bitbucket Tart image. Bitbucket adds its own `self.hosted` and `macos` labels; GridOps adds `gridops.<pool-name>` plus the pool's dot-separated custom labels.
+
 ## Workflow labels
 
 One pool can include both Docker and Tart. The pool keeps a separate image for each provider and one shared minimum, target, and maximum runner count. GridOps matches each queued job to a compatible provider, then replaces an idle runner from the wrong provider when the pool is already at its maximum.

@@ -6,10 +6,11 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use futures_util::StreamExt as _;
 use gridops_core::{
-    Config, GitHubClient, JitRequest, RunnerTarget, Vault, WorkflowJobPage, WorkflowRunPage,
-    assigned_queued_jobs, associate_runner_with_job, connect_database, effective_runner_labels,
-    next_runner_provider, next_runner_repository, now_millis, provider_capacities,
-    provider_capacity_deficit, repository_capacities, repository_capacity_deficit, scale_up_target,
+    BitbucketClient, BitbucketRunnerTarget, Config, GitHubClient, JitRequest, RunnerTarget, Vault,
+    WorkflowJobPage, WorkflowRunPage, assigned_queued_jobs, associate_runner_with_job,
+    connect_database, effective_runner_labels, next_runner_provider, next_runner_repository,
+    now_millis, provider_capacities, provider_capacity_deficit, repository_capacities,
+    repository_capacity_deficit, scale_up_target,
 };
 use reqwest::{Method, StatusCode};
 use secrecy::ExposeSecret as _;
@@ -27,6 +28,7 @@ struct Reconciler {
     config: Config,
     database: SqlitePool,
     github: GitHubClient,
+    bitbucket: BitbucketClient,
     vault: Vault,
     http: reqwest::Client,
 }
@@ -69,6 +71,9 @@ struct Runner {
     name: String,
     container_id: Option<String>,
     github_runner_id: Option<i64>,
+    ci_platform: String,
+    bitbucket_connection_id: Option<String>,
+    bitbucket_runner_uuid: Option<String>,
     target_repository_id: Option<i64>,
     repository_owner: Option<String>,
     repository_name: Option<String>,
@@ -78,6 +83,14 @@ struct Runner {
     last_job_id: Option<i64>,
     configuration_version: i64,
     updated_at: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct BitbucketPoolConnection {
+    id: String,
+    workspace: String,
+    workspace_uuid: String,
+    access_token_key: String,
 }
 
 #[derive(Debug, FromRow)]
@@ -136,11 +149,13 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
     let database = connect_database(&config).await?;
     let github = GitHubClient::new(config.clone())?;
+    let bitbucket = BitbucketClient::new()?;
     let vault = Vault::from_config(&config)?;
     let reconciler = Reconciler {
         config,
         database,
         github,
+        bitbucket,
         vault,
         http: reqwest::Client::builder()
             .user_agent("GridOps reconciler/0.1")
@@ -293,9 +308,9 @@ async fn reconcile_pool(
     let current = runners(app, &pool.id).await?;
     let mut rotated = 0;
     if !provisioning_blocked
-        && let Some(stale) = current
-            .iter()
-            .find(|runner| !runner.busy && runner_needs_update(pool, runner))
+        && let Some(stale) = current.iter().find(|runner| {
+            runner.ci_platform != "bitbucket" && !runner.busy && runner_needs_update(pool, runner)
+        })
     {
         delete_runner(app, pool, stale).await?;
         rotated = 1;
@@ -343,7 +358,7 @@ async fn reconcile_pool(
         let excess = active.len() - desired as usize;
         for runner in active
             .into_iter()
-            .filter(|runner| !runner.busy)
+            .filter(|runner| runner.ci_platform != "bitbucket" && !runner.busy)
             .take(excess)
         {
             delete_runner(app, pool, runner).await?;
@@ -534,7 +549,8 @@ async fn rebalance_repository_capacity(app: &Reconciler, pool: &Pool, desired: i
         .map(|capacity| capacity.repository_id)
         .collect::<HashSet<_>>();
     let Some(runner) = current.iter().find(|runner| {
-        !runner.busy
+        runner.ci_platform != "bitbucket"
+            && !runner.busy
             && active_status(&runner.status)
             && (provider_surplus.contains(runner.provider.as_str())
                 || !providers.contains(&runner.provider)
@@ -550,6 +566,14 @@ async fn rebalance_repository_capacity(app: &Reconciler, pool: &Pool, desired: i
 
 async fn maybe_scale_down(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Result<()> {
     if !pool.autoscaling_enabled || pool.paused || pool.desired_count <= pool.min_count {
+        return Ok(());
+    }
+    // Bitbucket does not publish a per-step busy signal to GridOps. Keep its
+    // persistent runner until an operator explicitly removes or pauses it.
+    if runners
+        .iter()
+        .any(|runner| runner.ci_platform == "bitbucket")
+    {
         return Ok(());
     }
     if runners.iter().any(|runner| runner.busy) {
@@ -904,6 +928,55 @@ fn parse_github_date(value: Option<&str>) -> Option<i64> {
         .map(|date| date.timestamp_millis())
 }
 
+async fn next_bitbucket_connection(
+    app: &Reconciler,
+    pool_id: &str,
+) -> Result<Option<BitbucketPoolConnection>> {
+    Ok(sqlx::query_as(
+        r#"SELECT connection.id,connection.workspace,connection.workspace_uuid,connection.access_token_key
+           FROM runner_pool_bitbucket_connections membership
+           JOIN bitbucket_connections connection ON connection.id=membership.connection_id
+           WHERE membership.pool_id=?
+             AND NOT EXISTS (
+               SELECT 1 FROM runners runner
+               WHERE runner.pool_id=membership.pool_id
+                 AND runner.ci_platform='bitbucket'
+                 AND runner.bitbucket_connection_id=connection.id
+                 AND runner.deleted_at IS NULL
+                 AND runner.status IN ('starting','online','idle','busy','paused','stopped')
+             )
+           ORDER BY membership.created_at,connection.id LIMIT 1"#,
+    )
+    .bind(pool_id)
+    .fetch_optional(&app.database)
+    .await?)
+}
+
+fn bitbucket_runner_labels(pool_name: &str, labels: &[String]) -> Result<Vec<String>> {
+    let mut output = vec![format!("gridops.{}", pool_name.replace('-', "."))];
+    output.extend(
+        labels
+            .iter()
+            .filter(|label| label.as_str() != pool_name)
+            .cloned(),
+    );
+    output.sort();
+    output.dedup();
+    anyhow::ensure!(
+        output.len() <= 10
+            && output.iter().all(|label| {
+                !label.is_empty()
+                    && label.chars().all(|character| {
+                        character.is_ascii_lowercase()
+                            || character.is_ascii_digit()
+                            || character == '.'
+                    })
+            }),
+        "Bitbucket runner labels must use lowercase letters, numbers, and dots; at most 10 are allowed."
+    );
+    Ok(output)
+}
+
 async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     let runner_id = uuid::Uuid::new_v4().to_string();
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
@@ -922,31 +995,43 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         providers.push(pool.provider.clone());
     }
     let labels = serde_json::from_str::<Vec<String>>(&pool.labels).unwrap_or_default();
-    let provider = next_runner_provider(
-        &app.database,
-        &pool.id,
-        target_repository
-            .as_ref()
-            .map(|repository| repository.repository_id),
-        &providers,
-        &labels,
-        pool.queue_scale_factor,
-    )
-    .await?
-    .context("runner pool has no configured providers")?;
+    let pending_bitbucket_connection = next_bitbucket_connection(app, &pool.id).await?;
+    let provider =
+        if pending_bitbucket_connection.is_some() && providers.iter().any(|item| item == "tart") {
+            "tart".to_owned()
+        } else {
+            next_runner_provider(
+                &app.database,
+                &pool.id,
+                target_repository
+                    .as_ref()
+                    .map(|repository| repository.repository_id),
+                &providers,
+                &labels,
+                pool.queue_scale_factor,
+            )
+            .await?
+            .context("runner pool has no configured providers")?
+        };
+    let bitbucket_connection = (provider == "tart")
+        .then_some(pending_bitbucket_connection)
+        .flatten();
+    let platform = if bitbucket_connection.is_some() {
+        "bitbucket"
+    } else {
+        "github"
+    };
+    let runner_mode = if platform == "bitbucket" {
+        "persistent"
+    } else {
+        pool.mode.as_str()
+    };
+    let runner_ephemeral = platform == "github" && pool.ephemeral;
     let image = if provider == "tart" {
         &pool.tart_image
     } else {
         &pool.docker_image
     };
-    let target_installation_id = target_repository
-        .as_ref()
-        .map_or(pool.installation_id, |repository| {
-            repository.installation_id
-        });
-    let token = installation_token(app, target_installation_id)
-        .await?
-        .context("GitHub App credentials are required for autonomous reconciliation")?;
     let admission = reserve_runner_capacity(
         app,
         &runner_id,
@@ -966,15 +1051,17 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     } else {
         ("linux", gridops_core::runner_arch_label())
     };
-    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,provider,os,architecture,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'starting',?,?,?,?)")
+    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,provider,ci_platform,bitbucket_connection_id,os,architecture,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'starting',?,?,?,?)")
         .bind(&runner_id)
         .bind(&pool.id)
-        .bind(target_repository.as_ref().map(|repository| repository.repository_id))
+        .bind((platform == "github").then(|| target_repository.as_ref().map(|repository| repository.repository_id)).flatten())
         .bind(&runner_name)
         .bind(&provider)
+        .bind(platform)
+        .bind(bitbucket_connection.as_ref().map(|connection| &connection.id))
         .bind(runner_os)
         .bind(runner_architecture)
-        .bind(pool.ephemeral)
+        .bind(runner_ephemeral)
         .bind(pool.configuration_version)
         .bind(now)
         .bind(now)
@@ -986,22 +1073,14 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     }
 
     let result = async {
-        let target = match &target_repository {
-            Some(repository) => RunnerTarget::Repository {
-                owner: &repository.owner,
-                repository: &repository.name,
-            },
-            None => RunnerTarget::Organization {
-                organization: &pool.account_login,
-            },
-        };
         let mut request = json!({
             "runnerId": runner_id,
             "poolId": pool.id,
             "name": runner_name,
             "image": image,
-            "mode": pool.mode,
+            "mode": runner_mode,
             "provider": provider,
+            "platform": platform,
             "labels": &labels,
             "cpuLimit": pool.cpu_limit,
             "memoryLimitMb": pool.memory_limit_mb,
@@ -1009,40 +1088,80 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
             "capacityLease": &capacity_lease,
             "pullImage": setting_bool(&app.database, "autoUpdateImages", false).await,
         });
-        let github_runner_id = if pool.ephemeral {
-            let jit = app
-                .github
-                .generate_jit_config(
-                    target,
-                    &token,
-                    &JitRequest {
-                        name: runner_name.clone(),
-                        runner_group_id: pool.runner_group_id,
-                        labels: effective_runner_labels(&provider, &labels),
-                        work_folder: "_work".into(),
-                    },
+        let (github_runner_id, bitbucket_runner_uuid) = if let Some(connection) = &bitbucket_connection {
+            let access_token = runtime_secret(app, &connection.access_token_key)
+                .await?
+                .context("Bitbucket workspace credentials are unavailable")?;
+            let runner = app
+                .bitbucket
+                .create_runner(
+                    &BitbucketRunnerTarget::Workspace { workspace: connection.workspace.clone() },
+                    &access_token,
+                    &runner_name,
+                    &bitbucket_runner_labels(&pool.name, &labels)?,
                 )
                 .await?;
-            request["jitConfig"] = Value::String(jit.encoded_jit_config);
-            Some(jit.runner.id)
+            let oauth_secret = runner.oauth_client.secret.context(
+                "Bitbucket did not return the one-time runner OAuth secret",
+            )?;
+            request["bitbucket"] = json!({
+                "accountUuid": connection.workspace_uuid,
+                "runnerUuid": runner.uuid,
+                "oauthClientId": runner.oauth_client.id,
+            });
+            request["bitbucketOauthClientSecret"] = Value::String(oauth_secret);
+            (None, Some(runner.uuid))
         } else {
-            let registration = app
-                .github
-                .generate_registration_token(target, &token)
-                .await?;
-            request["registrationToken"] = Value::String(registration.token);
-            request["registrationUrl"] = Value::String(runner_registration_url(
-                &pool.account_login,
-                target_repository.as_ref(),
-            ));
-            if pool.scope == "organization" && pool.runner_group_id != 1 {
-                let group = app
+            let target_installation_id = target_repository
+                .as_ref()
+                .map_or(pool.installation_id, |repository| repository.installation_id);
+            let token = installation_token(app, target_installation_id)
+                .await?
+                .context("GitHub App credentials are required for autonomous reconciliation")?;
+            let target = match &target_repository {
+                Some(repository) => RunnerTarget::Repository {
+                    owner: &repository.owner,
+                    repository: &repository.name,
+                },
+                None => RunnerTarget::Organization {
+                    organization: &pool.account_login,
+                },
+            };
+            if pool.ephemeral {
+                let jit = app
                     .github
-                    .runner_group_name(&pool.account_login, pool.runner_group_id, &token)
+                    .generate_jit_config(
+                        target,
+                        &token,
+                        &JitRequest {
+                            name: runner_name.clone(),
+                            runner_group_id: pool.runner_group_id,
+                            labels: effective_runner_labels(&provider, &labels),
+                            work_folder: "_work".into(),
+                        },
+                    )
                     .await?;
-                request["runnerGroup"] = Value::String(group);
+                request["jitConfig"] = Value::String(jit.encoded_jit_config);
+                (Some(jit.runner.id), None)
+            } else {
+                let registration = app
+                    .github
+                    .generate_registration_token(target, &token)
+                    .await?;
+                request["registrationToken"] = Value::String(registration.token);
+                request["registrationUrl"] = Value::String(runner_registration_url(
+                    &pool.account_login,
+                    target_repository.as_ref(),
+                ));
+                if pool.scope == "organization" && pool.runner_group_id != 1 {
+                    let group = app
+                        .github
+                        .runner_group_name(&pool.account_login, pool.runner_group_id, &token)
+                        .await?;
+                    request["runnerGroup"] = Value::String(group);
+                }
+                (None, None)
             }
-            None
         };
         if let Some(github_runner_id) = github_runner_id {
             sqlx::query("UPDATE runners SET github_runner_id=?,updated_at=? WHERE id=?")
@@ -1052,16 +1171,25 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
                 .execute(&app.database)
                 .await?;
         }
-        let created = manager_request::<CreatedRunner>(
-            app,
-            Method::POST,
-            "v1/runners",
-            Some(request),
-        )
-        .await?;
+        let created = match manager_request::<CreatedRunner>(app, Method::POST, "v1/runners", Some(request)).await {
+            Ok(created) => created,
+            Err(error) => {
+                if let (Some(connection), Some(bitbucket_runner_uuid)) = (&bitbucket_connection, &bitbucket_runner_uuid)
+                    && let Ok(Some(access_token)) = runtime_secret(app, &connection.access_token_key).await
+                {
+                    let _ = app.bitbucket.delete_runner(
+                        &BitbucketRunnerTarget::Workspace { workspace: connection.workspace.clone() },
+                        &access_token,
+                        bitbucket_runner_uuid,
+                    ).await;
+                }
+                return Err(error);
+            }
+        };
         let updated = now_millis();
-        sqlx::query("UPDATE runners SET github_runner_id=?,container_id=?,container_name=?,status=?,registered_at=?,last_heartbeat_at=?,updated_at=? WHERE id=?")
+        sqlx::query("UPDATE runners SET github_runner_id=?,bitbucket_runner_uuid=?,container_id=?,container_name=?,status=?,registered_at=?,last_heartbeat_at=?,updated_at=? WHERE id=?")
             .bind(github_runner_id)
+            .bind(&bitbucket_runner_uuid)
             .bind(&created.id)
             .bind(&created.name)
             .bind(if created.state == "running" { "online" } else { "starting" })
@@ -1130,47 +1258,77 @@ async fn delete_runner(app: &Reconciler, pool: &Pool, runner: &Runner) -> Result
     {
         tracing::warn!(runner_id = %runner.id, error = ?error, "could not archive runner logs");
     }
-    let target = match (&runner.repository_owner, &runner.repository_name) {
-        (Some(owner), Some(repository)) => RunnerTarget::Repository { owner, repository },
-        _ => RunnerTarget::Organization {
-            organization: &pool.account_login,
-        },
-    };
-    match installation_token(app, runner.installation_id).await {
-        Ok(Some(token)) => {
-            let github_cleanup = async {
-                let github_runner_id = match runner.github_runner_id {
-                    Some(id) => Some(id),
-                    None => app
-                        .github
-                        .runner_by_name(target, &token, &runner.name)
-                        .await?
-                        .map(|runner| runner.id),
-                };
-                if let Some(github_runner_id) = github_runner_id {
-                    let path = match (&runner.repository_owner, &runner.repository_name) {
-                        (Some(owner), Some(repository)) => format!(
-                            "/repos/{owner}/{repository}/actions/runners/{github_runner_id}"
-                        ),
-                        _ => format!(
-                            "/orgs/{}/actions/runners/{github_runner_id}",
-                            pool.account_login
-                        ),
+    if runner.ci_platform == "bitbucket" {
+        let connection_id = runner
+            .bitbucket_connection_id
+            .as_deref()
+            .context("Bitbucket runner is missing its workspace connection")?;
+        let runner_uuid = runner
+            .bitbucket_runner_uuid
+            .as_deref()
+            .context("Bitbucket runner is missing its remote registration UUID")?;
+        let connection = sqlx::query_as::<_, BitbucketPoolConnection>(
+            "SELECT id,workspace,workspace_uuid,access_token_key FROM bitbucket_connections WHERE id=?",
+        )
+        .bind(connection_id)
+        .fetch_optional(&app.database)
+        .await?
+        .context("Bitbucket workspace connection no longer exists")?;
+        let access_token = runtime_secret(app, &connection.access_token_key)
+            .await?
+            .context("Bitbucket workspace credentials are unavailable")?;
+        app.bitbucket
+            .delete_runner(
+                &BitbucketRunnerTarget::Workspace {
+                    workspace: connection.workspace,
+                },
+                &access_token,
+                runner_uuid,
+            )
+            .await?;
+    } else {
+        let target = match (&runner.repository_owner, &runner.repository_name) {
+            (Some(owner), Some(repository)) => RunnerTarget::Repository { owner, repository },
+            _ => RunnerTarget::Organization {
+                organization: &pool.account_login,
+            },
+        };
+        match installation_token(app, runner.installation_id).await {
+            Ok(Some(token)) => {
+                let github_cleanup = async {
+                    let github_runner_id = match runner.github_runner_id {
+                        Some(id) => Some(id),
+                        None => app
+                            .github
+                            .runner_by_name(target, &token, &runner.name)
+                            .await?
+                            .map(|runner| runner.id),
                     };
-                    app.github.delete(&path, &token).await?;
+                    if let Some(github_runner_id) = github_runner_id {
+                        let path = match (&runner.repository_owner, &runner.repository_name) {
+                            (Some(owner), Some(repository)) => format!(
+                                "/repos/{owner}/{repository}/actions/runners/{github_runner_id}"
+                            ),
+                            _ => format!(
+                                "/orgs/{}/actions/runners/{github_runner_id}",
+                                pool.account_login
+                            ),
+                        };
+                        app.github.delete(&path, &token).await?;
+                    }
+                    Result::<()>::Ok(())
                 }
-                Result::<()>::Ok(())
+                .await;
+                if let Err(error) = github_cleanup {
+                    tracing::warn!(runner_id = %runner.id, error = ?error, "could not remove GitHub runner registration");
+                }
             }
-            .await;
-            if let Err(error) = github_cleanup {
-                tracing::warn!(runner_id = %runner.id, error = ?error, "could not remove GitHub runner registration");
+            Ok(None) => {
+                tracing::warn!(runner_id = %runner.id, "GitHub App credentials unavailable during runner cleanup");
             }
-        }
-        Ok(None) => {
-            tracing::warn!(runner_id = %runner.id, "GitHub App credentials unavailable during runner cleanup");
-        }
-        Err(error) => {
-            tracing::warn!(runner_id = %runner.id, error = ?error, "GitHub installation unavailable during runner cleanup");
+            Err(error) => {
+                tracing::warn!(runner_id = %runner.id, error = ?error, "GitHub installation unavailable during runner cleanup");
+            }
         }
     }
     if let Some(container_id) = &runner.container_id {
@@ -1297,7 +1455,8 @@ fn orphaned_manager_containers<'a>(
 async fn runners(app: &Reconciler, pool_id: &str) -> Result<Vec<Runner>> {
     Ok(sqlx::query_as::<_, Runner>(
         r#"SELECT runner.id,COALESCE(repo.installation_id,pool.installation_id) AS installation_id,
-           runner.name,runner.container_id,runner.github_runner_id,
+           runner.name,runner.container_id,runner.github_runner_id,runner.ci_platform,
+           runner.bitbucket_connection_id,runner.bitbucket_runner_uuid,
            runner.target_repository_id,repo.owner AS repository_owner,repo.name AS repository_name,
            runner.provider,runner.status,runner.busy,runner.last_job_id,runner.configuration_version,runner.updated_at
            FROM runners runner JOIN runner_pools pool ON pool.id=runner.pool_id
@@ -1864,6 +2023,9 @@ mod tests {
             name: "linux-1234".into(),
             container_id: None,
             github_runner_id: None,
+            ci_platform: "github".into(),
+            bitbucket_connection_id: None,
+            bitbucket_runner_uuid: None,
             target_repository_id: None,
             repository_owner: None,
             repository_name: None,

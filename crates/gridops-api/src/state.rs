@@ -1,5 +1,5 @@
 use anyhow::{Context as _, Result};
-use gridops_core::{Config, GitHubClient, Vault};
+use gridops_core::{BitbucketClient, Config, GitHubClient, Vault};
 use reqwest::Url;
 use secrecy::ExposeSecret;
 use sqlx::SqlitePool;
@@ -17,6 +17,7 @@ pub struct AppState {
     pub database: SqlitePool,
     pub vault: Vault,
     pub github: GitHubClient,
+    pub bitbucket: BitbucketClient,
     pub http: reqwest::Client,
 }
 
@@ -26,12 +27,14 @@ impl AppState {
         database: SqlitePool,
         vault: Vault,
         github: GitHubClient,
+        bitbucket: BitbucketClient,
     ) -> Result<Self> {
         Ok(Self {
             config,
             database,
             vault,
             github,
+            bitbucket,
             http: reqwest::Client::builder()
                 .user_agent("GridOps/0.1")
                 .build()?,

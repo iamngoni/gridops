@@ -22,7 +22,7 @@ export const Route = createFileRoute("/runners")({
   pendingComponent: () => (
     <ResourcePageLoading
       title="Runners"
-      description="Inspect every managed runner and its GitHub registration state."
+      description="Inspect every managed runner and its platform registration state."
       icon={Activity}
     />
   ),
@@ -38,7 +38,7 @@ function RunnersPage() {
   return (
     <ResourcePage
       title="Runners"
-      description="Inspect every managed runner and its GitHub registration state."
+      description="Inspect every managed runner and its platform registration state."
       icon={Activity}
       emptyTitle="No managed runners"
       emptyDescription="Runners appear here when a pool provisions its first execution environment."
@@ -50,7 +50,7 @@ function RunnersPage() {
         <Card><CardContent className="px-0 py-0">
           <Table>
             <TableHeader><TableRow>
-              <TableHead>Runner</TableHead><TableHead>Pool</TableHead><TableHead>GitHub</TableHead>
+              <TableHead>Runner</TableHead><TableHead>Pool</TableHead><TableHead>Platform</TableHead>
               <TableHead>Runtime</TableHead><TableHead>Heartbeat</TableHead><TableHead>Status</TableHead>
               <TableHead className="text-right">Controls</TableHead>
             </TableRow></TableHeader>
@@ -67,7 +67,7 @@ function RunnersPage() {
                   <Link className="text-xs hover:text-primary" params={{ poolId: runner.poolId }} to="/runner-pools/$poolId">{runner.poolName}</Link>
                   <div className="mt-1 text-[11px] text-muted-foreground">{runner.repository ?? runner.accountLogin}</div>
                 </TableCell>
-                <TableCell className="font-mono text-xs">{runner.githubRunnerId ?? "pending"}</TableCell>
+                <TableCell className="font-mono text-xs">{runner.platform === "bitbucket" ? runner.bitbucketRunnerUuid ?? "pending" : runner.githubRunnerId ?? "pending"}</TableCell>
                 <TableCell>
                   <div className="max-w-36 truncate font-mono text-[11px]" title={String(runner.containerId ?? "")}>{runner.containerId ? String(runner.containerId).slice(0, 12) : "—"}</div>
                   {runner.currentJobName ? runner.currentRunId ? (
@@ -95,7 +95,7 @@ function RunnersPage() {
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "stop" } })} confirm={`Stop ${runner.name}?`} disabled={!runner.containerId || runner.status === "stopped"} icon={<Square />} size="icon" success="Runner stopped." title={`Stop ${runner.name}`}><span className="sr-only">Stop {runner.name}</span></AsyncActionButton>
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "restart" } })} confirm={runner.busy ? `${runner.name} is busy. Restart it and interrupt the current job?` : undefined} disabled={runner.ephemeral || !runner.containerId || runner.status === "stopped"} icon={<RotateCcw />} size="icon" success="Runner restarted." title={`Restart ${runner.name}`}><span className="sr-only">Restart {runner.name}</span></AsyncActionButton>
                   <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "rebuild" } })} confirm={`Rebuild ${runner.name}? GridOps will replace it with a newly registered container.`} disabled={runner.busy} icon={<RefreshCw />} size="icon" success="Runner rebuilt." title={`Rebuild ${runner.name}`}><span className="sr-only">Rebuild {runner.name}</span></AsyncActionButton>
-                  <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "delete" } })} confirm={`Delete ${runner.name} from its provider and GitHub?`} icon={<Trash2 />} size="icon" success="Runner deleted." title={`Delete ${runner.name}`} variant="ghost"><span className="sr-only">Delete {runner.name}</span></AsyncActionButton>
+                  <AsyncActionButton action={() => control({ data: { runnerId: runner.id, action: "delete" } })} confirm={`Delete ${runner.name} from its provider and ${runner.platform === "bitbucket" ? "Bitbucket" : "GitHub"}?`} icon={<Trash2 />} size="icon" success="Runner deleted." title={`Delete ${runner.name}`} variant="ghost"><span className="sr-only">Delete {runner.name}</span></AsyncActionButton>
                 </div> : <div className="flex justify-end"><Badge variant="outline">read only</Badge></div>}</TableCell>
               </TableRow>
             ))}</TableBody>

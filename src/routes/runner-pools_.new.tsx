@@ -108,6 +108,7 @@ type RunnerPoolFormOptions = {
     visibility: string;
     isDefault: boolean;
   }>;
+  bitbucketConnections: Array<{ id: string; name: string; workspace: string; workspaceUuid: string }>;
   defaults: {
     provider: "docker" | "tart";
     providers: Array<"docker" | "tart">;
@@ -145,6 +146,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
   const [scope, setScope] = useState<"repository" | "organization">("repository");
   const [installationId, setInstallationId] = useState(options.installations[0]?.id ?? 0);
   const [repositoryIds, setRepositoryIds] = useState<number[]>([]);
+  const [bitbucketConnectionIds, setBitbucketConnectionIds] = useState<string[]>([]);
   const [mode, setMode] = useState<"ephemeral" | "persistent">("ephemeral");
   const [providers, setProviders] = useState<RunnerProvider[]>(options.defaults.providers);
   const provider = providers[0] ?? options.defaults.provider;
@@ -230,6 +232,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
             ? selectedRepositories[0]?.installationId ?? 0
             : installationId,
           repositoryIds: scope === "repository" ? repositoryIds : [],
+          bitbucketConnectionIds,
           name: poolName,
           scope,
           mode,
@@ -343,6 +346,29 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                   {repositoryLoad.status === "error" ? <span className="block text-[11px] text-destructive">{repositoryLoad.error}</span> : null}
                 </Field>
               )}
+              <Field className="md:col-span-2" label="Bitbucket Cloud workspaces" hint="Optional. Each workspace shares this pool's capacity and starts a managed macOS runner for its Bitbucket Pipelines jobs.">
+                <SearchableMultiSelect
+                  ariaLabel="Bitbucket Cloud workspaces"
+                  emptyMessage="No Bitbucket connections are configured"
+                  maxSelected={maxCount}
+                  onValueChange={(nextConnections) => {
+                    setBitbucketConnectionIds(nextConnections);
+                    if (nextConnections.length && !providers.includes("tart")) setProviders((current) => [...current, "tart"]);
+                  }}
+                  options={options.bitbucketConnections.map((connection) => ({
+                    value: connection.id,
+                    label: connection.name,
+                    description: `${connection.workspace} workspace`,
+                    keywords: [connection.workspace, "bitbucket", "workspace"],
+                  }))}
+                  placeholder="Choose connected Bitbucket workspaces…"
+                  searchPlaceholder="Search Bitbucket workspaces…"
+                  selectedNoun="workspaces"
+                  values={bitbucketConnectionIds}
+                />
+                {!options.bitbucketConnections.length ? <span className="block text-[11px] text-muted-foreground">Connect a workspace first in System → Platform connections.</span> : null}
+                {bitbucketConnectionIds.length ? <span className="block text-[11px] text-muted-foreground">Set the Tart base VM below to the prepared Bitbucket runner image for this pool.</span> : null}
+              </Field>
             </CardContent>
           </Card>
 
@@ -391,8 +417,8 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
               {providers.includes("tart") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Tart base VM" hint="Stopped, prepared local VM cloned copy-on-write for each macOS job. Workflows that run xcodebuild need an Xcode-ready VM; a plain base image has Command Line Tools only.">
                 <Input name="tartImage" onChange={(event) => setTartImage(event.target.value)} required value={tartImage} />
               </Field> : null}
-              <Field className="md:col-span-2" label="Additional labels" hint="Comma-separated custom labels shared by every provider. GridOps adds the provider-specific OS and architecture labels automatically.">
-                <Input name="labels" onChange={(event) => setLabels(event.target.value)} placeholder={providers.length > 1 ? "build, release" : provider === "tart" ? "xcode, apple-silicon" : "docker, build"} value={labels} />
+              <Field className="md:col-span-2" label="Additional labels" hint={bitbucketConnectionIds.length ? "Comma-separated labels shared by every provider. Bitbucket labels may use lowercase letters, numbers, and dots." : "Comma-separated custom labels shared by every provider. GridOps adds the provider-specific OS and architecture labels automatically."}>
+                <Input name="labels" onChange={(event) => setLabels(event.target.value)} placeholder={bitbucketConnectionIds.length ? "build, release.ios" : providers.length > 1 ? "build, release" : provider === "tart" ? "xcode, apple-silicon" : "docker, build"} value={labels} />
               </Field>
               {scope === "organization" ? (
                 <Field label="Runner group" hint={runnerGroupLoad.status === "loading" ? "Loading runner groups from GitHub…" : runnerGroups.length ? "Groups available to this GitHub App installation." : "Enter the GitHub runner group ID."}>
