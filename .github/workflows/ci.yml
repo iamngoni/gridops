@@ -33,6 +33,8 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
 
       - name: Verify web application
         run: |
