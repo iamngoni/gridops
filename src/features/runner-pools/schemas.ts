@@ -17,6 +17,7 @@ const configurationShape = {
   image: z.string().trim().min(1).max(300),
   dockerImage: z.string().trim().min(1).max(300),
   tartImage: z.string().trim().min(1).max(300),
+  macosRuntime: z.enum(["vm", "native"]).default("vm"),
   desiredCount: z.number().int().min(0).max(100),
   minCount: z.number().int().min(0).max(100),
   maxCount: z.number().int().min(1).max(100),
@@ -59,7 +60,7 @@ function validateCapacity(
 }
 
 function validateProvider(
-  value: { provider: "docker" | "tart"; providers: Array<"docker" | "tart">; mode: "ephemeral" | "persistent"; cpuLimit: number; memoryLimitMb: number },
+  value: { provider: "docker" | "tart"; providers: Array<"docker" | "tart">; mode: "ephemeral" | "persistent"; cpuLimit: number; memoryLimitMb: number; macosRuntime: "vm" | "native" },
   context: z.RefinementCtx,
 ) {
   if (new Set(value.providers).size !== value.providers.length || value.providers[0] !== value.provider) {
@@ -71,6 +72,11 @@ function validateProvider(
   }
   if (includesTart && !Number.isInteger(value.cpuLimit)) {
     context.addIssue({ code: "custom", path: ["cpuLimit"], message: "Tart runners require whole CPU cores." });
+  }
+  // Native execution lives in the macOS agent, so a pool without that provider
+  // would silently never receive a native runner.
+  if (value.macosRuntime === "native" && !includesTart) {
+    context.addIssue({ code: "custom", path: ["macosRuntime"], message: "Native execution requires the macOS runner provider." });
   }
 }
 

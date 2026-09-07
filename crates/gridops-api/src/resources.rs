@@ -60,6 +60,7 @@ struct PoolAccess {
     image: String,
     docker_image: String,
     tart_image: String,
+    macos_runtime: String,
     desired_count: i64,
     min_count: i64,
     max_count: i64,
@@ -926,7 +927,7 @@ pub async fn runner_pools(
     let (page, offset) = bounded_pagination(requested_page, total, per_page);
     let rows = sqlx::query(
         r#"SELECT p.id,p.name,p.scope,p.mode,p.provider,p.providers,p.labels,p.image,
-          p.docker_image,p.tart_image,p.desired_count,p.min_count,
+          p.docker_image,p.tart_image,p.macos_runtime,p.desired_count,p.min_count,
           p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,p.paused,p.state,
           p.provision_failure_count,p.provision_retry_at,p.provision_circuit_open,i.account_login,
           CASE WHEN NOT EXISTS (
@@ -967,6 +968,7 @@ pub async fn runner_pools(
         "providers": json_array(row.get::<&str,_>("providers")),
         "labels": json_array(row.get::<&str,_>("labels")), "image": row.get::<String,_>("image"),
         "dockerImage": row.get::<String,_>("docker_image"), "tartImage": row.get::<String,_>("tart_image"),
+        "macosRuntime": row.get::<String,_>("macos_runtime"),
         "desiredCount": row.get::<i64,_>("desired_count"), "minCount": row.get::<i64,_>("min_count"), "maxCount": row.get::<i64,_>("max_count"),
         "cpuLimit": row.get::<f64,_>("cpu_limit"), "memoryLimitMb": row.get::<i64,_>("memory_limit_mb"),
         "paused": row.get::<bool,_>("paused"), "state": row.get::<String,_>("state"), "accountLogin": row.get::<String,_>("account_login"),
@@ -1078,6 +1080,7 @@ pub async fn runner_pool(
         "image": pool.image,
         "dockerImage": pool.docker_image,
         "tartImage": pool.tart_image,
+        "macosRuntime": pool.macos_runtime,
         "desiredCount": pool.desired_count,
         "minCount": pool.min_count,
         "maxCount": pool.max_count,
@@ -1239,6 +1242,7 @@ pub async fn update_runner_pool(
         serde_json::to_string(&providers).map_err(|error| ApiError::Internal(error.into()))?;
     let docker_image = input.selected_docker_image();
     let tart_image = input.selected_tart_image();
+    let macos_runtime = input.selected_macos_runtime();
     let primary_image = if primary_provider == "tart" {
         &tart_image
     } else {
@@ -1264,6 +1268,9 @@ pub async fn update_runner_pool(
         || pool.image != primary_image.as_str()
         || pool.docker_image != docker_image
         || pool.tart_image != tart_image
+        // Switching between VM and native changes how every runner executes, so
+        // it has to roll the existing ones rather than apply to new ones only.
+        || pool.macos_runtime != macos_runtime
         || (pool.cpu_limit - input.cpu_limit).abs() > f64::EPSILON
         || pool.memory_limit_mb != input.memory_limit_mb
         || pool.runner_group_id != runner_group_id
@@ -1273,7 +1280,7 @@ pub async fn update_runner_pool(
     let now = now_millis();
     let mut transaction = state.database.begin().await?;
     let result = sqlx::query(
-        r#"UPDATE runner_pools SET installation_id=?,name=?,mode=?,provider=?,providers=?,labels=?,image=?,docker_image=?,tart_image=?,desired_count=?,min_count=?,
+        r#"UPDATE runner_pools SET installation_id=?,name=?,mode=?,provider=?,providers=?,labels=?,image=?,docker_image=?,tart_image=?,macos_runtime=?,desired_count=?,min_count=?,
           max_count=?,cpu_limit=?,memory_limit_mb=?,ephemeral=?,runner_group_id=?,
           autoscaling_enabled=?,queue_scale_factor=?,idle_timeout_minutes=?,
           repository_id=?,
@@ -1290,6 +1297,7 @@ pub async fn update_runner_pool(
     .bind(primary_image)
     .bind(&docker_image)
     .bind(&tart_image)
+    .bind(&macos_runtime)
     .bind(input.desired_count)
     .bind(input.min_count)
     .bind(input.max_count)
@@ -1950,6 +1958,7 @@ pub async fn create_runner_pool(
         serde_json::to_string(&providers).map_err(|error| ApiError::Internal(error.into()))?;
     let docker_image = input.selected_docker_image();
     let tart_image = input.selected_tart_image();
+    let macos_runtime = input.selected_macos_runtime();
     let primary_image = if primary_provider == "tart" {
         &tart_image
     } else {
@@ -1964,15 +1973,15 @@ pub async fn create_runner_pool(
     let mut transaction = state.database.begin().await?;
     let result = sqlx::query(
         r#"INSERT INTO runner_pools (
-          id,installation_id,repository_id,name,scope,mode,provider,providers,labels,image,docker_image,tart_image,desired_count,min_count,
+          id,installation_id,repository_id,name,scope,mode,provider,providers,labels,image,docker_image,tart_image,macos_runtime,desired_count,min_count,
           max_count,cpu_limit,memory_limit_mb,ephemeral,paused,state,created_by,created_at,updated_at,
           runner_group_id,autoscaling_enabled,queue_scale_factor,idle_timeout_minutes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'active',?,?,?,?,?,?,?)"#,
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'active',?,?,?,?,?,?,?)"#,
     )
     .bind(&pool_id).bind(primary_installation_id).bind(repository_ids.first().copied()).bind(&input.name)
     .bind(&input.scope).bind(&input.mode).bind(&primary_provider).bind(&encoded_providers)
     .bind(serde_json::to_string(&labels).map_err(|error| ApiError::Internal(error.into()))?)
-    .bind(primary_image).bind(&docker_image).bind(&tart_image)
+    .bind(primary_image).bind(&docker_image).bind(&tart_image).bind(&macos_runtime)
     .bind(input.desired_count).bind(input.min_count).bind(input.max_count).bind(input.cpu_limit)
     .bind(input.memory_limit_mb).bind(input.mode == "ephemeral").bind(&user.id).bind(now).bind(now)
     .bind(runner_group_id).bind(input.autoscaling_enabled).bind(input.queue_scale_factor).bind(input.idle_timeout_minutes)
@@ -3040,10 +3049,21 @@ async fn provision(
         pool.mode.as_str()
     };
     let runner_ephemeral = platform == "github" && pool.ephemeral;
-    let image = if provider == "tart" {
-        &pool.tart_image
+    // Mirrors the reconciler: Bitbucket runners are persistent and VM-hosted, so
+    // native execution applies to GitHub pools on the macOS agent.
+    let runtime = if provider == "tart" && platform == "github" {
+        pool.macos_runtime.as_str()
     } else {
-        &pool.docker_image
+        "vm"
+    };
+    let image = if provider == "tart" {
+        if runtime == "native" {
+            ""
+        } else {
+            pool.tart_image.as_str()
+        }
+    } else {
+        pool.docker_image.as_str()
     };
     let capacity_lease = reserve_runner_capacity(
         state,
@@ -3055,11 +3075,11 @@ async fn provision(
     )
     .await?;
     let now = now_millis();
-    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,provider,ci_platform,bitbucket_connection_id,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'starting',?,?,?,?)")
+    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,provider,ci_platform,bitbucket_connection_id,status,ephemeral,configuration_version,runtime,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'starting',?,?,?,?,?)")
         .bind(&runner_id).bind(pool_id)
         .bind((platform == "github").then(|| target_repository.as_ref().map(|repository| repository.repository_id)).flatten())
         .bind(&runner_name).bind(&provider).bind(platform).bind(bitbucket_connection.as_ref().map(|connection| &connection.id)).bind(runner_ephemeral)
-        .bind(pool.configuration_version).bind(now).bind(now).execute(&state.database).await
+        .bind(pool.configuration_version).bind(runtime).bind(now).bind(now).execute(&state.database).await
     {
         release_runner_capacity(state, &capacity_lease).await;
         return Err(error.into());
@@ -3067,7 +3087,7 @@ async fn provision(
     let result = async {
         let mut request = json!({
             "runnerId": runner_id, "poolId": pool_id, "name": runner_name, "image": image,
-            "mode": runner_mode, "provider": provider, "platform": platform, "labels": &labels, "cpuLimit": pool.cpu_limit,
+            "mode": runner_mode, "provider": provider, "runtime": runtime, "platform": platform, "labels": &labels, "cpuLimit": pool.cpu_limit,
             "memoryLimitMb": pool.memory_limit_mb, "network": state.config.runner_network(),
             "capacityLease": &capacity_lease,
             "pullImage": setting_bool(state, "autoUpdateImages", false).await,
@@ -3568,7 +3588,7 @@ async fn pool_access(state: &AppState, user: &AuthUser, pool_id: &str) -> ApiRes
       ) THEN 'admin' ELSE 'read' END AS installation_permission,
       i.account_login,
       p.repository_id,repo.owner AS repository_owner,repo.name AS repository_name,p.name,p.scope,
-      p.mode,p.provider,p.providers,p.labels,p.image,p.docker_image,p.tart_image,
+      p.mode,p.provider,p.providers,p.labels,p.image,p.docker_image,p.tart_image,p.macos_runtime,
       p.desired_count,p.min_count,p.max_count,
       CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,
       p.runner_group_id,p.ephemeral,p.paused,p.state,p.autoscaling_enabled,p.queue_scale_factor,
@@ -4099,7 +4119,7 @@ fn runner_pool_defaults(image: &str, max_cpu_limit: i64, max_memory_limit_mb: i6
     let tart_image = default_tart_image();
     json!({
         "provider": "docker", "providers": ["docker"], "image": image,
-        "dockerImage": image, "tartImage": tart_image,
+        "dockerImage": image, "tartImage": tart_image, "macosRuntime": "vm",
         "labels": ["gridops"], "cpuLimit": 2,
         "memoryLimitMb": 2048, "desiredCount": 1, "minCount": 0, "maxCount": 10,
         "autoscalingEnabled": true, "queueScaleFactor": 1, "idleTimeoutMinutes": 5,

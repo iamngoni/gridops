@@ -47,6 +47,9 @@ struct Pool {
     labels: String,
     docker_image: String,
     tart_image: String,
+    /// "vm" or "native": how the macOS agent should execute this pool's runners.
+    /// Ignored by the Docker provider.
+    macos_runtime: String,
     desired_count: i64,
     min_count: i64,
     max_count: i64,
@@ -245,7 +248,7 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
 
 async fn load_pools(database: &SqlitePool) -> Result<Vec<Pool>> {
     Ok(sqlx::query_as::<_, Pool>(
-        r#"SELECT p.id,p.installation_id,i.account_login,p.scope,p.name,p.state,p.mode,p.provider,p.providers,p.labels,p.docker_image,p.tart_image,p.desired_count,p.min_count,
+        r#"SELECT p.id,p.installation_id,i.account_login,p.scope,p.name,p.state,p.mode,p.provider,p.providers,p.labels,p.docker_image,p.tart_image,p.macos_runtime,p.desired_count,p.min_count,
           p.max_count,CAST(p.cpu_limit AS REAL) AS cpu_limit,p.memory_limit_mb,
           p.runner_group_id,p.ephemeral,p.paused,
           p.autoscaling_enabled,p.queue_scale_factor,p.idle_timeout_minutes,p.configuration_version,
@@ -1027,10 +1030,21 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         pool.mode.as_str()
     };
     let runner_ephemeral = platform == "github" && pool.ephemeral;
-    let image = if provider == "tart" {
-        &pool.tart_image
+    // Bitbucket runners are persistent and the agent only hosts them in a VM, so
+    // native execution applies to GitHub pools on the macOS agent.
+    let runtime = if provider == "tart" && platform == "github" {
+        pool.macos_runtime.as_str()
     } else {
-        &pool.docker_image
+        "vm"
+    };
+    let image = if provider == "tart" {
+        if runtime == "native" {
+            ""
+        } else {
+            pool.tart_image.as_str()
+        }
+    } else {
+        pool.docker_image.as_str()
     };
     let admission = reserve_runner_capacity(
         app,
@@ -1051,7 +1065,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     } else {
         ("linux", gridops_core::runner_arch_label())
     };
-    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,provider,ci_platform,bitbucket_connection_id,os,architecture,status,ephemeral,configuration_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'starting',?,?,?,?)")
+    if let Err(error) = sqlx::query("INSERT INTO runners (id,pool_id,target_repository_id,name,provider,ci_platform,bitbucket_connection_id,os,architecture,status,ephemeral,configuration_version,runtime,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'starting',?,?,?,?,?)")
         .bind(&runner_id)
         .bind(&pool.id)
         .bind((platform == "github").then(|| target_repository.as_ref().map(|repository| repository.repository_id)).flatten())
@@ -1063,6 +1077,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         .bind(runner_architecture)
         .bind(runner_ephemeral)
         .bind(pool.configuration_version)
+        .bind(runtime)
         .bind(now)
         .bind(now)
         .execute(&app.database)
@@ -1080,6 +1095,7 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
             "image": image,
             "mode": runner_mode,
             "provider": provider,
+            "runtime": runtime,
             "platform": platform,
             "labels": &labels,
             "cpuLimit": pool.cpu_limit,
@@ -1998,6 +2014,7 @@ mod tests {
             labels: "[]".into(),
             docker_image: "runner:latest".into(),
             tart_image: "gridops-macos-tahoe-base".into(),
+            macos_runtime: "vm".into(),
             desired_count: 1,
             min_count: 0,
             max_count: 10,

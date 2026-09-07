@@ -64,6 +64,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
   );
   const [dockerImage, setDockerImage] = useState(pool.dockerImage);
   const [tartImage, setTartImage] = useState(pool.tartImage);
+  const [macosRuntime, setMacosRuntime] = useState<"vm" | "native">(pool.macosRuntime ?? "vm");
   const [repositoryIds, setRepositoryIds] = useState(pool.repositoryIds);
   const [maxCount, setMaxCount] = useState(pool.maxCount);
   const [desiredCount, setDesiredCount] = useState(pool.desiredCount);
@@ -151,6 +152,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
           image: primaryProvider === "tart" ? tartImage : dockerImage,
           dockerImage,
           tartImage,
+          macosRuntime,
           desiredCount: Number(form.get("desiredCount")),
           minCount: Number(form.get("minCount")),
           maxCount: Number(form.get("maxCount")),
@@ -270,7 +272,19 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               {providers.includes("docker") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Docker container image" hint="OCI image used to create each Linux runner.">
                 <Input onChange={(event) => setDockerImage(event.target.value)} required value={dockerImage} />
               </Field> : null}
-              {providers.includes("tart") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Tart base VM" hint="A stopped, prepared local Tart VM. Each runner is an APFS copy-on-write clone. Workflows that run xcodebuild need an Xcode-ready VM; a plain base image has Command Line Tools only.">
+              {providers.includes("tart") ? <Field label="macOS execution" hint="Native runs each job directly on the macOS agent host. It needs no VM image and is the only way to reach TCC-gated APIs such as accessibility and screen recording, but jobs share the host.">
+                <SearchableSelect
+                  ariaLabel="macOS execution"
+                  onValueChange={(next) => setMacosRuntime(next === "native" ? "native" : "vm")}
+                  options={[
+                    { value: "vm", label: "Virtual machine", description: "One copy-on-write Tart VM per job" },
+                    { value: "native", label: "Native on host", description: "Run jobs directly on the agent host" },
+                  ]}
+                  searchable={false}
+                  value={macosRuntime}
+                />
+              </Field> : null}
+              {providers.includes("tart") && macosRuntime === "vm" ? <Field label="Tart base VM" hint="A stopped, prepared local Tart VM. Each runner is an APFS copy-on-write clone. Workflows that run xcodebuild need an Xcode-ready VM; a plain base image has Command Line Tools only.">
                 <Input onChange={(event) => setTartImage(event.target.value)} required value={tartImage} />
               </Field> : null}
               <Field className="md:col-span-2" label="Additional labels" hint="Comma-separated custom labels. GridOps adds self-hosted, the provider operating system and architecture, and the pool name automatically.">
@@ -355,7 +369,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               {submitting ? "Saving changes…" : "Save changes"}
             </Button>
           </div>
-        </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.scope === "repository" ? `${pool.repositoryIds.length} repositories` : pool.accountLogin} /><ReadOnly label="Providers" value={(pool.providers?.length ? pool.providers : [pool.provider]).map((provider) => provider === "tart" ? "Tart · macOS ARM64" : "Docker · Linux").join(" + ")} /><ReadOnly label="Runner capacity" value={`${pool.desiredCount} target · ${pool.minCount}-${pool.maxCount} runners`} />{pool.providers.includes("docker") ? <ReadOnly label="Docker image" value={pool.dockerImage} /> : null}{pool.providers.includes("tart") ? <ReadOnly label="Tart base VM" value={pool.tartImage} /> : null}<ReadOnly label="Per-runner resources" value={`${pool.cpuLimit} CPU cores · ${pool.memoryLimitMb} MB memory`} /></CardContent></Card>}
+        </form> : <Card className="mt-6"><CardHeader><div><CardTitle>Read-only runner pool</CardTitle><p className="mt-1 text-xs text-muted-foreground">An installation administrator manages this pool.</p></div><Badge variant="outline">read only</Badge></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2"><ReadOnly label="Destination" value={pool.scope === "repository" ? `${pool.repositoryIds.length} repositories` : pool.accountLogin} /><ReadOnly label="Providers" value={(pool.providers?.length ? pool.providers : [pool.provider]).map((provider) => provider === "tart" ? "Tart · macOS ARM64" : "Docker · Linux").join(" + ")} /><ReadOnly label="Runner capacity" value={`${pool.desiredCount} target · ${pool.minCount}-${pool.maxCount} runners`} />{pool.providers.includes("docker") ? <ReadOnly label="Docker image" value={pool.dockerImage} /> : null}{pool.providers.includes("tart") ? <ReadOnly label="macOS execution" value={pool.macosRuntime === "native" ? "Native on host" : "Virtual machine"} /> : null}{pool.providers.includes("tart") && pool.macosRuntime !== "native" ? <ReadOnly label="Tart base VM" value={pool.tartImage} /> : null}<ReadOnly label="Per-runner resources" value={`${pool.cpuLimit} CPU cores · ${pool.memoryLimitMb} MB memory`} /></CardContent></Card>}
         <PoolActivity poolId={pool.id} />
       </div>
     </AppShell>

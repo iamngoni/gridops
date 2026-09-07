@@ -216,6 +216,14 @@ struct ProvisionRunner {
     memory_limit_mb: i64,
     network: String,
     capacity_lease: String,
+    /// Forwarded verbatim to the macOS agent: "vm" clones a Tart VM per job,
+    /// "native" runs the runner on the agent host. Docker ignores it.
+    #[serde(default = "default_runtime")]
+    runtime: String,
+}
+
+fn default_runtime() -> String {
+    "vm".into()
 }
 
 #[derive(Deserialize, Serialize)]
@@ -245,8 +253,21 @@ impl ProvisionRunner {
                 "Runner or network name contains unsupported characters.".into(),
             ));
         }
-        if self.image.trim().is_empty() || self.image.len() > 512 {
+        // Native macOS runners execute on the agent host and have nothing to
+        // clone or pull, so they legitimately carry no image.
+        let image_required = self.runtime != "native";
+        if (image_required && self.image.trim().is_empty()) || self.image.len() > 512 {
             return Err(ManagerError::BadRequest("Runner image is invalid.".into()));
+        }
+        if !matches!(self.runtime.as_str(), "vm" | "native") {
+            return Err(ManagerError::BadRequest(
+                "Runner runtime must be vm or native.".into(),
+            ));
+        }
+        if self.runtime == "native" && self.provider != "tart" {
+            return Err(ManagerError::BadRequest(
+                "Native execution is only available on the macOS agent.".into(),
+            ));
         }
         match (self.platform.as_str(), self.mode.as_str()) {
             ("github", "ephemeral") => {
@@ -1728,6 +1749,7 @@ mod tests {
             bitbucket: None,
             bitbucket_oauth_client_secret: None,
             pull_image: false,
+            runtime: "vm".into(),
             cpu_limit: 2.0,
             memory_limit_mb: 4_096,
             network: "gridops-runners".into(),

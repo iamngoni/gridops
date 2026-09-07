@@ -37,7 +37,7 @@ export type RunnerPoolOptions = (BaseOptions & {
   authenticated: true;
   installUrl: string;
   defaults: {
-    provider: "docker" | "tart"; providers: Array<"docker" | "tart">; image: string; dockerImage: string; tartImage: string; labels: string[]; cpuLimit: number; memoryLimitMb: number;
+    provider: "docker" | "tart"; providers: Array<"docker" | "tart">; image: string; dockerImage: string; tartImage: string; macosRuntime: "vm" | "native"; labels: string[]; cpuLimit: number; memoryLimitMb: number;
     desiredCount: number; minCount: number; maxCount: number; autoscalingEnabled: boolean;
     queueScaleFactor: number; idleTimeoutMinutes: number; runnerGroupId: number;
     maxCpuLimit: number; maxMemoryLimitMb: number;
@@ -63,6 +63,7 @@ export type RunnerPoolDetail = {
   image: string;
   dockerImage: string;
   tartImage: string;
+  macosRuntime: "vm" | "native";
   desiredCount: number;
   minCount: number;
   maxCount: number;

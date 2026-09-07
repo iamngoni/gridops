@@ -43,7 +43,25 @@ struct AgentState {
     limits: AgentLimits,
     records: Arc<RwLock<HashMap<String, TartRecord>>>,
     provision_lock: Arc<Mutex<()>>,
+    /// Liveness of natively executed runners, keyed by record id. Populated when
+    /// a runner is spawned and updated by its waiter task; a record without an
+    /// entry is one this process did not start (an agent restart, say) and is
+    /// reported as missing so the control plane reprovisions it.
+    native: Arc<RwLock<HashMap<String, NativeProcess>>>,
+    /// Serialises actions-runner release downloads so concurrent provisioning
+    /// shares one extraction instead of racing on the same directory.
+    release_lock: Arc<Mutex<()>>,
 }
+
+#[derive(Clone, Copy, Debug)]
+struct NativeProcess {
+    pid: u32,
+    exited: bool,
+}
+
+/// Disk a native runner must be able to claim: the staged actions-runner plus
+/// room for a checkout and build output. Far below the reserve a VM clone needs.
+const NATIVE_MIN_FREE_DISK_MB: u64 = 5_120;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -67,11 +85,30 @@ struct TartRecord {
     runner_id: String,
     pool_id: String,
     name: String,
+    /// Empty for natively executed runners, which have no VM.
     vm_name: String,
+    /// Empty for natively executed runners, which have no image to clone.
     image: String,
     cpu_limit: f64,
     memory_limit_mb: i64,
     created_at: String,
+    /// "vm" or "native". Defaulted so records written before native execution
+    /// existed continue to load as VM runners.
+    #[serde(default = "default_runtime")]
+    runtime: String,
+    /// Filesystem root of a native runner's private actions-runner instance.
+    #[serde(default)]
+    root: Option<String>,
+}
+
+fn default_runtime() -> String {
+    "vm".into()
+}
+
+impl TartRecord {
+    fn is_native(&self) -> bool {
+        self.runtime == "native"
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -114,6 +151,10 @@ struct ProvisionRunner {
     bitbucket_oauth_client_secret: Option<String>,
     cpu_limit: f64,
     memory_limit_mb: i64,
+    /// "vm" clones a Tart VM per job; "native" runs the actions runner directly
+    /// on this host. Defaulted so older control planes keep getting VMs.
+    #[serde(default = "default_runtime")]
+    runtime: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,22 +171,42 @@ fn default_platform() -> String {
 }
 
 impl ProvisionRunner {
+    fn is_native(&self) -> bool {
+        self.runtime == "native"
+    }
+
     fn validate(&self) -> Result<(), AgentError> {
         if self.provider != "tart" {
             return Err(AgentError::BadRequest(
                 "This agent manages Tart macOS runners only.".into(),
             ));
         }
+        if !matches!(self.runtime.as_str(), "vm" | "native") {
+            return Err(AgentError::BadRequest(
+                "Runner runtime must be vm or native.".into(),
+            ));
+        }
+        // A native runner has nothing to clone, so an image is neither required
+        // nor meaningful; a VM runner cannot be provisioned without one.
+        let image_invalid = if self.is_native() {
+            self.image.len() > 512
+        } else {
+            self.image.trim().is_empty() || self.image.len() > 512
+        };
         if self.runner_id.is_empty()
             || self.runner_id.len() > 128
             || self.pool_id.is_empty()
             || self.pool_id.len() > 128
             || !valid_name(&self.name)
-            || self.image.trim().is_empty()
-            || self.image.len() > 512
+            || image_invalid
         {
             return Err(AgentError::BadRequest(
                 "Runner identity or Tart image is invalid.".into(),
+            ));
+        }
+        if self.is_native() && self.platform != "github" {
+            return Err(AgentError::BadRequest(
+                "Native macOS runners support GitHub only; Bitbucket runners require a VM.".into(),
             ));
         }
         match (self.platform.as_str(), self.mode.as_str()) {
@@ -342,6 +403,8 @@ async fn main() -> Result<()> {
 
     fs::create_dir_all(home.join("records")).await?;
     fs::create_dir_all(home.join("logs")).await?;
+    fs::create_dir_all(home.join("native").join("releases")).await?;
+    fs::create_dir_all(home.join("native").join("runners")).await?;
     let version = tart_output(&tart_binary, ["--version"]).await?;
     let records = load_records(&home).await?;
     let state = AgentState {
@@ -354,6 +417,8 @@ async fn main() -> Result<()> {
         limits,
         records: Arc::new(RwLock::new(records)),
         provision_lock: Arc::new(Mutex::new(())),
+        native: Arc::new(RwLock::new(HashMap::new())),
+        release_lock: Arc::new(Mutex::new(())),
     };
     let bind = env::var("GRIDOPS_TART_AGENT_BIND").unwrap_or_else(|_| "127.0.0.1:8790".into());
     tracing::info!(%bind, tart_version = version.trim(), ?network_mode, "GridOps Tart agent starting");
@@ -428,6 +493,14 @@ async fn health(
         "provider": "tart",
         "tartVersion": version.trim(),
         "networkMode": state.network_mode,
+        // Capability advertisement: the control plane reads the host's real OS
+        // and architecture from here rather than assuming them, which is what
+        // lets a Linux control plane drive this agent correctly.
+        "host": {
+            "os": host_os_label(),
+            "architecture": host_arch_label(),
+            "runtimes": ["vm", "native"],
+        },
         "capacity": {
             "cpuBudget": state.limits.cpu_budget,
             "memoryBudgetMb": state.limits.memory_budget_mb,
@@ -443,32 +516,46 @@ async fn list_runners(
     _auth: AgentAuth,
 ) -> Result<Json<Value>, AgentError> {
     let vms = tart_vms(&state).await?;
+    let native = state.native.read().await.clone();
     let records = state.records.read().await;
     let runners = records
         .values()
         .map(|record| {
-            let vm_state = vms
-                .get(&record.vm_name)
-                .map(String::as_str)
-                .unwrap_or("missing");
-            let runtime_state = match vm_state {
-                "running" => "running",
-                "suspended" => "paused",
-                "stopped" => "exited",
-                _ => "missing",
+            let (runtime_state, reported_status) = if record.is_native() {
+                // A native runner this process did not start — an agent restart
+                // orphaned it — is reported missing so the reconciler retires it
+                // rather than waiting on a runner nothing is supervising.
+                match native.get(&record.id) {
+                    Some(process) if !process.exited => ("running", "running".to_owned()),
+                    Some(_) => ("exited", "exited".to_owned()),
+                    None => ("missing", "missing".to_owned()),
+                }
+            } else {
+                let vm_state = vms
+                    .get(&record.vm_name)
+                    .map(String::as_str)
+                    .unwrap_or("missing");
+                let mapped = match vm_state {
+                    "running" => "running",
+                    "suspended" => "paused",
+                    "stopped" => "exited",
+                    _ => "missing",
+                };
+                (mapped, vm_state.to_owned())
             };
             json!({
                 "id": record.id,
                 "names": [record.name],
                 "image": record.image,
                 "state": runtime_state,
-                "status": vm_state,
+                "status": reported_status,
                 "labels": {
                     "io.gridops.managed": "true",
                     "io.gridops.runner-id": record.runner_id,
                     "io.gridops.pool-id": record.pool_id,
                     "io.gridops.mode": "ephemeral",
                     "io.gridops.provider": "tart",
+                    "io.gridops.runtime": record.runtime.clone(),
                 },
                 "createdAt": record.created_at,
                 "provider": "tart",
@@ -486,7 +573,14 @@ async fn provision_runner(
     input.validate()?;
     let _guard = state.provision_lock.lock().await;
     let vms = tart_vms(&state).await?;
-    enforce_capacity(&state, &vms, input.cpu_limit, input.memory_limit_mb).await?;
+    enforce_capacity(
+        &state,
+        &vms,
+        input.cpu_limit,
+        input.memory_limit_mb,
+        input.is_native(),
+    )
+    .await?;
     if state
         .records
         .read()
@@ -500,6 +594,9 @@ async fn provision_runner(
     }
 
     let id = format!("tart-{}", uuid::Uuid::new_v4().simple());
+    if input.is_native() {
+        return provision_native(&state, &mut input, id).await;
+    }
     let vm_name = format!("gridops-{}", input.name);
     if vms.contains_key(&vm_name) {
         return Err(AgentError::Conflict(
@@ -516,6 +613,8 @@ async fn provision_runner(
         cpu_limit: input.cpu_limit,
         memory_limit_mb: input.memory_limit_mb,
         created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+        runtime: "vm".into(),
+        root: None,
     };
 
     let result = async {
@@ -596,6 +695,369 @@ async fn provision_runner(
     ))
 }
 
+/// Provisions a runner that executes directly on this host instead of inside a
+/// VM. Each runner gets a private copy of the actions-runner release because the
+/// runner keeps `.runner`, `.credentials`, `_diag` and `_work` in its own root —
+/// concurrent instances cannot share one directory.
+async fn provision_native(
+    state: &AgentState,
+    input: &mut ProvisionRunner,
+    id: String,
+) -> Result<(StatusCode, Json<Value>), AgentError> {
+    let jit_config = input
+        .jit_config
+        .take()
+        .ok_or_else(|| AgentError::BadRequest("Runner JIT configuration is required.".into()))
+        .map(SecretString::from)?;
+    let release = ensure_runner_release(state)
+        .await
+        .map_err(AgentError::Internal)?;
+    let root = state.home.join("native").join("runners").join(&id);
+    let record = TartRecord {
+        id: id.clone(),
+        runner_id: input.runner_id.clone(),
+        pool_id: input.pool_id.clone(),
+        name: input.name.clone(),
+        vm_name: String::new(),
+        image: String::new(),
+        cpu_limit: input.cpu_limit,
+        memory_limit_mb: input.memory_limit_mb,
+        created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+        runtime: "native".into(),
+        root: Some(root.to_string_lossy().into_owned()),
+    };
+
+    let result = async {
+        clone_runner_release(&release, &root).await?;
+        persist_record(state, &record).await?;
+        state
+            .records
+            .write()
+            .await
+            .insert(id.clone(), record.clone());
+        start_native_runner(state, &record, &jit_config).await?;
+        Result::<()>::Ok(())
+    }
+    .await;
+
+    if let Err(error) = result {
+        tracing::error!(runner_id = %id, error = ?error, "native runner provisioning failed");
+        cleanup_native(state, &record).await;
+        state.records.write().await.remove(&id);
+        let _ = fs::remove_file(record_path(state, &id)).await;
+        return Err(AgentError::Internal(error));
+    }
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "id": id,
+            "name": input.name,
+            "state": "running",
+            "createdAt": record.created_at,
+        })),
+    ))
+}
+
+/// Resolves the newest actions-runner release, downloading and verifying it if
+/// it is not already cached. Fetching per provision is what keeps native runners
+/// permanently current: GitHub rejects deprecated runner versions outright, and
+/// a JIT runner cannot self-update.
+async fn ensure_runner_release(state: &AgentState) -> Result<PathBuf> {
+    let _guard = state.release_lock.lock().await;
+    let releases = state.home.join("native").join("releases");
+    match resolve_latest_runner_release().await {
+        Ok(release) => {
+            let target = releases.join(&release.version);
+            if fs::try_exists(target.join("run.sh")).await.unwrap_or(false) {
+                return Ok(target);
+            }
+            download_runner_release(&release, &target)
+                .await
+                .with_context(|| format!("could not install actions-runner {}", release.version))?;
+            Ok(target)
+        }
+        // A network blip should not fail provisioning when a usable runner is
+        // already on disk; the next provision re-checks for a newer release.
+        Err(error) => {
+            let cached = newest_cached_release(&releases).await?;
+            match cached {
+                Some(path) => {
+                    tracing::warn!(error = ?error, path = %path.display(), "could not resolve the latest actions-runner release; using the cached one");
+                    Ok(path)
+                }
+                None => Err(error.context("no actions-runner release is cached on this host")),
+            }
+        }
+    }
+}
+
+struct RunnerRelease {
+    version: String,
+    url: String,
+    digest: Option<String>,
+}
+
+async fn resolve_latest_runner_release() -> Result<RunnerRelease> {
+    let client = reqwest::Client::builder()
+        .user_agent("GridOps tart agent")
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let release = client
+        .get("https://api.github.com/repos/actions/runner/releases/latest")
+        .header(header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    let version = release
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .map(|tag| tag.trim_start_matches('v').to_owned())
+        .context("actions-runner release is missing a tag")?;
+    anyhow::ensure!(
+        !version.is_empty()
+            && version
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')),
+        "actions-runner release tag is malformed"
+    );
+    let asset_name = format!(
+        "actions-runner-{}-{}-{version}.tar.gz",
+        runner_platform_slug(),
+        host_runner_arch()
+    );
+    let asset = release
+        .get("assets")
+        .and_then(Value::as_array)
+        .and_then(|assets| {
+            assets.iter().find(|asset| {
+                asset.get("name").and_then(Value::as_str) == Some(asset_name.as_str())
+            })
+        })
+        .with_context(|| format!("actions-runner release has no {asset_name} asset"))?;
+    Ok(RunnerRelease {
+        version,
+        url: asset
+            .get("browser_download_url")
+            .and_then(Value::as_str)
+            .context("actions-runner asset has no download URL")?
+            .to_owned(),
+        digest: asset
+            .get("digest")
+            .and_then(Value::as_str)
+            .and_then(|digest| digest.strip_prefix("sha256:"))
+            .map(ToOwned::to_owned),
+    })
+}
+
+async fn download_runner_release(release: &RunnerRelease, target: &FsPath) -> Result<()> {
+    let staging = target.with_extension("partial");
+    let _ = fs::remove_dir_all(&staging).await;
+    fs::create_dir_all(&staging).await?;
+    let client = reqwest::Client::builder()
+        .user_agent("GridOps tart agent")
+        .timeout(Duration::from_mins(10))
+        .build()?;
+    let archive = client
+        .get(&release.url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    if let Some(expected) = &release.digest {
+        use sha2::Digest as _;
+        let actual = hex::encode(sha2::Sha256::digest(&archive));
+        anyhow::ensure!(
+            actual.eq_ignore_ascii_case(expected),
+            "actions-runner archive digest mismatch (expected {expected}, got {actual})"
+        );
+    } else {
+        tracing::warn!(
+            version = %release.version,
+            "actions-runner release published no digest; skipping checksum verification"
+        );
+    }
+    let tarball = staging.join("actions-runner.tar.gz");
+    fs::write(&tarball, &archive).await?;
+    let status = Command::new("/usr/bin/tar")
+        .arg("-xzf")
+        .arg(&tarball)
+        .arg("-C")
+        .arg(&staging)
+        .status()
+        .await?;
+    anyhow::ensure!(
+        status.success(),
+        "could not extract the actions-runner archive"
+    );
+    fs::remove_file(&tarball).await?;
+    anyhow::ensure!(
+        fs::try_exists(staging.join("run.sh"))
+            .await
+            .unwrap_or(false),
+        "actions-runner archive did not contain run.sh"
+    );
+    let _ = fs::remove_dir_all(target).await;
+    fs::rename(&staging, target).await?;
+    tracing::info!(version = %release.version, path = %target.display(), "installed actions-runner release");
+    Ok(())
+}
+
+async fn newest_cached_release(releases: &FsPath) -> Result<Option<PathBuf>> {
+    let mut entries = fs::read_dir(releases).await?;
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if !fs::try_exists(path.join("run.sh")).await.unwrap_or(false) {
+            continue;
+        }
+        let modified = entry.metadata().await?.modified()?;
+        if newest
+            .as_ref()
+            .is_none_or(|(current, _)| modified > *current)
+        {
+            newest = Some((modified, path));
+        }
+    }
+    Ok(newest.map(|(_, path)| path))
+}
+
+/// Copies a cached release into a runner's private root. `cp -c` asks APFS for a
+/// copy-on-write clone, so concurrent runners cost almost no additional space.
+async fn clone_runner_release(release: &FsPath, root: &FsPath) -> Result<()> {
+    let _ = fs::remove_dir_all(root).await;
+    if let Some(parent) = root.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    let cloned = Command::new("/bin/cp")
+        .arg("-Rc")
+        .arg(release)
+        .arg(root)
+        .status()
+        .await;
+    let cloned = matches!(cloned, Ok(status) if status.success());
+    if !cloned {
+        let _ = fs::remove_dir_all(root).await;
+        let status = Command::new("/bin/cp")
+            .arg("-R")
+            .arg(release)
+            .arg(root)
+            .status()
+            .await?;
+        anyhow::ensure!(
+            status.success(),
+            "could not stage the actions-runner release"
+        );
+    }
+    Ok(())
+}
+
+async fn start_native_runner(
+    state: &AgentState,
+    record: &TartRecord,
+    bootstrap_secret: &SecretString,
+) -> Result<()> {
+    let root = record
+        .root
+        .as_deref()
+        .context("native runner record has no root")?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path(state, &record.id))?;
+    let error_log = log.try_clone()?;
+    let mut command = Command::new("/bin/bash");
+    command
+        .args(["-lc", runner_script(root).as_str()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(error_log));
+    // Its own process group, so stopping a runner takes the whole tree — bash,
+    // run.sh, and the listener — rather than orphaning the listener.
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.spawn()?;
+    let pid = child.id().context("native runner process has no pid")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("native runner stdin was unavailable")?;
+    stdin
+        .write_all(bootstrap_secret.expose_secret().as_bytes())
+        .await?;
+    stdin.write_all(b"\n").await?;
+    stdin.shutdown().await?;
+    state
+        .native
+        .write()
+        .await
+        .insert(record.id.clone(), NativeProcess { pid, exited: false });
+    let native = Arc::clone(&state.native);
+    let id = record.id.clone();
+    let name = record.name.clone();
+    tokio::spawn(async move {
+        let status = child.wait().await;
+        tracing::info!(runner = %name, ?status, "native runner process exited");
+        if let Some(process) = native.write().await.get_mut(&id) {
+            process.exited = true;
+        }
+    });
+    Ok(())
+}
+
+async fn cleanup_native(state: &AgentState, record: &TartRecord) {
+    if let Some(process) = state.native.read().await.get(&record.id).copied()
+        && !process.exited
+    {
+        // Negative pid targets the process group created in start_native_runner.
+        let _ = Command::new("/bin/kill")
+            .arg("-TERM")
+            .arg(format!("-{}", process.pid))
+            .status()
+            .await;
+    }
+    state.native.write().await.remove(&record.id);
+    if let Some(root) = &record.root {
+        let _ = fs::remove_dir_all(root).await;
+    }
+}
+
+fn runner_platform_slug() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "osx"
+    } else {
+        "linux"
+    }
+}
+
+fn host_runner_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        other => other,
+    }
+}
+
+fn host_os_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macOS"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        std::env::consts::OS
+    }
+}
+
+fn host_arch_label() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "ARM64",
+        "x86_64" => "X64",
+        other => other,
+    }
+}
+
 async fn control_runner(
     State(state): State<AgentState>,
     Path((runner_id, action)): Path<(String, String)>,
@@ -603,6 +1065,10 @@ async fn control_runner(
 ) -> Result<Json<Value>, AgentError> {
     let record = record(&state, &runner_id).await?;
     match action.as_str() {
+        "stop" if record.is_native() => {
+            cleanup_native(&state, &record).await;
+            Ok(Json(json!({ "status": "stopped" })))
+        }
         "stop" => {
             let _ = tart_status(&state.tart_binary, ["stop", record.vm_name.as_str()]).await;
             Ok(Json(json!({ "status": "stopped" })))
@@ -621,7 +1087,11 @@ async fn delete_runner(
     _auth: AgentAuth,
 ) -> Result<Json<Value>, AgentError> {
     let record = record(&state, &runner_id).await?;
-    cleanup_vm(&state, &record.vm_name).await;
+    if record.is_native() {
+        cleanup_native(&state, &record).await;
+    } else {
+        cleanup_vm(&state, &record.vm_name).await;
+    }
     state.records.write().await.remove(&runner_id);
     match fs::remove_file(record_path(&state, &runner_id)).await {
         Ok(()) => {}
@@ -850,6 +1320,10 @@ flush_job_logs() {{
       if [ "$offset" -eq 0 ]; then printf '\n[GRIDOPS JOB LOG %s]\n' "$(basename "$job_log")"; fi
       head -c "$size" "$job_log" 2>/dev/null | tail -c "+$((offset + 1))" || true
       printf '%s\n' "$size" > "$state_file"
+      # Record that work was actually observed. An ephemeral runner deletes
+      # _diag/pages as it tears down, so the pages themselves are gone by exit
+      # and cannot be used to decide whether a job ran.
+      : > "$forwarded_state/.forwarded"
     fi
   done
 }}
@@ -863,6 +1337,14 @@ wait "$runner_pid"
 runner_status=$?
 set -e
 wait "$forwarder_pid" 2>/dev/null || true
+# A listener that exits without ever writing a job page failed before it could
+# take work — a deprecated runner version, a revoked registration, a broken
+# network. Its reason only exists in the diagnostics file, so surface the tail;
+# otherwise the control plane sees a healthy runner that silently did nothing.
+if [ ! -e "$forwarded_state/.forwarded" ]; then
+  printf '\n[GRIDOPS] runner listener exited with status %s without accepting a job.\n' "$runner_status"
+  tail -n 40 "$runner_diagnostics" 2>/dev/null || true
+fi
 exit "$runner_status""#,
     )
 }
@@ -872,15 +1354,24 @@ async fn enforce_capacity(
     vms: &HashMap<String, String>,
     cpu: f64,
     memory_mb: i64,
+    native: bool,
 ) -> Result<(), AgentError> {
     let active = active_capacity(state, vms).await;
     let disk = disk_capacity(state).await?;
-    if disk.available_mb < disk.minimum_free_mb {
+    // The disk reserve exists to leave room for a VM clone. A native runner
+    // stages a few hundred megabytes, so holding it to a VM-sized reserve would
+    // refuse runners the host has ample room for.
+    let required_free_mb = if native {
+        disk.minimum_free_mb.min(NATIVE_MIN_FREE_DISK_MB)
+    } else {
+        disk.minimum_free_mb
+    };
+    if disk.available_mb < required_free_mb {
         return Err(AgentError::Guardrail {
             code: "host_disk_guardrail",
             message: format!(
-                "Tart provisioning stopped because only {} MB disk space remains; {} MB is reserved.",
-                disk.available_mb, disk.minimum_free_mb
+                "Runner provisioning stopped because only {} MB disk space remains; {required_free_mb} MB is reserved.",
+                disk.available_mb
             ),
         });
     }
@@ -900,14 +1391,23 @@ async fn enforce_capacity(
 }
 
 async fn active_capacity(state: &AgentState, vms: &HashMap<String, String>) -> CapacityUsage {
+    let native = state.native.read().await.clone();
     state
         .records
         .read()
         .await
         .values()
         .filter(|record| {
-            vms.get(&record.vm_name)
-                .is_some_and(|status| matches!(status.as_str(), "running" | "suspended"))
+            if record.is_native() {
+                // Native runners hold host capacity for as long as their process
+                // is alive, so they count against the same budgets as VMs.
+                native
+                    .get(&record.id)
+                    .is_some_and(|process| !process.exited)
+            } else {
+                vms.get(&record.vm_name)
+                    .is_some_and(|status| matches!(status.as_str(), "running" | "suspended"))
+            }
         })
         .fold(CapacityUsage::default(), |mut usage, record| {
             usage.active_runners += 1;
@@ -1134,6 +1634,66 @@ mod tests {
         assert!(script.contains("read -r GRIDOPS_BOOTSTRAP_SECRET"));
         assert!(script.contains("--OAuthClientSecret \"$GRIDOPS_BOOTSTRAP_SECRET\""));
         assert!(!script.contains("fake-secret"));
+    }
+
+    fn provision_request(runtime: &str, image: &str) -> ProvisionRunner {
+        ProvisionRunner {
+            runner_id: "runner-1".into(),
+            pool_id: "pool-1".into(),
+            name: "homelab-abcd1234".into(),
+            image: image.into(),
+            mode: "ephemeral".into(),
+            provider: "tart".into(),
+            platform: "github".into(),
+            jit_config: Some("j".repeat(64)),
+            bitbucket: None,
+            bitbucket_oauth_client_secret: None,
+            cpu_limit: 3.0,
+            memory_limit_mb: 6_144,
+            runtime: runtime.into(),
+        }
+    }
+
+    #[test]
+    fn native_runners_need_no_image_but_vm_runners_do() {
+        assert!(provision_request("native", "").validate().is_ok());
+        assert!(provision_request("vm", "").validate().is_err());
+        assert!(
+            provision_request("vm", "gridops-macos-tahoe-base")
+                .validate()
+                .is_ok()
+        );
+        assert!(provision_request("qemu", "").validate().is_err());
+    }
+
+    #[test]
+    fn native_execution_is_refused_for_bitbucket() {
+        let mut request = provision_request("native", "");
+        request.platform = "bitbucket".into();
+        request.mode = "persistent".into();
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn runner_script_surfaces_diagnostics_when_no_job_ran() {
+        let script = runner_script("/Users/admin/actions-runner");
+        // Without this the listener's own failure reason never leaves the guest,
+        // which is how a deprecated-runner rejection reads as a silent churn loop.
+        assert!(script.contains("without accepting a job"));
+        assert!(script.contains("tail -n 40 \"$runner_diagnostics\""));
+        // The decision must rest on a page having been forwarded, not on the
+        // pages still existing: an ephemeral runner deletes them as it exits, so
+        // checking for them would report every successful run as job-less.
+        assert!(script.contains(": > \"$forwarded_state/.forwarded\""));
+        assert!(script.contains("if [ ! -e \"$forwarded_state/.forwarded\" ]"));
+    }
+
+    #[test]
+    fn host_capabilities_describe_this_machine() {
+        assert!(matches!(host_os_label(), "macOS" | "linux"));
+        assert!(matches!(host_arch_label(), "ARM64" | "X64"));
+        assert!(matches!(runner_platform_slug(), "osx" | "linux"));
+        assert!(matches!(host_runner_arch(), "arm64" | "x64"));
     }
 
     #[tokio::test]

@@ -115,6 +115,7 @@ type RunnerPoolFormOptions = {
     image: string;
     dockerImage: string;
     tartImage: string;
+    macosRuntime?: "vm" | "native";
     labels: string[];
     cpuLimit: number;
     memoryLimitMb: number;
@@ -153,6 +154,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
   const includesTart = providers.includes("tart");
   const [dockerImage, setDockerImage] = useState(options.defaults.dockerImage);
   const [tartImage, setTartImage] = useState(options.defaults.tartImage);
+  const [macosRuntime, setMacosRuntime] = useState<"vm" | "native">(options.defaults.macosRuntime ?? "vm");
   const [maxCount, setMaxCount] = useState(options.defaults.maxCount);
   const [desiredCount, setDesiredCount] = useState(options.defaults.desiredCount);
   const [cpuLimit, setCpuLimit] = useState(options.defaults.cpuLimit);
@@ -245,6 +247,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
           image: provider === "tart" ? tartImage : dockerImage,
           dockerImage,
           tartImage,
+          macosRuntime,
           desiredCount: Number(form.get("desiredCount")),
           minCount: Number(form.get("minCount")),
           maxCount: Number(form.get("maxCount")),
@@ -414,7 +417,19 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
               {providers.includes("docker") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Docker container image" hint="OCI image used for Linux runners.">
                 <Input name="dockerImage" onChange={(event) => setDockerImage(event.target.value)} required value={dockerImage} />
               </Field> : null}
-              {providers.includes("tart") ? <Field className={providers.length === 1 ? "md:col-span-2" : undefined} label="Tart base VM" hint="Stopped, prepared local VM cloned copy-on-write for each macOS job. Workflows that run xcodebuild need an Xcode-ready VM; a plain base image has Command Line Tools only.">
+              {providers.includes("tart") ? <Field label="macOS execution" hint="Native runs each job directly on the macOS agent host. It needs no VM image and is the only way to reach TCC-gated APIs such as accessibility and screen recording, but jobs share the host.">
+                <SearchableSelect
+                  ariaLabel="macOS execution"
+                  onValueChange={(next) => setMacosRuntime(next === "native" ? "native" : "vm")}
+                  options={[
+                    { value: "vm", label: "Virtual machine", description: "One copy-on-write Tart VM per job" },
+                    { value: "native", label: "Native on host", description: "Run jobs directly on the agent host" },
+                  ]}
+                  searchable={false}
+                  value={macosRuntime}
+                />
+              </Field> : null}
+              {providers.includes("tart") && macosRuntime === "vm" ? <Field label="Tart base VM" hint="Stopped, prepared local VM cloned copy-on-write for each macOS job. Workflows that run xcodebuild need an Xcode-ready VM; a plain base image has Command Line Tools only.">
                 <Input name="tartImage" onChange={(event) => setTartImage(event.target.value)} required value={tartImage} />
               </Field> : null}
               <Field className="md:col-span-2" label="Additional labels" hint={bitbucketConnectionIds.length ? "Comma-separated labels shared by every provider. Bitbucket labels may use lowercase letters, numbers, and dots." : "Comma-separated custom labels shared by every provider. GridOps adds the provider-specific OS and architecture labels automatically."}>

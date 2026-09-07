@@ -58,6 +58,11 @@ pub struct CreateRunnerPool {
     pub docker_image: String,
     #[serde(default)]
     pub tart_image: String,
+    /// How the macOS agent executes this pool's runners: "vm" clones a Tart VM
+    /// per job, "native" runs the runner on the agent host. Defaulted so
+    /// existing clients that never send it keep getting VMs.
+    #[serde(default = "default_macos_runtime")]
+    pub macos_runtime: String,
     pub desired_count: i64,
     pub min_count: i64,
     pub max_count: i64,
@@ -69,7 +74,40 @@ pub struct CreateRunnerPool {
     pub runner_group_id: i64,
 }
 
+pub fn default_macos_runtime() -> String {
+    "vm".into()
+}
+
+fn selected_macos_runtime(macos_runtime: &str) -> String {
+    if macos_runtime.trim().is_empty() {
+        default_macos_runtime()
+    } else {
+        macos_runtime.trim().to_owned()
+    }
+}
+
+/// Native execution is a property of the macOS agent, so a pool asking for it
+/// without the Tart provider selected would silently never get a native runner.
+fn validate_macos_runtime(macos_runtime: &str, providers: &[String]) -> Result<(), String> {
+    let runtime = selected_macos_runtime(macos_runtime);
+    if !matches!(runtime.as_str(), "vm" | "native") {
+        return Err("macOS runtime must be vm or native.".into());
+    }
+    if runtime == "native"
+        && !providers
+            .iter()
+            .any(|provider| provider.eq_ignore_ascii_case("tart"))
+    {
+        return Err("Native macOS execution requires the macOS runner provider.".into());
+    }
+    Ok(())
+}
+
 impl CreateRunnerPool {
+    pub fn selected_macos_runtime(&self) -> String {
+        selected_macos_runtime(&self.macos_runtime)
+    }
+
     pub fn selected_providers(&self) -> Vec<String> {
         selected_providers(&self.provider, &self.providers)
     }
@@ -110,6 +148,7 @@ impl CreateRunnerPool {
             &self.labels,
             self.max_count,
         )?;
+        validate_macos_runtime(&self.macos_runtime, &self.selected_providers())?;
         if repositories.len() > 1_000
             || repositories.iter().any(|repository_id| *repository_id <= 0)
         {
@@ -162,6 +201,11 @@ pub struct UpdateRunnerPool {
     pub docker_image: String,
     #[serde(default)]
     pub tart_image: String,
+    /// How the macOS agent executes this pool's runners: "vm" clones a Tart VM
+    /// per job, "native" runs the runner on the agent host. Defaulted so
+    /// existing clients that never send it keep getting VMs.
+    #[serde(default = "default_macos_runtime")]
+    pub macos_runtime: String,
     pub desired_count: i64,
     pub min_count: i64,
     pub max_count: i64,
@@ -174,6 +218,10 @@ pub struct UpdateRunnerPool {
 }
 
 impl UpdateRunnerPool {
+    pub fn selected_macos_runtime(&self) -> String {
+        selected_macos_runtime(&self.macos_runtime)
+    }
+
     pub fn selected_providers(&self) -> Vec<String> {
         selected_providers(&self.provider, &self.providers)
     }
@@ -209,6 +257,7 @@ impl UpdateRunnerPool {
                 self.max_count,
             )?;
         }
+        validate_macos_runtime(&self.macos_runtime, &self.selected_providers())?;
         if self.repository_ids.as_ref().is_some_and(|repositories| {
             i64::try_from(repositories.len()).unwrap_or(i64::MAX) > self.max_count
         }) {
@@ -417,6 +466,7 @@ mod tests {
             image: "ghcr.io/actions/actions-runner:latest".into(),
             docker_image: "ghcr.io/actions/actions-runner:latest".into(),
             tart_image: "gridops-macos-tahoe-base".into(),
+            macos_runtime: "vm".into(),
             desired_count: 1,
             min_count: 0,
             max_count: 10,
@@ -477,6 +527,7 @@ mod tests {
             image: original.image,
             docker_image: original.docker_image,
             tart_image: original.tart_image,
+            macos_runtime: original.macos_runtime,
             desired_count: original.desired_count,
             min_count: original.min_count,
             max_count: original.max_count,
