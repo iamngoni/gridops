@@ -3038,33 +3038,20 @@ async fn provision(
     let bitbucket_connection = (provider == "tart")
         .then_some(pending_bitbucket_connection)
         .flatten();
-    let platform = if bitbucket_connection.is_some() {
-        "bitbucket"
-    } else {
-        "github"
-    };
-    let runner_mode = if platform == "bitbucket" {
-        "persistent"
-    } else {
-        pool.mode.as_str()
-    };
-    let runner_ephemeral = platform == "github" && pool.ephemeral;
-    // Mirrors the reconciler: Bitbucket runners are persistent and VM-hosted, so
-    // native execution applies to GitHub pools on the macOS agent.
-    let runtime = if provider == "tart" && platform == "github" {
-        pool.macos_runtime.as_str()
-    } else {
-        "vm"
-    };
-    let image = if provider == "tart" {
-        if runtime == "native" {
-            ""
-        } else {
-            pool.tart_image.as_str()
-        }
-    } else {
-        pool.docker_image.as_str()
-    };
+    let plan = gridops_core::ProvisioningPlan::for_selected_provider(
+        &provider,
+        bitbucket_connection.is_some(),
+        &pool.mode,
+        pool.ephemeral,
+        &pool.macos_runtime,
+        &pool.docker_image,
+        &pool.tart_image,
+    );
+    let platform = plan.platform;
+    let runner_mode = plan.mode.as_str();
+    let runner_ephemeral = plan.ephemeral;
+    let runtime = plan.runtime.as_str();
+    let image = plan.image.as_str();
     let capacity_lease = reserve_runner_capacity(
         state,
         &runner_id,
@@ -3081,7 +3068,9 @@ async fn provision(
         .bind(&runner_name).bind(&provider).bind(platform).bind(bitbucket_connection.as_ref().map(|connection| &connection.id)).bind(runner_ephemeral)
         .bind(pool.configuration_version).bind(runtime).bind(now).bind(now).execute(&state.database).await
     {
-        release_runner_capacity(state, &capacity_lease).await;
+        if gridops_core::failure_cleanup(true, false, false).release_capacity {
+            release_runner_capacity(state, &capacity_lease).await;
+        }
         return Err(error.into());
     }
     let result = async {
@@ -3166,7 +3155,9 @@ async fn provision(
         let manager = match manager_json(state, Method::POST, "v1/runners", Some(request)).await {
             Ok(manager) => manager,
             Err(error) => {
-                if let (Some(connection), Some(bitbucket_runner_uuid)) = (&bitbucket_connection, &bitbucket_runner_uuid)
+                if gridops_core::failure_cleanup(true, bitbucket_runner_uuid.is_some(), false)
+                    .remove_provider_runner
+                    && let (Some(connection), Some(bitbucket_runner_uuid)) = (&bitbucket_connection, &bitbucket_runner_uuid)
                     && let Ok(Some(access_token)) = state.runtime_secret(&connection.access_token_key).await
                 {
                     let _ = state.bitbucket.delete_runner(
@@ -3191,7 +3182,9 @@ async fn provision(
         Ok::<Value, ApiError>(json!({ "runnerId": runner_id, "status": status }))
     }.await;
     if let Err(error) = &result {
-        release_runner_capacity(state, &capacity_lease).await;
+        if gridops_core::failure_cleanup(true, false, false).release_capacity {
+            release_runner_capacity(state, &capacity_lease).await;
+        }
         let message = error.to_string().chars().take(2_000).collect::<String>();
         sqlx::query("UPDATE runners SET status='failed',failure_reason=?,updated_at=? WHERE id=?")
             .bind(&message)
