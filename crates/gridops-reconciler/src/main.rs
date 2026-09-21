@@ -1019,33 +1019,20 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     let bitbucket_connection = (provider == "tart")
         .then_some(pending_bitbucket_connection)
         .flatten();
-    let platform = if bitbucket_connection.is_some() {
-        "bitbucket"
-    } else {
-        "github"
-    };
-    let runner_mode = if platform == "bitbucket" {
-        "persistent"
-    } else {
-        pool.mode.as_str()
-    };
-    let runner_ephemeral = platform == "github" && pool.ephemeral;
-    // Bitbucket runners are persistent and the agent only hosts them in a VM, so
-    // native execution applies to GitHub pools on the macOS agent.
-    let runtime = if provider == "tart" && platform == "github" {
-        pool.macos_runtime.as_str()
-    } else {
-        "vm"
-    };
-    let image = if provider == "tart" {
-        if runtime == "native" {
-            ""
-        } else {
-            pool.tart_image.as_str()
-        }
-    } else {
-        pool.docker_image.as_str()
-    };
+    let plan = gridops_core::ProvisioningPlan::for_selected_provider(
+        &provider,
+        bitbucket_connection.is_some(),
+        &pool.mode,
+        pool.ephemeral,
+        &pool.macos_runtime,
+        &pool.docker_image,
+        &pool.tart_image,
+    );
+    let platform = plan.platform;
+    let runner_mode = plan.mode.as_str();
+    let runner_ephemeral = plan.ephemeral;
+    let runtime = plan.runtime.as_str();
+    let image = plan.image.as_str();
     let admission = reserve_runner_capacity(
         app,
         &runner_id,
@@ -1083,7 +1070,9 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         .execute(&app.database)
         .await
     {
-        release_runner_capacity(app, &capacity_lease).await;
+        if gridops_core::failure_cleanup(true, false, false).release_capacity {
+            release_runner_capacity(app, &capacity_lease).await;
+        }
         return Err(error.into());
     }
 
@@ -1190,7 +1179,9 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         let created = match manager_request::<CreatedRunner>(app, Method::POST, "v1/runners", Some(request)).await {
             Ok(created) => created,
             Err(error) => {
-                if let (Some(connection), Some(bitbucket_runner_uuid)) = (&bitbucket_connection, &bitbucket_runner_uuid)
+                if gridops_core::failure_cleanup(true, bitbucket_runner_uuid.is_some(), false)
+                    .remove_provider_runner
+                    && let (Some(connection), Some(bitbucket_runner_uuid)) = (&bitbucket_connection, &bitbucket_runner_uuid)
                     && let Ok(Some(access_token)) = runtime_secret(app, &connection.access_token_key).await
                 {
                     let _ = app.bitbucket.delete_runner(
@@ -1219,7 +1210,9 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     }
         .await;
     if let Err(error) = result {
-        release_runner_capacity(app, &capacity_lease).await;
+        if gridops_core::failure_cleanup(true, false, false).release_capacity {
+            release_runner_capacity(app, &capacity_lease).await;
+        }
         let message = error.to_string().chars().take(2_000).collect::<String>();
         let manager_cleanup = match cleanup_unrecorded_manager_runner(app, &runner_id).await {
             Ok(Some(container_id)) => json!({ "status": "removed", "containerId": container_id }),

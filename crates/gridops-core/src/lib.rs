@@ -5,6 +5,7 @@ pub mod crypto;
 pub mod db;
 pub mod github;
 pub mod models;
+pub mod provisioning;
 
 pub use autoscaling::{
     ProviderCapacity, RepositoryCapacity, assigned_queued_jobs, compatible_runner_provider,
@@ -26,3 +27,4 @@ pub use github::{
     JitResponse, RepositoryPage, RunnerTarget, WorkflowJobPage, WorkflowRunPage,
 };
 pub use models::{Alerts, ConfigurationState, CreateRunnerPool, UpdateRunnerPool, Viewer};
+pub use provisioning::{FailureCleanup, ProvisioningPlan, failure_cleanup};
