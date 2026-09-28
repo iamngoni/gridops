@@ -14,13 +14,16 @@ export function Kbd({ className, ...props }: React.ComponentProps<"kbd">) {
   );
 }
 
-/** Renders a shortcut such as "G then P" or "⌘ K" as separate keys. */
+const MODIFIERS = new Set(["⌘", "⇧", "⌥", "⌃"]);
+
+/** Renders a sequence such as "G then P", or a chord such as "⌘ K", as separate keys. */
 export function Shortcut({ keys, className }: { keys: string[]; className?: string }) {
+  const sequence = keys.length === 2 && keys.every((key) => key.length === 1 && !MODIFIERS.has(key));
   return (
     <span className={cn("inline-flex items-center gap-1", className)}>
       {keys.map((key, index) => (
         <span className="inline-flex items-center gap-1" key={`${key}-${index}`}>
-          {index > 0 && keys.length === 2 && key.length === 1 && keys[0]?.length === 1 ? <span className="text-[10px] text-faint">then</span> : null}
+          {sequence && index > 0 ? <span className="text-[10px] text-faint">then</span> : null}
           <Kbd>{key}</Kbd>
         </span>
       ))}

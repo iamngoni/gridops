@@ -54,11 +54,11 @@ export function SettingsRow({
 }) {
   return (
     <div className={cn("flex gap-3 px-4 py-3.5", stacked ? "flex-col" : "flex-col sm:flex-row sm:items-center sm:justify-between sm:gap-6", className)}>
-      <div className={cn("min-w-0", !stacked && "sm:max-w-[52%]")}>
+      <div className={cn("min-w-0", !stacked && "sm:flex-1")}>
         <label className="block text-sm font-medium text-foreground" htmlFor={htmlFor}>{label}</label>
         {description ? <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</div> : null}
       </div>
-      {children !== undefined ? <div className={cn("min-w-0", stacked ? "w-full" : "w-full sm:w-auto sm:min-w-[240px] sm:max-w-[320px] sm:flex-1 sm:text-right [&>*]:sm:ml-auto")}>{children}</div> : null}
+      {children !== undefined ? <div className={cn("min-w-0", stacked ? "w-full" : "w-full sm:w-[300px] sm:shrink-0 sm:text-right [&>*]:sm:ml-auto")}>{children}</div> : null}
     </div>
   );
 }
