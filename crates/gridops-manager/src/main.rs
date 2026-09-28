@@ -71,6 +71,23 @@ struct ManagerLimits {
     log_max_size: String,
     log_max_files: u64,
     runner_pids_limit: i64,
+    runner_swap_percent: i64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CapacityBudget {
+    cpu: f64,
+    memory_mb: i64,
+    max_runners: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TartCapacity {
+    cpu_budget: f64,
+    memory_budget_mb: i64,
+    max_runners: usize,
+    active: CapacityUsage,
 }
 
 #[derive(Clone, Debug)]
@@ -470,6 +487,13 @@ impl ManagerLimits {
             (64..=32_768).contains(&runner_pids_limit),
             "GRIDOPS_RUNNER_PIDS_LIMIT must be between 64 and 32768"
         );
+        // Swap headroom as a percentage of each runner's memory limit, so memory
+        // spikes such as release linking slow down instead of being OOM-killed.
+        let runner_swap_percent = optional_env("GRIDOPS_RUNNER_SWAP_PERCENT")?.unwrap_or(100);
+        anyhow::ensure!(
+            (0..=400).contains(&runner_swap_percent),
+            "GRIDOPS_RUNNER_SWAP_PERCENT must be between 0 and 400"
+        );
         let log_max_size = env::var("GRIDOPS_RUNNER_LOG_MAX_SIZE").unwrap_or_else(|_| "20m".into());
         anyhow::ensure!(
             valid_log_size(&log_max_size),
@@ -498,7 +522,16 @@ impl ManagerLimits {
             log_max_size,
             log_max_files,
             runner_pids_limit,
+            runner_swap_percent,
         })
+    }
+
+    fn docker_budget(&self) -> CapacityBudget {
+        CapacityBudget {
+            cpu: self.cpu_budget,
+            memory_mb: self.memory_budget_mb,
+            max_runners: self.max_runners,
+        }
     }
 }
 
@@ -687,26 +720,15 @@ async fn health(
 ) -> Result<Json<Value>, ManagerError> {
     state.docker.ping().await?;
     let version = state.docker.version().await?;
-    let mut active = docker_active_capacity(&state.docker).await?;
-    let reserved = reserved_capacity(&state).await;
+    // `capacity` describes the Docker host only; Tart reports its own budget
+    // and usage under `providers.tart.health.capacity`.
+    let active = docker_active_capacity(&state.docker).await?;
+    let reserved = reserved_capacity(&state, "docker").await;
     let disk = disk_capacity(&state.limits)?;
     let (status, tart) = match &state.tart {
         Some(agent) => match tart_agent_value(agent, reqwest::Method::GET, "v1/health", None).await
         {
-            Ok(health) => {
-                if let Some(value) = health
-                    .get("capacity")
-                    .and_then(|capacity| capacity.get("active"))
-                    .cloned()
-                    && let Ok(usage) = serde_json::from_value::<CapacityUsage>(value)
-                {
-                    active.active_runners =
-                        active.active_runners.saturating_add(usage.active_runners);
-                    active.cpu += usage.cpu;
-                    active.memory_mb = active.memory_mb.saturating_add(usage.memory_mb);
-                }
-                ("ok", json!({ "available": true, "health": health }))
-            }
+            Ok(health) => ("ok", json!({ "available": true, "health": health })),
             Err(error) => {
                 tracing::warn!(error = ?error, "Tart agent health check failed");
                 (
@@ -755,21 +777,25 @@ async fn reserve_capacity(
     input.validate()?;
     let _guard = state.provision_lock.lock().await;
     ensure_provisioning_enabled(&state)?;
-    let active = active_capacity(&state).await?;
-    let disk = disk_capacity(&state.limits)?;
+    // Each provider is admitted against its own host. Tart VMs run on the Mac,
+    // not inside the Docker host, and the agent enforces its own budget; adding
+    // them to the Docker budget starved Linux runners of capacity.
+    let (budget, active, disk) = if input.provider == "tart" {
+        let agent = state.tart.as_ref().ok_or_else(tart_provider_disabled)?;
+        let (budget, active) = tart_capacity(agent).await?;
+        (budget, active, None)
+    } else {
+        (
+            state.limits.docker_budget(),
+            docker_active_capacity(&state.docker).await?,
+            Some(disk_capacity(&state.limits)?),
+        )
+    };
     let mut reservations = state.reservations.lock().await;
     reservations.retain(|_, reservation| reservation.expires_at > Instant::now());
-    let reserved =
-        reservations
-            .values()
-            .fold(CapacityUsage::default(), |mut usage, reservation| {
-                usage.active_runners += 1;
-                usage.cpu += reservation.cpu_limit;
-                usage.memory_mb = usage.memory_mb.saturating_add(reservation.memory_limit_mb);
-                usage
-            });
+    let reserved = provider_reservations(&reservations, &input.provider);
     enforce_capacity(
-        &state.limits,
+        budget,
         active,
         reserved,
         CapacityUsage {
@@ -872,11 +898,7 @@ async fn provision_runner(
                     .await
                     .map(|value| (StatusCode::CREATED, Json(value)))
             }
-            None => Err(ManagerError::Upstream {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                code: "tart_provider_disabled".into(),
-                message: "The Tart macOS runner provider is not configured.".into(),
-            }),
+            None => Err(tart_provider_disabled()),
         };
         state.reservations.lock().await.remove(&lease_id);
         return result;
@@ -936,7 +958,9 @@ async fn provision_runner_inner(
             network_mode: Some(input.network.clone()),
             nano_cpus: Some((input.cpu_limit * 1_000_000_000.0) as i64),
             memory: Some(memory_bytes),
-            memory_swap: Some(memory_bytes),
+            memory_swap: Some(
+                memory_bytes.saturating_add(memory_bytes * state.limits.runner_swap_percent / 100),
+            ),
             pids_limit: Some(state.limits.runner_pids_limit),
             cap_drop: Some(vec!["ALL".into()]),
             security_opt: Some(vec!["no-new-privileges:true".into()]),
@@ -1082,11 +1106,11 @@ async fn control_runner(
                 memory_mb: host.memory.unwrap_or_default() / 1_024 / 1_024,
             };
             enforce_capacity(
-                &state.limits,
-                active_capacity(&state).await?,
-                reserved_capacity(&state).await,
+                state.limits.docker_budget(),
+                docker_active_capacity(&state.docker).await?,
+                reserved_capacity(&state, "docker").await,
                 requested,
-                disk_capacity(&state.limits)?,
+                Some(disk_capacity(&state.limits)?),
             )?;
         }
     }
@@ -1283,16 +1307,16 @@ async fn ensure_image(docker: &Docker, image: &str, pull_image: bool) -> Result<
             .await
         {
             Ok(_) => Ok(()),
-            Err(DockerError::DockerResponseServerError {
-                status_code: 404, ..
-            }) => {
+            // A local copy exists, so a registry outage, auth failure, or
+            // local-only tag must not fail provisioning.
+            Err(error) => {
                 tracing::warn!(
                     image,
+                    error = %error,
                     "could not refresh local runner image; continuing with the available local image"
                 );
                 Ok(())
             }
-            Err(error) => Err(error.into()),
         },
         Err(DockerError::DockerResponseServerError {
             status_code: 404, ..
@@ -1391,39 +1415,50 @@ async fn docker_active_capacity(docker: &Docker) -> Result<CapacityUsage, Manage
     Ok(usage)
 }
 
-async fn active_capacity(state: &ManagerState) -> Result<CapacityUsage, ManagerError> {
-    let mut usage = docker_active_capacity(&state.docker).await?;
-    if let Some(agent) = &state.tart {
-        let health = tart_agent_value(agent, reqwest::Method::GET, "v1/health", None).await?;
-        let tart_usage = health
-            .get("capacity")
-            .and_then(|capacity| capacity.get("active"))
-            .cloned()
-            .ok_or_else(|| {
-                ManagerError::Internal(anyhow::anyhow!("Tart agent health omitted active capacity"))
-            })?;
-        let tart_usage = serde_json::from_value::<CapacityUsage>(tart_usage)
-            .map_err(|error| ManagerError::Internal(error.into()))?;
-        usage.active_runners = usage
-            .active_runners
-            .saturating_add(tart_usage.active_runners);
-        usage.cpu += tart_usage.cpu;
-        usage.memory_mb = usage.memory_mb.saturating_add(tart_usage.memory_mb);
-    }
-    Ok(usage)
+async fn tart_capacity(agent: &TartAgent) -> Result<(CapacityBudget, CapacityUsage), ManagerError> {
+    let health = tart_agent_value(agent, reqwest::Method::GET, "v1/health", None).await?;
+    let capacity = health.get("capacity").cloned().ok_or_else(|| {
+        ManagerError::Internal(anyhow::anyhow!("Tart agent health omitted capacity"))
+    })?;
+    let capacity = serde_json::from_value::<TartCapacity>(capacity)
+        .map_err(|error| ManagerError::Internal(error.into()))?;
+    Ok((
+        CapacityBudget {
+            cpu: capacity.cpu_budget,
+            memory_mb: capacity.memory_budget_mb,
+            max_runners: capacity.max_runners,
+        },
+        capacity.active,
+    ))
 }
 
-async fn reserved_capacity(state: &ManagerState) -> CapacityUsage {
+async fn reserved_capacity(state: &ManagerState, provider: &str) -> CapacityUsage {
     let mut reservations = state.reservations.lock().await;
     reservations.retain(|_, reservation| reservation.expires_at > Instant::now());
+    provider_reservations(&reservations, provider)
+}
+
+fn provider_reservations(
+    reservations: &HashMap<String, CapacityReservation>,
+    provider: &str,
+) -> CapacityUsage {
     reservations
         .values()
+        .filter(|reservation| reservation.provider == provider)
         .fold(CapacityUsage::default(), |mut usage, reservation| {
             usage.active_runners += 1;
             usage.cpu += reservation.cpu_limit;
             usage.memory_mb = usage.memory_mb.saturating_add(reservation.memory_limit_mb);
             usage
         })
+}
+
+fn tart_provider_disabled() -> ManagerError {
+    ManagerError::Upstream {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        code: "tart_provider_disabled".into(),
+        message: "The Tart macOS runner provider is not configured.".into(),
+    }
 }
 
 fn active_container_state(state: &str) -> bool {
@@ -1479,14 +1514,17 @@ fn ensure_disk_capacity(limits: &ManagerLimits) -> Result<(), ManagerError> {
     Ok(())
 }
 
+/// `disk` is `None` for providers whose host enforces its own disk reserve.
 fn enforce_capacity(
-    limits: &ManagerLimits,
+    budget: CapacityBudget,
     active: CapacityUsage,
     reserved: CapacityUsage,
     requested: CapacityUsage,
-    disk: DiskCapacity,
+    disk: Option<DiskCapacity>,
 ) -> Result<(), ManagerError> {
-    if disk.available_mb < disk.minimum_free_mb {
+    if let Some(disk) = disk
+        && disk.available_mb < disk.minimum_free_mb
+    {
         return Err(ManagerError::Guardrail {
             code: "host_disk_guardrail",
             message: format!(
@@ -1499,22 +1537,22 @@ fn enforce_capacity(
         .active_runners
         .saturating_add(reserved.active_runners)
         .saturating_add(requested.active_runners);
-    if projected_runners > limits.max_runners {
+    if projected_runners > budget.max_runners {
         return Err(ManagerError::Guardrail {
             code: "host_capacity_exhausted",
             message: format!(
                 "Host runner limit reached ({projected_runners}/{} including reservations).",
-                limits.max_runners
+                budget.max_runners
             ),
         });
     }
     let projected_cpu = active.cpu + reserved.cpu + requested.cpu;
-    if projected_cpu > limits.cpu_budget + f64::EPSILON {
+    if projected_cpu > budget.cpu + f64::EPSILON {
         return Err(ManagerError::Guardrail {
             code: "host_capacity_exhausted",
             message: format!(
                 "Host CPU budget would be exceeded ({projected_cpu:.2}/{:.2} CPUs including reservations).",
-                limits.cpu_budget
+                budget.cpu
             ),
         });
     }
@@ -1522,12 +1560,12 @@ fn enforce_capacity(
         .memory_mb
         .saturating_add(reserved.memory_mb)
         .saturating_add(requested.memory_mb);
-    if projected_memory > limits.memory_budget_mb {
+    if projected_memory > budget.memory_mb {
         return Err(ManagerError::Guardrail {
             code: "host_capacity_exhausted",
             message: format!(
                 "Host memory budget would be exceeded ({projected_memory}/{} MB including reservations).",
-                limits.memory_budget_mb
+                budget.memory_mb
             ),
         });
     }
@@ -1807,12 +1845,14 @@ mod tests {
             log_max_size: "20m".into(),
             log_max_files: 5,
             runner_pids_limit: 1_024,
+            runner_swap_percent: 100,
         };
-        let disk = DiskCapacity {
+        let budget = limits.docker_budget();
+        let disk = Some(DiskCapacity {
             total_mb: 100_000,
             available_mb: 50_000,
             minimum_free_mb: 10_000,
-        };
+        });
         let active = CapacityUsage {
             active_runners: 2,
             cpu: 4.0,
@@ -1824,7 +1864,7 @@ mod tests {
             memory_mb: 2_048,
         };
         assert!(
-            enforce_capacity(&limits, active, CapacityUsage::default(), requested, disk).is_ok()
+            enforce_capacity(budget, active, CapacityUsage::default(), requested, disk).is_ok()
         );
         let over_budget = CapacityUsage {
             active_runners: 1,
@@ -1832,12 +1872,59 @@ mod tests {
             memory_mb: 2_049,
         };
         assert!(matches!(
-            enforce_capacity(&limits, active, CapacityUsage::default(), over_budget, disk),
+            enforce_capacity(budget, active, CapacityUsage::default(), over_budget, disk),
             Err(ManagerError::Guardrail {
                 code: "host_capacity_exhausted",
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn reservations_only_count_against_their_own_provider() {
+        let reservation = |provider: &str| CapacityReservation {
+            runner_id: "runner".into(),
+            pool_id: "pool".into(),
+            provider: provider.into(),
+            cpu_limit: 2.0,
+            memory_limit_mb: 2_048,
+            expires_at: Instant::now() + Duration::from_mins(5),
+        };
+        let reservations = HashMap::from([
+            ("docker-lease".to_owned(), reservation("docker")),
+            ("tart-lease".to_owned(), reservation("tart")),
+            ("other-tart-lease".to_owned(), reservation("tart")),
+        ]);
+        let docker = provider_reservations(&reservations, "docker");
+        assert_eq!(docker.active_runners, 1);
+        assert_eq!(docker.memory_mb, 2_048);
+        let tart = provider_reservations(&reservations, "tart");
+        assert_eq!(tart.active_runners, 2);
+        assert!((tart.cpu - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn provider_hosts_without_a_manager_disk_view_skip_the_disk_guardrail() {
+        let budget = CapacityBudget {
+            cpu: 4.0,
+            memory_mb: 6_144,
+            max_runners: 1,
+        };
+        let requested = CapacityUsage {
+            active_runners: 1,
+            cpu: 2.0,
+            memory_mb: 2_048,
+        };
+        assert!(
+            enforce_capacity(
+                budget,
+                CapacityUsage::default(),
+                CapacityUsage::default(),
+                requested,
+                None
+            )
+            .is_ok()
+        );
     }
 
     #[test]

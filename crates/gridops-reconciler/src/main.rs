@@ -307,7 +307,9 @@ async fn reconcile_pool(
     let retry_deferred = pool
         .provision_retry_at
         .is_some_and(|retry_at| retry_at > now_millis());
-    let provisioning_blocked = provisioning_paused || pool.provision_circuit_open || retry_deferred;
+    // An open circuit carries a cool-down in `provision_retry_at`; once it
+    // passes, one attempt probes whether the cause has cleared.
+    let provisioning_blocked = provisioning_paused || retry_deferred;
     let current = runners(app, &pool.id).await?;
     let mut rotated = 0;
     if !provisioning_blocked
@@ -1829,9 +1831,8 @@ async fn defer_pool_capacity(app: &Reconciler, pool: &Pool, reason: Option<&str>
 
 async fn record_provision_failure(app: &Reconciler, pool: &Pool) -> Result<()> {
     let attempts = pool.provision_failure_count.saturating_add(1);
-    let circuit_open = attempts >= 3;
-    let retry_at =
-        (!circuit_open).then(|| now_millis().saturating_add(provision_backoff_ms(attempts)));
+    let (circuit_open, delay_ms) = provision_failure_policy(attempts);
+    let retry_at = now_millis().saturating_add(delay_ms);
     sqlx::query(
         "UPDATE runner_pools SET provision_failure_count=?,provision_retry_at=?,provision_circuit_open=?,state=?,updated_at=? WHERE id=?",
     )
@@ -1843,18 +1844,30 @@ async fn record_provision_failure(app: &Reconciler, pool: &Pool) -> Result<()> {
     .bind(&pool.id)
     .execute(&app.database)
     .await?;
-    if circuit_open {
+    if circuit_open && !pool.provision_circuit_open {
         system_event(
             app,
             Some(&pool.id),
             "error",
             "Provisioning circuit opened",
-            "GridOps stopped provisioning this pool after three consecutive failures. Retry the pool after correcting the cause.",
-            json!({ "attempts": attempts }),
+            "GridOps paused provisioning for this pool after three consecutive failures and retries automatically every 15 minutes. Retry the pool to try sooner.",
+            json!({ "attempts": attempts, "retryAt": retry_at }),
         )
         .await?;
     }
     Ok(())
+}
+
+const PROVISION_CIRCUIT_COOLDOWN_MS: i64 = 15 * 60 * 1_000;
+
+/// Whether the pool's circuit is open after `attempts` consecutive failures,
+/// and how long to wait before the next attempt.
+fn provision_failure_policy(attempts: i64) -> (bool, i64) {
+    if attempts >= 3 {
+        (true, PROVISION_CIRCUIT_COOLDOWN_MS)
+    } else {
+        (false, provision_backoff_ms(attempts))
+    }
 }
 
 fn provision_backoff_ms(attempts: i64) -> i64 {
@@ -2129,6 +2142,20 @@ mod tests {
         assert_eq!(provision_backoff_ms(1), 30_000);
         assert_eq!(provision_backoff_ms(2), 60_000);
         assert_eq!(provision_backoff_ms(3), 120_000);
+    }
+
+    #[test]
+    fn open_circuits_cool_down_instead_of_blocking_forever() {
+        assert_eq!(provision_failure_policy(1), (false, 30_000));
+        assert_eq!(provision_failure_policy(2), (false, 60_000));
+        assert_eq!(
+            provision_failure_policy(3),
+            (true, PROVISION_CIRCUIT_COOLDOWN_MS)
+        );
+        assert_eq!(
+            provision_failure_policy(9),
+            (true, PROVISION_CIRCUIT_COOLDOWN_MS)
+        );
     }
 
     #[tokio::test]
