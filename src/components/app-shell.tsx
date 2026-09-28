@@ -9,6 +9,7 @@ import { GridMark } from "./grid-logo";
 import { StatusDot } from "./status-icon";
 import { useTheme } from "./theme-provider";
 import { Avatar } from "./ui/avatar";
+import { IS_APPLE_PLATFORM } from "./ui/kbd";
 import { Button, buttonVariants } from "./ui/button";
 import {
   DropdownMenu,
@@ -162,7 +163,7 @@ function Sidebar({ viewer, onSearch, onNavigate }: { viewer: Viewer | null; onSe
         <div className="flex h-7 items-center gap-2 px-2 text-2xs text-faint">
           <StatusDot tone="success" />
           <span className="flex-1">Control plane online</span>
-          <button className="inline-flex items-center gap-1 rounded px-1 hover:text-muted-foreground" onClick={onSearch} type="button"><CommandIcon className="size-3" />K</button>
+          <button aria-label="Search and commands" className="inline-flex items-center gap-1 rounded px-1 hover:text-muted-foreground" onClick={onSearch} type="button">{IS_APPLE_PLATFORM ? <CommandIcon className="size-3" /> : "Ctrl "}K</button>
         </div>
       </div>
     </aside>

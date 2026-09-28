@@ -16,6 +16,13 @@ export function Kbd({ className, ...props }: React.ComponentProps<"kbd">) {
 
 const MODIFIERS = new Set(["⌘", "⇧", "⌥", "⌃"]);
 
+/** Shortcuts are written with ⌘; elsewhere the same chord uses Ctrl. */
+export const IS_APPLE_PLATFORM = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
+
+export function platformKey(key: string) {
+  return key === "⌘" && !IS_APPLE_PLATFORM ? "Ctrl" : key;
+}
+
 /** Renders a sequence such as "G then P", or a chord such as "⌘ K", as separate keys. */
 export function Shortcut({ keys, className, alternatives = false }: { keys: string[]; className?: string; alternatives?: boolean }) {
   const sequence = !alternatives && keys.length === 2 && keys.every((key) => key.length === 1 && !MODIFIERS.has(key));
@@ -24,7 +31,7 @@ export function Shortcut({ keys, className, alternatives = false }: { keys: stri
       {keys.map((key, index) => (
         <span className="inline-flex items-center gap-1" key={`${key}-${index}`}>
           {sequence && index > 0 ? <span className="text-[10px] text-faint">then</span> : null}
-          <Kbd>{key}</Kbd>
+          <Kbd>{platformKey(key)}</Kbd>
         </span>
       ))}
     </span>
