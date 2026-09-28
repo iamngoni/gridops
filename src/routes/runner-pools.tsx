@@ -99,7 +99,7 @@ function RunnerPoolsPage() {
                     </TableCell>
                     <TableCell>
                       <StatusBadge status={pool.paused ? "paused" : pool.state} />
-                      {pool.provisionCircuitOpen ? <div className="mt-1 text-[11px] text-destructive">Stopped after {pool.provisionFailureCount} failures</div> : pool.provisionRetryAt ? <div className="mt-1 text-[11px] text-amber-400">Retry scheduled</div> : null}
+                      {pool.provisionCircuitOpen ? <div className="mt-1 text-[11px] text-destructive">Paused after {pool.provisionFailureCount} failures · auto-retry in 15 min</div> : pool.provisionRetryAt ? <div className="mt-1 text-[11px] text-amber-400">Retry scheduled</div> : null}
                     </TableCell>
                     <TableCell>
                       {pool.canManage ? <div className="flex justify-end gap-1">

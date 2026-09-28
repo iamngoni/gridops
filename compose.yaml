@@ -5,6 +5,7 @@ services:
     build:
       context: .
       target: api
+    init: true
     restart: unless-stopped
     env_file:
       - ${GRIDOPS_ENV_FILE:-.env}
@@ -31,7 +32,7 @@ services:
     tmpfs:
       - /tmp
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/health"]
+      test: ["CMD", "curl", "--fail", "--silent", "--max-time", "2", "http://127.0.0.1:8080/api/health"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -63,6 +64,7 @@ services:
     build:
       context: .
       target: manager
+    init: true
     restart: unless-stopped
     environment:
       GRIDOPS_MANAGER_TOKEN: ${GRIDOPS_MANAGER_TOKEN:?GRIDOPS_MANAGER_TOKEN is required}
@@ -78,6 +80,7 @@ services:
       GRIDOPS_RUNNER_LOG_MAX_SIZE: ${GRIDOPS_RUNNER_LOG_MAX_SIZE:-20m}
       GRIDOPS_RUNNER_LOG_MAX_FILES: ${GRIDOPS_RUNNER_LOG_MAX_FILES:-5}
       GRIDOPS_RUNNER_PIDS_LIMIT: ${GRIDOPS_RUNNER_PIDS_LIMIT:-1024}
+      GRIDOPS_RUNNER_SWAP_PERCENT: ${GRIDOPS_RUNNER_SWAP_PERCENT:-100}
       GRIDOPS_TART_AGENT_URL: ${GRIDOPS_TART_AGENT_URL:-}
       GRIDOPS_TART_AGENT_TOKEN: ${GRIDOPS_TART_AGENT_TOKEN:-}
     extra_hosts:
@@ -96,7 +99,7 @@ services:
     tmpfs:
       - /tmp
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail --silent --header \"Authorization: Bearer $$GRIDOPS_MANAGER_TOKEN\" http://127.0.0.1:8788/v1/health >/dev/null"]
+      test: ["CMD-SHELL", "curl --fail --silent --max-time 2 --header \"Authorization: Bearer $$GRIDOPS_MANAGER_TOKEN\" http://127.0.0.1:8788/v1/health >/dev/null"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -108,6 +111,7 @@ services:
     build:
       context: .
       target: reconciler
+    init: true
     restart: unless-stopped
     env_file:
       - ${GRIDOPS_ENV_FILE:-.env}

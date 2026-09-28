@@ -9,7 +9,7 @@ use axum::{
     Json,
     body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, Method, StatusCode, header},
+    http::{Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use chrono::{SecondsFormat, Utc};
@@ -28,13 +28,16 @@ use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
 
 use crate::{
     auth::{
-        AuthUser, OptionalAuth, assert_installation_admin, assert_pool_admin, assert_same_origin,
-        audit, require_system_admin,
+        AuthUser, OptionalAuth, assert_installation_admin, assert_pool_admin, audit,
+        require_system_admin,
     },
     error::{ApiError, ApiResult},
     oauth::{control_token, upsert_repository},
     state::AppState,
 };
+
+mod route_security;
+use self::route_security::SameOrigin;
 
 const MAX_ARCHIVED_LOG_BYTES: i64 = 100 * 1_024 * 1_024;
 const MAX_ARCHIVED_LOG_VIEW_BYTES: u64 = 1_000_000;
@@ -1164,11 +1167,10 @@ pub async fn runner_pool_events(
 pub async fn update_runner_pool(
     State(state): State<AppState>,
     Path(pool_id): Path<String>,
-    headers: HeaderMap,
+    _same_origin: SameOrigin,
     user: AuthUser,
     Json(input): Json<UpdateRunnerPool>,
 ) -> ApiResult<Json<Value>> {
-    assert_same_origin(&state, &headers)?;
     input.validate().map_err(ApiError::BadRequest)?;
     let pool = pool_access(&state, &user, &pool_id).await?;
     assert_pool_admin(&state, &user, &pool_id).await?;
@@ -1923,11 +1925,10 @@ pub async fn installation_runner_groups(
 
 pub async fn create_runner_pool(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _same_origin: SameOrigin,
     user: AuthUser,
     Json(input): Json<CreateRunnerPool>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
-    assert_same_origin(&state, &headers)?;
     input.validate().map_err(ApiError::BadRequest)?;
     let bitbucket_connections =
         selected_bitbucket_connections(&state, &user, &input.bitbucket_connection_ids).await?;
@@ -2041,11 +2042,10 @@ pub async fn create_runner_pool(
 pub async fn runner_pool_action(
     State(state): State<AppState>,
     Path(pool_id): Path<String>,
-    headers: HeaderMap,
+    _same_origin: SameOrigin,
     user: AuthUser,
     Json(input): Json<PoolAction>,
 ) -> ApiResult<Json<Value>> {
-    assert_same_origin(&state, &headers)?;
     match input.action.as_str() {
         "pause" => set_pool_paused(&state, &user, &pool_id, true).await?,
         "resume" => set_pool_paused(&state, &user, &pool_id, false).await?,
@@ -2110,10 +2110,9 @@ pub async fn runner_pool_action(
 pub async fn delete_runner_pool(
     State(state): State<AppState>,
     Path(pool_id): Path<String>,
-    headers: HeaderMap,
+    _same_origin: SameOrigin,
     user: AuthUser,
 ) -> ApiResult<Json<Value>> {
-    assert_same_origin(&state, &headers)?;
     pool_access(&state, &user, &pool_id).await?;
     assert_pool_admin(&state, &user, &pool_id).await?;
     sqlx::query("UPDATE runner_pools SET paused=1,state='deleting',updated_at=? WHERE id=?")
@@ -2144,11 +2143,10 @@ pub async fn delete_runner_pool(
 pub async fn runner_action(
     State(state): State<AppState>,
     Path(runner_id): Path<String>,
-    headers: HeaderMap,
+    _same_origin: SameOrigin,
     user: AuthUser,
     Json(input): Json<RunnerAction>,
 ) -> ApiResult<Json<Value>> {
-    assert_same_origin(&state, &headers)?;
     let runner = runner_access(&state, &user, &runner_id).await?;
     assert_installation_admin(&state, &user, runner.installation_id).await?;
     match input.action.as_str() {
@@ -2305,11 +2303,10 @@ pub async fn archived_logs(
 pub async fn workflow_run_action(
     State(state): State<AppState>,
     Path(run_id): Path<i64>,
-    headers: HeaderMap,
+    _same_origin: SameOrigin,
     user: AuthUser,
     Json(input): Json<WorkflowAction>,
 ) -> ApiResult<Json<Value>> {
-    assert_same_origin(&state, &headers)?;
     let run = sqlx::query(
         r#"SELECT repo.owner,repo.name,repo.installation_id FROM workflow_runs wr
         JOIN repositories repo ON repo.id=wr.repository_id JOIN user_installations ui ON ui.installation_id=repo.installation_id
@@ -2731,11 +2728,10 @@ pub async fn settings(
 
 pub async fn save_settings(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _same_origin: SameOrigin,
     user: AuthUser,
     Json(input): Json<SystemSettings>,
 ) -> ApiResult<Json<Value>> {
-    assert_same_origin(&state, &headers)?;
     require_system_admin(&user)?;
     if !(1..=3_650).contains(&input.log_retention_days)
         || !(100..=1_048_576).contains(&input.log_storage_budget_mb)
@@ -2819,11 +2815,10 @@ pub async fn bitbucket_connections(
 
 pub async fn create_bitbucket_connection(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _same_origin: SameOrigin,
     user: AuthUser,
     Json(input): Json<CreateBitbucketConnection>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
-    assert_same_origin(&state, &headers)?;
     require_system_admin(&user)?;
     let name = input.name.trim();
     let workspace = input.workspace.trim().to_lowercase();

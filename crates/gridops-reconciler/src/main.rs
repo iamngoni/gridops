@@ -6,18 +6,18 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use futures_util::StreamExt as _;
 use gridops_core::{
-    BitbucketClient, BitbucketRunnerTarget, Config, GitHubClient, JitRequest, RunnerTarget, Vault,
-    WorkflowJobPage, WorkflowRunPage, assigned_queued_jobs, associate_runner_with_job,
-    connect_database, effective_runner_labels, next_runner_provider, next_runner_repository,
-    now_millis, provider_capacities, provider_capacity_deficit, repository_capacities,
-    repository_capacity_deficit, scale_up_target,
+    BitbucketClient, BitbucketRunnerTarget, Config, GitHubClient, GitHubWorkflowRun, JitRequest,
+    RunnerTarget, Vault, WorkflowJobPage, WorkflowRunPage, assigned_queued_jobs,
+    associate_runner_with_job, connect_database, effective_runner_labels, next_runner_provider,
+    next_runner_repository, now_millis, provider_capacities, provider_capacity_deficit,
+    repository_capacities, repository_capacity_deficit, scale_up_target,
 };
 use reqwest::{Method, StatusCode};
 use secrecy::ExposeSecret as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use sqlx::{FromRow, Row as _, SqlitePool};
+use sqlx::{FromRow, Row as _, SqliteConnection, SqlitePool};
 use tokio::io::AsyncWriteExt as _;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
@@ -307,7 +307,9 @@ async fn reconcile_pool(
     let retry_deferred = pool
         .provision_retry_at
         .is_some_and(|retry_at| retry_at > now_millis());
-    let provisioning_blocked = provisioning_paused || pool.provision_circuit_open || retry_deferred;
+    // An open circuit carries a cool-down in `provision_retry_at`; once it
+    // passes, one attempt probes whether the cause has cleared.
+    let provisioning_blocked = provisioning_paused || retry_deferred;
     let current = runners(app, &pool.id).await?;
     let mut rotated = 0;
     if !provisioning_blocked
@@ -804,8 +806,122 @@ async fn sync_repository_workflows(
     }
     let mut transaction = app.database.begin().await?;
     for run in response.workflow_runs {
-        let updated_at = parse_github_date(Some(&run.updated_at)).unwrap_or(now);
-        sqlx::query(
+        upsert_workflow_run(&mut transaction, repository.id, run, now).await?;
+    }
+    transaction.commit().await?;
+    for run_id in job_run_ids {
+        if let Err(error) = sync_run_jobs(app, repository, run_id, token).await {
+            tracing::warn!(repository = %repository.full_name, run_id, error = ?error, "GitHub workflow job polling failed");
+        }
+    }
+    refresh_stale_runs(app, repository, token, &seen_run_ids).await
+}
+
+/// Runs are only listed while they are among a repository's 50 newest, and
+/// completed runs outside the newest five never have their jobs re-polled. A
+/// run that finishes after falling out of that window would otherwise keep
+/// its jobs `queued` in `GridOps` forever, so a few are revisited each sync.
+async fn refresh_stale_runs(
+    app: &Reconciler,
+    repository: &Repository,
+    token: &str,
+    just_synced: &HashSet<i64>,
+) -> Result<()> {
+    let stale = stale_run_ids(&app.database, repository.id, just_synced).await?;
+    for run_id in stale {
+        let result = app
+            .github
+            .get::<GitHubWorkflowRun>(
+                &format!(
+                    "/repos/{}/{}/actions/runs/{run_id}",
+                    repository.owner, repository.name
+                ),
+                token,
+            )
+            .await;
+        match result {
+            Ok(run) => {
+                let mut transaction = app.database.begin().await?;
+                upsert_workflow_run(&mut transaction, repository.id, run, now_millis()).await?;
+                transaction.commit().await?;
+                if let Err(error) = sync_run_jobs(app, repository, run_id, token).await {
+                    tracing::warn!(repository = %repository.full_name, run_id, error = ?error, "GitHub stale workflow job refresh failed");
+                }
+            }
+            Err(error) if github_not_found(&error) => {
+                close_missing_run(&app.database, run_id).await?;
+            }
+            Err(error) => {
+                tracing::warn!(repository = %repository.full_name, run_id, error = ?error, "GitHub stale workflow run refresh failed");
+            }
+        }
+    }
+    Ok(())
+}
+
+const STALE_RUN_REFRESH_LIMIT: usize = 10;
+
+/// Unfinished runs (or runs with unfinished jobs) that the latest listing did
+/// not cover, least recently refreshed first so every one is eventually seen.
+async fn stale_run_ids(
+    database: &SqlitePool,
+    repository_id: i64,
+    just_synced: &HashSet<i64>,
+) -> Result<Vec<i64>> {
+    let candidates = sqlx::query_scalar::<_, i64>(
+        r#"SELECT wr.id FROM workflow_runs wr
+           WHERE wr.repository_id=? AND (wr.status<>'completed' OR EXISTS (
+             SELECT 1 FROM workflow_jobs wj WHERE wj.run_id=wr.id AND wj.status<>'completed'))
+           ORDER BY wr.updated_at,wr.id LIMIT ?"#,
+    )
+    .bind(repository_id)
+    .bind(i64::try_from(STALE_RUN_REFRESH_LIMIT + just_synced.len()).unwrap_or(i64::MAX))
+    .fetch_all(database)
+    .await?;
+    Ok(candidates
+        .into_iter()
+        .filter(|run_id| !just_synced.contains(run_id))
+        .take(STALE_RUN_REFRESH_LIMIT)
+        .collect())
+}
+
+fn github_not_found(error: &anyhow::Error) -> bool {
+    error.to_string().contains("(404 Not Found)")
+}
+
+/// GitHub deleted the run (retention or manual deletion), so none of its
+/// unfinished jobs can still run.
+async fn close_missing_run(database: &SqlitePool, run_id: i64) -> Result<()> {
+    let now = now_millis();
+    let mut transaction = database.begin().await?;
+    sqlx::query(
+        "UPDATE workflow_runs SET status='completed',conclusion=COALESCE(conclusion,'cancelled'),completed_at=COALESCE(completed_at,?),updated_at=? WHERE id=?",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(run_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE workflow_jobs SET status='completed',conclusion=COALESCE(conclusion,'cancelled'),completed_at=COALESCE(completed_at,?),updated_at=? WHERE run_id=? AND status<>'completed'",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(run_id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn upsert_workflow_run(
+    connection: &mut SqliteConnection,
+    repository_id: i64,
+    run: GitHubWorkflowRun,
+    now: i64,
+) -> Result<()> {
+    let updated_at = parse_github_date(Some(&run.updated_at)).unwrap_or(now);
+    sqlx::query(
             r#"INSERT INTO workflow_runs (
               id,repository_id,workflow_id,workflow_name,run_number,run_attempt,event,status,
               conclusion,head_branch,head_sha,actor_login,html_url,started_at,completed_at,
@@ -821,7 +937,7 @@ async fn sync_repository_workflows(
               github_updated_at=excluded.github_updated_at,updated_at=excluded.updated_at"#,
         )
         .bind(run.id)
-        .bind(repository.id)
+        .bind(repository_id)
         .bind(run.workflow_id)
         .bind(
             run.name
@@ -843,15 +959,8 @@ async fn sync_repository_workflows(
         .bind(updated_at)
         .bind(now)
         .bind(now)
-        .execute(&mut *transaction)
+        .execute(connection)
         .await?;
-    }
-    transaction.commit().await?;
-    for run_id in job_run_ids {
-        if let Err(error) = sync_run_jobs(app, repository, run_id, token).await {
-            tracing::warn!(repository = %repository.full_name, run_id, error = ?error, "GitHub workflow job polling failed");
-        }
-    }
     Ok(())
 }
 
@@ -1829,9 +1938,8 @@ async fn defer_pool_capacity(app: &Reconciler, pool: &Pool, reason: Option<&str>
 
 async fn record_provision_failure(app: &Reconciler, pool: &Pool) -> Result<()> {
     let attempts = pool.provision_failure_count.saturating_add(1);
-    let circuit_open = attempts >= 3;
-    let retry_at =
-        (!circuit_open).then(|| now_millis().saturating_add(provision_backoff_ms(attempts)));
+    let (circuit_open, delay_ms) = provision_failure_policy(attempts);
+    let retry_at = now_millis().saturating_add(delay_ms);
     sqlx::query(
         "UPDATE runner_pools SET provision_failure_count=?,provision_retry_at=?,provision_circuit_open=?,state=?,updated_at=? WHERE id=?",
     )
@@ -1843,18 +1951,30 @@ async fn record_provision_failure(app: &Reconciler, pool: &Pool) -> Result<()> {
     .bind(&pool.id)
     .execute(&app.database)
     .await?;
-    if circuit_open {
+    if circuit_open && !pool.provision_circuit_open {
         system_event(
             app,
             Some(&pool.id),
             "error",
             "Provisioning circuit opened",
-            "GridOps stopped provisioning this pool after three consecutive failures. Retry the pool after correcting the cause.",
-            json!({ "attempts": attempts }),
+            "GridOps paused provisioning for this pool after three consecutive failures and retries automatically every 15 minutes. Retry the pool to try sooner.",
+            json!({ "attempts": attempts, "retryAt": retry_at }),
         )
         .await?;
     }
     Ok(())
+}
+
+const PROVISION_CIRCUIT_COOLDOWN_MS: i64 = 15 * 60 * 1_000;
+
+/// Whether the pool's circuit is open after `attempts` consecutive failures,
+/// and how long to wait before the next attempt.
+fn provision_failure_policy(attempts: i64) -> (bool, i64) {
+    if attempts >= 3 {
+        (true, PROVISION_CIRCUIT_COOLDOWN_MS)
+    } else {
+        (false, provision_backoff_ms(attempts))
+    }
 }
 
 fn provision_backoff_ms(attempts: i64) -> i64 {
@@ -2129,6 +2249,92 @@ mod tests {
         assert_eq!(provision_backoff_ms(1), 30_000);
         assert_eq!(provision_backoff_ms(2), 60_000);
         assert_eq!(provision_backoff_ms(3), 120_000);
+    }
+
+    #[test]
+    fn open_circuits_cool_down_instead_of_blocking_forever() {
+        assert_eq!(provision_failure_policy(1), (false, 30_000));
+        assert_eq!(provision_failure_policy(2), (false, 60_000));
+        assert_eq!(
+            provision_failure_policy(3),
+            (true, PROVISION_CIRCUIT_COOLDOWN_MS)
+        );
+        assert_eq!(
+            provision_failure_policy(9),
+            (true, PROVISION_CIRCUIT_COOLDOWN_MS)
+        );
+    }
+
+    #[test]
+    fn recognizes_github_not_found_errors() {
+        assert!(github_not_found(&anyhow::anyhow!(
+            "GitHub API request failed (404 Not Found): {{\"message\":\"Not Found\"}}"
+        )));
+        assert!(!github_not_found(&anyhow::anyhow!(
+            "GitHub API request failed (502 Bad Gateway): Server Error"
+        )));
+    }
+
+    #[tokio::test]
+    async fn stale_runs_are_revisited_until_github_reports_them_finished() -> Result<()> {
+        let directory =
+            std::env::temp_dir().join(format!("gridops-reconciler-test-{}", uuid::Uuid::new_v4()));
+        let database = connect_database_path(&directory.join("gridops.sqlite")).await?;
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO installations (id,account_id,account_login,account_type,target_type,repository_selection,created_at,updated_at)
+              VALUES (1,1,'octo','User','User','all',1,1);
+            INSERT INTO repositories (id,installation_id,owner,name,full_name,private,default_branch,html_url,last_synced_at,created_at,updated_at)
+              VALUES
+              (10,1,'octo','app','octo/app',0,'main','https://github.com/octo/app',1,1,1),
+              (11,1,'octo','other','octo/other',0,'main','https://github.com/octo/other',1,1,1);
+            INSERT INTO workflow_runs (id,repository_id,workflow_name,run_number,event,status,conclusion,head_sha,html_url,github_created_at,github_updated_at,created_at,updated_at)
+              VALUES
+              (20,10,'CI',1,'push','queued',NULL,'a','https://github.com/octo/app/actions/runs/20',1,1,1,30),
+              (21,10,'CI',2,'push','completed','success','b','https://github.com/octo/app/actions/runs/21',1,1,1,10),
+              (22,10,'CI',3,'push','completed','success','c','https://github.com/octo/app/actions/runs/22',1,1,1,20),
+              (23,10,'CI',4,'push','in_progress',NULL,'d','https://github.com/octo/app/actions/runs/23',1,1,1,5),
+              (24,11,'CI',1,'push','queued',NULL,'e','https://github.com/octo/other/actions/runs/24',1,1,1,1);
+            INSERT INTO workflow_jobs (id,run_id,name,status,conclusion,labels,html_url,created_at,updated_at)
+              VALUES
+              (30,20,'build','queued',NULL,'[]','https://github.com/octo/app/actions/runs/20/job/30',1,1),
+              (31,21,'build','queued',NULL,'[]','https://github.com/octo/app/actions/runs/21/job/31',1,1),
+              (32,22,'build','completed','success','[]','https://github.com/octo/app/actions/runs/22/job/32',1,1),
+              (33,23,'build','in_progress',NULL,'[]','https://github.com/octo/app/actions/runs/23/job/33',1,1);
+            "#,
+        )
+        .execute(&database)
+        .await?;
+
+        // Run 22 is finished everywhere and run 24 belongs to another
+        // repository; run 21 is completed but its job never caught up.
+        assert_eq!(
+            stale_run_ids(&database, 10, &HashSet::new()).await?,
+            vec![23, 21, 20]
+        );
+        assert_eq!(
+            stale_run_ids(&database, 10, &HashSet::from([23])).await?,
+            vec![21, 20]
+        );
+
+        close_missing_run(&database, 20).await?;
+        let (status, conclusion) = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status,conclusion FROM workflow_jobs WHERE id=30",
+        )
+        .fetch_one(&database)
+        .await?;
+        assert_eq!(
+            (status.as_str(), conclusion.as_deref()),
+            ("completed", Some("cancelled"))
+        );
+        assert_eq!(
+            stale_run_ids(&database, 10, &HashSet::new()).await?,
+            vec![23, 21]
+        );
+
+        database.close().await;
+        fs::remove_dir_all(directory)?;
+        Ok(())
     }
 
     #[tokio::test]

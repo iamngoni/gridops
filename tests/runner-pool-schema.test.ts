@@ -94,7 +94,7 @@ describe("runner pool validation", () => {
 
   it("validates editable configuration without allowing a destination change", () => {
     const { installationId: _installationId, scope: _scope, ...configuration } = validPool;
-    expect(updateRunnerPoolSchema.parse(configuration)).toEqual(configuration);
+    expect(updateRunnerPoolSchema.parse(configuration)).toEqual({ ...configuration, macosRuntime: "vm" });
     expect(updateRunnerPoolSchema.safeParse({ ...configuration, desiredCount: 11, maxCount: 10 }).success).toBe(false);
     expect(updateRunnerPoolSchema.safeParse({ ...configuration, installationId: 999 }).success).toBe(true);
     expect("installationId" in updateRunnerPoolSchema.parse({ ...configuration, installationId: 999 })).toBe(false);
