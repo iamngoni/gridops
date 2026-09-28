@@ -154,11 +154,12 @@ export function JobLogViewer({
             <span className={cn("size-1.5 rounded-full", following ? "bg-success live-pulse" : "bg-warning")} />{following ? "Following" : "Paused"}
           </span>
         ) : null}
-        <label className="relative hidden h-7 w-52 items-center sm:flex">
+        {/* Its own full-width row on phones; inline beside the title from sm up. */}
+        <label className="relative order-last flex h-8 w-full items-center sm:order-none sm:h-7 sm:w-52">
           <Search className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground" />
           <input
             aria-label="Search job output"
-            className="h-7 w-full rounded-md border border-border-strong bg-panel pl-7 pr-2 text-xs outline-none placeholder:text-faint focus:border-primary/70"
+            className="h-full w-full rounded-md border border-border-strong bg-panel pl-7 pr-2 text-xs outline-none placeholder:text-faint focus:border-primary/70"
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search output…"
             value={query}

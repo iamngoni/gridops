@@ -182,6 +182,16 @@
     cursor: pointer;
   }
 
+  /* iOS zooms the page into any field set below 16px; touch screens get 16px text in fields. */
+  @media (pointer: coarse) {
+    input,
+    textarea,
+    select,
+    [cmdk-input] {
+      font-size: max(16px, 1em);
+    }
+  }
+
   ::selection {
     background: color-mix(in oklab, var(--primary) 32%, transparent);
   }

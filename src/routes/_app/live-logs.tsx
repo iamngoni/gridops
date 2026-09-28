@@ -1,5 +1,5 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { GitPullRequestArrow, Radio } from "lucide-react";
+import { ChevronLeft, GitPullRequestArrow, Radio } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { ListPagination } from "~/components/list-pagination";
@@ -10,6 +10,7 @@ import { buttonVariants } from "~/components/ui/button";
 import { getLiveLogsPage } from "~/features/operations/operations.functions";
 import { JobLogViewer } from "~/features/workflow-runs/job-log-viewer";
 import { parsePage } from "~/lib/pagination";
+import { useMediaQuery } from "~/lib/use-media-query";
 import { cn, formatAge } from "~/lib/utils";
 
 export const Route = createFileRoute("/_app/live-logs")({
@@ -39,6 +40,11 @@ function LiveLogsPage() {
   const targets = targetPage.items;
   const selected = targets.find((item) => item.id === targetId) ?? targets[0];
   const selectedId = selected?.id;
+  // Wide screens show the list beside the log. Narrow ones show one at a time:
+  // the list until a job is chosen, then that job's log.
+  const wide = useMediaQuery("(min-width: 48rem)");
+  const showList = wide || !search.target;
+  const showLog = wide || Boolean(search.target);
 
   useEffect(() => {
     if (!data.authenticated) return undefined;
@@ -68,7 +74,9 @@ function LiveLogsPage() {
 
   function selectTarget(nextTargetId: string) {
     setTargetId(nextTargetId);
-    void navigate({ replace: true, search: { page: search.page, target: nextTargetId } });
+    // Side by side, switching jobs shouldn't fill the history; on a phone,
+    // opening a log is a step the back gesture should undo.
+    void navigate({ replace: wide, search: { page: search.page, target: nextTargetId } });
   }
 
   if (targets.length === 0) {
@@ -84,9 +92,21 @@ function LiveLogsPage() {
 
   return (
     <>
-      <PageHeader count={targetPage.total || undefined} icon={Radio} title="Live logs" />
+      {showList ? (
+        <PageHeader count={targetPage.total || undefined} icon={Radio} title="Live logs" />
+      ) : (
+        // The log's own header names the job, so the bar above is just the way back.
+        <PageHeader
+          documentTitle={selected?.jobName ?? "Live logs"}
+          title={
+            <Link className="-ml-1.5 inline-flex items-center gap-0.5 rounded-md py-0.5 pl-0.5 pr-1.5 text-muted-foreground transition-colors hover:bg-hover hover:text-foreground" search={search.page ? { page: search.page } : {}} to="/live-logs">
+              <ChevronLeft className="size-4" />Live logs
+            </Link>
+          }
+        />
+      )}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <aside className="flex max-h-72 shrink-0 flex-col border-b border-border md:max-h-none md:w-[320px] md:border-b-0 md:border-r">
+        <aside className={cn("min-h-0 flex-1 flex-col md:w-[320px] md:flex-none md:border-r md:border-border", showList ? "flex" : "hidden")}>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {targets.map((target) => {
               const targetState = target.jobConclusion ?? target.jobStatus;
@@ -120,7 +140,7 @@ function LiveLogsPage() {
           </div>
         </aside>
 
-        {selected ? (
+        {selected && showLog ? (
           <JobLogViewer
             fallback={{ name: selected.jobName, status: selected.jobConclusion ?? selected.jobStatus, repository: selected.repository, workflowName: selected.workflowName, runNumber: selected.runNumber, runId: selected.runId }}
             jobId={selected.jobId}
