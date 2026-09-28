@@ -1,3 +1,3 @@
-import { applyTheme, readThemePreference } from "~/lib/theme";
+import { applyTheme, effectiveTheme, readThemePreference, systemPrefersDark } from "~/lib/theme";
 
-applyTheme(readThemePreference(window.localStorage));
+applyTheme(effectiveTheme(readThemePreference(window.localStorage), systemPrefersDark()));

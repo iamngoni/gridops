@@ -1,9 +1,10 @@
 import { createFileRoute, getRouteApi } from "@tanstack/react-router";
-import { Copy, ExternalLink, Github, LoaderCircle, Plus, RefreshCw } from "lucide-react";
+import { ExternalLink, Github, LoaderCircle, Plus, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
 import { AsyncActionButton } from "~/components/async-action-button";
+import { CopyButton } from "~/components/copy-button";
 import { Callout, EmptyState } from "~/components/page";
 import { SettingsLayout, SettingsRow, SettingsSection } from "~/components/settings-ui";
 import { StatusDot } from "~/components/status-icon";
@@ -116,7 +117,7 @@ function CopyRow({ label, value }: { label: string; value: string }) {
       <div className="flex items-center gap-2">
         <code className="min-w-0 flex-1 truncate rounded-md border border-border bg-panel-subtle px-2.5 py-1.5 font-mono text-xs text-secondary-foreground">{value}</code>
         <Tooltip content="Copy">
-          <Button aria-label={`Copy ${label}`} onClick={() => void navigator.clipboard.writeText(value).then(() => toast.success(`${label} copied.`))} size="icon-sm" variant="outline"><Copy /></Button>
+          <CopyButton label={label} size="icon-sm" value={value} variant="outline" />
         </Tooltip>
       </div>
     </SettingsRow>

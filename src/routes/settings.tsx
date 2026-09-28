@@ -1,5 +1,5 @@
 import { Link, Outlet, createFileRoute, useRouterState } from "@tanstack/react-router";
-import { ChevronLeft, CloudCog, Github, Palette, Server, Settings2, UsersRound, type LucideIcon } from "lucide-react";
+import { ChevronLeft, CloudCog, Github, Palette, Server, Settings, Settings2, UsersRound, type LucideIcon } from "lucide-react";
 
 import { AppShell } from "~/components/app-shell";
 import { LoadingRows, PageBody, PageHeader } from "~/components/page";
@@ -41,6 +41,8 @@ const sections: Array<{ label: string; items: SettingsNavItem[] }> = [
 function SettingsLayout() {
   return (
     <AppShell sidebar={<SettingsSidebar />}>
+      {/* Settings pages carry their own headings; on narrow screens this bar holds the menu button. */}
+      <PageHeader className="lg:hidden" documentTitle={false} icon={Settings} title="Settings" />
       <PageBody>
         <Outlet />
       </PageBody>

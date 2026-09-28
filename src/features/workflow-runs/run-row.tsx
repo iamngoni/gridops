@@ -33,7 +33,13 @@ export function RunRow({ run, meta, trailing, className }: { run: RunRowData; me
       <span className="hidden w-40 shrink-0 truncate text-xs text-muted-foreground sm:block" title={run.repository}>
         {repositoryName}{run.runNumber ? <span className="text-faint"> #{run.runNumber}</span> : null}
       </span>
-      <span className="min-w-0 flex-1 truncate font-medium text-foreground">{run.workflow}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium text-foreground">{run.workflow}</span>
+        {/* Narrow screens drop the repository column, so it moves under the title. */}
+        <span className="block truncate text-2xs text-muted-foreground sm:hidden">
+          {repositoryName}{run.runNumber ? ` #${run.runNumber}` : null}{run.branch ? ` · ${run.branch}` : null}
+        </span>
+      </span>
       {meta}
       {run.branch ? (
         <span className="hidden max-w-44 shrink-0 items-center gap-1 truncate rounded-full border border-border-strong px-2 py-0.5 font-mono text-2xs text-muted-foreground md:inline-flex" title={run.branch}>

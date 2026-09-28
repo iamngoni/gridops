@@ -11,6 +11,17 @@ export type Viewer = {
 
 type ApiOptions = Omit<RequestInit, "body"> & { body?: unknown };
 
+/** A non-2xx response; `status` lets callers tell client mistakes from server failures. */
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export async function api<T>(path: string, options: ApiOptions = {}): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set("Accept", "application/json");
@@ -23,7 +34,7 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
   });
   if (!response.ok) {
     const error = await response.json().catch(() => null) as { error?: string } | null;
-    throw new Error(error?.error ?? `GridOps request failed (${response.status}).`);
+    throw new ApiError(error?.error ?? `GridOps request failed (${response.status}).`, response.status);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

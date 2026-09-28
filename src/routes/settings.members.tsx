@@ -6,6 +6,7 @@ import { SettingsLayout, SettingsSection } from "~/components/settings-ui";
 import { Avatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import { Tooltip } from "~/components/ui/tooltip";
 import { updateUserRoleAction } from "~/features/operations/operations.functions";
 import { useAction } from "~/lib/use-action";
 import { formatRelativeTime } from "~/lib/utils";
@@ -32,6 +33,21 @@ function MembersSettings() {
         <SettingsSection title={`${users.length} ${users.length === 1 ? "member" : "members"}`}>
           {users.map((member) => {
             const nextRole = member.role === "admin" ? "member" : "admin";
+            const lastAdmin = nextRole === "member" && !member.canDemote;
+            const roleButton = (
+              <Button
+                disabled={lastAdmin}
+                onClick={() => void run({
+                  action: () => updateUserRoleAction({ data: { userId: member.id, role: nextRole } }),
+                  confirm: nextRole === "member" ? `Remove administrator access from @${member.login}?` : `Grant @${member.login} administrator access?`,
+                  success: `@${member.login} is now ${nextRole === "admin" ? "an admin" : "a member"}.`,
+                })}
+                size="sm"
+                variant="outline"
+              >
+                {nextRole === "admin" ? "Make admin" : "Make member"}
+              </Button>
+            );
             return (
               <div className="flex items-center gap-3 px-4 py-3" key={member.id}>
                 <Avatar name={member.login} size={32} src={member.avatarUrl} />
@@ -43,18 +59,8 @@ function MembersSettings() {
                   <div className="truncate text-xs text-muted-foreground">@{member.login} · last signed in {formatRelativeTime(member.lastLoginAt)}</div>
                 </div>
                 <Badge dot={member.role === "admin" ? "bg-primary" : false} variant="secondary">{member.role === "admin" ? "Admin" : "Member"}</Badge>
-                <Button
-                  disabled={nextRole === "member" && !member.canDemote}
-                  onClick={() => void run({
-                    action: () => updateUserRoleAction({ data: { userId: member.id, role: nextRole } }),
-                    confirm: nextRole === "member" ? `Remove administrator access from @${member.login}?` : `Grant @${member.login} administrator access?`,
-                    success: `@${member.login} is now ${nextRole === "admin" ? "an admin" : "a member"}.`,
-                  })}
-                  size="sm"
-                  variant="outline"
-                >
-                  {nextRole === "admin" ? "Make admin" : "Make member"}
-                </Button>
+                {/* A disabled button ignores the pointer, so the tooltip hangs off a focusable wrapper. */}
+                {lastAdmin ? <Tooltip content="GridOps needs at least one administrator"><span className="inline-flex" tabIndex={0}>{roleButton}</span></Tooltip> : roleButton}
               </div>
             );
           })}

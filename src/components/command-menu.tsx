@@ -1,9 +1,10 @@
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
-import { ArrowRight, Boxes, LoaderCircle, LogOut, Moon, Plus, RefreshCw, Search, Sun } from "lucide-react";
+import { Activity, ArrowRight, Boxes, LoaderCircle, LogOut, Moon, PackageSearch, Plus, RefreshCw, Search, Sun, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { RunStatusIcon } from "./status-icon";
 import { useTheme } from "./theme-provider";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog";
 import { Shortcut } from "./ui/kbd";
@@ -11,7 +12,15 @@ import { searchAction, syncGitHubAction } from "~/features/operations/operations
 import { api } from "~/lib/api";
 import { allNavItems } from "~/lib/navigation";
 
-type SearchResult = { kind: string; id: string; title: string; subtitle: string; href: string };
+type SearchResult = { kind: string; id: string; title: string; subtitle: string; href: string; state?: string | null };
+
+const kindIcons: Record<string, LucideIcon> = { repository: PackageSearch, "runner pool": Boxes, runner: Activity };
+
+function ResultIcon({ result }: { result: SearchResult }) {
+  if (result.kind === "workflow run") return <RunStatusIcon status={result.state} />;
+  const Icon = kindIcons[result.kind] ?? Search;
+  return <Icon />;
+}
 
 const itemClassName =
   "flex h-10 cursor-default select-none items-center gap-3 rounded-md px-3 text-sm text-secondary-foreground outline-none data-[selected=true]:bg-popover-hover data-[selected=true]:text-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground";
@@ -48,7 +57,7 @@ export function CommandMenu({ open, onOpenChange, signedIn }: { open: boolean; o
 
   return (
     <Dialog onOpenChange={(next) => { onOpenChange(next); if (!next) setQuery(""); }} open={open}>
-      <DialogContent aria-describedby={undefined} className="max-w-[640px]">
+      <DialogContent aria-describedby={undefined} className="max-w-[640px]" instant>
         <DialogTitle className="sr-only">Command menu</DialogTitle>
         <DialogDescription className="sr-only">Search GridOps or run a command.</DialogDescription>
         <Command className="flex min-h-0 flex-col" label="Command menu" loop>
@@ -78,12 +87,12 @@ export function CommandMenu({ open, onOpenChange, signedIn }: { open: boolean; o
                     onSelect={() => run(() => void navigate({ href: result.href }))}
                     value={`${result.kind} ${result.title} ${result.id}`}
                   >
-                    <Boxes />
+                    <ResultIcon result={result} />
                     <span className="min-w-0 flex-1 truncate">
                       <span className="text-foreground">{result.title}</span>
                       <span className="ml-2 text-xs text-muted-foreground">{result.subtitle}</span>
                     </span>
-                    <span className="text-2xs capitalize text-faint">{result.kind}</span>
+                    <span className="shrink-0 text-2xs text-faint">{result.kind.charAt(0).toUpperCase() + result.kind.slice(1)}</span>
                   </Command.Item>
                 ))}
               </Command.Group>

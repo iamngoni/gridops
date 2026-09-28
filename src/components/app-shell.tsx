@@ -1,6 +1,7 @@
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Link, getRouteApi, useNavigate, useRouterState } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight, Command as CommandIcon, LogOut, Moon, Search, Settings, SquarePen, Sun } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ShellContext } from "./app-shell-context";
 import { CommandMenu } from "./command-menu";
@@ -8,6 +9,7 @@ import { GridMark } from "./grid-logo";
 import { StatusDot } from "./status-icon";
 import { useTheme } from "./theme-provider";
 import { Avatar } from "./ui/avatar";
+import { IS_APPLE_PLATFORM } from "./ui/kbd";
 import { Button, buttonVariants } from "./ui/button";
 import {
   DropdownMenu,
@@ -40,6 +42,16 @@ export function AppShell({ children, sidebar }: { children: React.ReactNode; sid
   const navigate = useNavigate();
   const viewer = getRouteApi("__root__").useLoaderData();
 
+  // The drawer is modal, so it must not outlive the layout it belongs to: once
+  // the docked sidebar takes over, a hidden open drawer would still block clicks.
+  useEffect(() => {
+    if (!mobileOpen || typeof window.matchMedia !== "function") return undefined;
+    const docked = window.matchMedia("(min-width: 64rem)");
+    const close = () => { if (docked.matches) setMobileOpen(false); };
+    docked.addEventListener("change", close);
+    return () => docked.removeEventListener("change", close);
+  }, [mobileOpen]);
+
   const openCommandMenu = useCallback(() => setCommandOpen(true), []);
   const openNavigation = useCallback(() => setMobileOpen(true), []);
   const shell = useMemo(() => ({ openCommandMenu, openNavigation }), [openCommandMenu, openNavigation]);
@@ -69,16 +81,22 @@ export function AppShell({ children, sidebar }: { children: React.ReactNode; sid
   return (
     <ShellContext.Provider value={shell}>
       <div className="fixed inset-0 flex overflow-hidden bg-background text-foreground">
+        <a className="sr-only z-[100] rounded-md bg-popover px-3 py-2 text-sm font-medium shadow-popover focus:not-sr-only focus:fixed focus:left-3 focus:top-3" href="#main">Skip to content</a>
         <div className="hidden lg:flex">{sidebar ?? <Sidebar onSearch={openCommandMenu} viewer={viewer} />}</div>
-        {mobileOpen ? (
-          <div className="fixed inset-0 z-50 flex lg:hidden">
-            <button aria-label="Close navigation" className="absolute inset-0 bg-black/50" onClick={() => setMobileOpen(false)} type="button" />
-            <div className="relative flex h-full border-r border-border bg-background shadow-popover animate-in slide-in-from-left-4">
+        {/* A modal drawer on narrow screens: Escape and the backdrop close it, and focus stays inside while open. */}
+        <DialogPrimitive.Root onOpenChange={setMobileOpen} open={mobileOpen}>
+          <DialogPrimitive.Portal>
+            <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 lg:hidden data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-150" />
+            <DialogPrimitive.Content
+              aria-describedby={undefined}
+              className="ease-drawer fixed inset-y-0 left-0 z-50 flex border-r border-border bg-background shadow-popover outline-none lg:hidden data-[state=open]:animate-in data-[state=open]:slide-in-from-left-8 data-[state=open]:fade-in-0 data-[state=open]:duration-300 data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left-8 data-[state=closed]:fade-out-0 data-[state=closed]:duration-200"
+            >
+              <DialogPrimitive.Title className="sr-only">Navigation</DialogPrimitive.Title>
               {sidebar ? <div onClickCapture={(event) => { if ((event.target as HTMLElement).closest("a")) setMobileOpen(false); }}>{sidebar}</div> : <Sidebar onNavigate={() => setMobileOpen(false)} onSearch={() => { setMobileOpen(false); openCommandMenu(); }} viewer={viewer} />}
-            </div>
-          </div>
-        ) : null}
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-panel lg:my-2 lg:mr-2 lg:rounded-lg lg:border lg:border-border lg:shadow-panel">
+            </DialogPrimitive.Content>
+          </DialogPrimitive.Portal>
+        </DialogPrimitive.Root>
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-panel outline-none lg:my-2 lg:mr-2 lg:rounded-lg lg:border lg:border-border lg:shadow-panel" id="main" tabIndex={-1}>
           {children}
         </main>
       </div>
@@ -145,7 +163,7 @@ function Sidebar({ viewer, onSearch, onNavigate }: { viewer: Viewer | null; onSe
         <div className="flex h-7 items-center gap-2 px-2 text-2xs text-faint">
           <StatusDot tone="success" />
           <span className="flex-1">Control plane online</span>
-          <button className="inline-flex items-center gap-1 rounded px-1 hover:text-muted-foreground" onClick={onSearch} type="button"><CommandIcon className="size-3" />K</button>
+          <button aria-label="Search and commands" className="inline-flex items-center gap-1 rounded px-1 hover:text-muted-foreground" onClick={onSearch} type="button">{IS_APPLE_PLATFORM ? <CommandIcon className="size-3" /> : "Ctrl "}K</button>
         </div>
       </div>
     </aside>

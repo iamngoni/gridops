@@ -24,6 +24,7 @@ function PoolLayout() {
       <PageHeader
         actions={pool.canManage ? <PoolActionsMenu pool={pool} showOpen={false} triggerVariant="outline" /> : null}
         breadcrumbs={[{ label: "Runner pools", to: "/runner-pools" }]}
+        documentTitle={pool.name}
         title={<span className="flex items-center gap-2"><StatusDot status={pool.paused ? "paused" : pool.state} />{pool.name}</span>}
       />
       <PageToolbar>

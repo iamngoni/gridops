@@ -15,7 +15,7 @@ import { syncGitHubAction } from "~/features/operations/operations.functions";
 import { humanizeEvent } from "~/features/runner-pools/pool-events";
 import { RunRow } from "~/features/workflow-runs/run-row";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
-import { cn, formatAge } from "~/lib/utils";
+import { cn, formatAge, formatDateTime } from "~/lib/utils";
 
 export const Route = createFileRoute("/_app/")({
   loader: () => getDashboardOverview(),
@@ -96,7 +96,7 @@ function MetricStrip({ data }: { data: DashboardOverview }) {
     { label: "Runners", value: data.metrics.runners, hint: `${data.metrics.online} online`, to: "/runners", tone: data.metrics.online > 0 ? "success" : "neutral" },
     { label: "Busy", value: data.metrics.busy, hint: "Running jobs now", to: "/runners", tone: data.metrics.busy > 0 ? "progress" : "neutral" },
     { label: "Queued jobs", value: data.metrics.queuedJobs, hint: data.metrics.queuedJobs > 0 ? "Waiting for a runner" : "Queue is clear", to: "/workflow-runs", tone: data.metrics.queuedJobs > 0 ? "warning" : "success" },
-    { label: "Success rate", value: data.metrics.successRate === null ? "—" : `${data.metrics.successRate}%`, hint: "Completed runs", to: "/workflow-runs", tone: "neutral" },
+    { label: "Success rate", value: data.metrics.successRate === null ? "—" : `${data.metrics.successRate}%`, hint: "Completed runs", to: "/workflow-runs", tone: successTone(data.metrics.successRate) },
   ] as const;
   return (
     <section aria-label="Runner metrics" className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border xl:grid-cols-4">
@@ -115,6 +115,11 @@ function MetricStrip({ data }: { data: DashboardOverview }) {
   );
 }
 
+function successTone(rate: number | null) {
+  if (rate === null) return "neutral";
+  return rate >= 90 ? "success" : rate >= 70 ? "warning" : "danger";
+}
+
 function ViewAll({ to, label = "View all" }: { to: string; label?: string }) {
   return <Link className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-hover hover:text-foreground" to={to}>{label}<ArrowRight className="size-3" /></Link>;
 }
@@ -124,7 +129,10 @@ function CapacitySection({ installations }: { installations: number }) {
   const [history, setHistory] = useState<CapacityHistory["points"]>([]);
   const [loading, setLoading] = useState(installations > 0);
   const [error, setError] = useState<string | null>(null);
-  const current = history.at(-1);
+  // The legend doubles as the readout: it follows the pointer across the chart
+  // and otherwise shows the most recent sample.
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const current = (hoverIndex === null ? undefined : history[hoverIndex]) ?? history.at(-1);
 
   useEffect(() => {
     if (installations === 0) return undefined;
@@ -176,12 +184,22 @@ function CapacitySection({ installations }: { installations: number }) {
           <Legend color="var(--success)" label="Available" value={current?.available} />
           <Legend color="var(--info)" label="Busy" value={current?.busy} />
           <Legend color="var(--warning)" label="Queued" value={current?.queued} />
-          {error ? <span className="ml-auto text-danger">{error}</span> : null}
+          {error ? <span className="ml-auto text-danger">{error}</span> : current ? (
+            <span className="tabular ml-auto text-faint">{hoverIndex === null ? "Latest · " : null}{formatDateTime(current.recordedAt)}</span>
+          ) : null}
         </div>
         {history.length > 0 ? (
           <div className="h-60 w-full px-2 pb-2 pt-4">
             <ResponsiveContainer height="100%" width="100%">
-              <AreaChart data={history} margin={{ bottom: 0, left: 0, right: 12, top: 4 }}>
+              <AreaChart
+                data={history}
+                margin={{ bottom: 0, left: 0, right: 12, top: 4 }}
+                onMouseLeave={() => setHoverIndex(null)}
+                onMouseMove={(state) => {
+                  const index = Number(state.activeTooltipIndex);
+                  setHoverIndex(Number.isInteger(index) ? index : null);
+                }}
+              >
                 <defs>
                   {(["success", "info", "warning"] as const).map((tone) => (
                     <linearGradient id={`capacity-${tone}`} key={tone} x1="0" x2="0" y1="0" y2="1">
@@ -193,11 +211,8 @@ function CapacitySection({ installations }: { installations: number }) {
                 <CartesianGrid stroke="var(--border)" vertical={false} />
                 <XAxis axisLine={false} dataKey="recordedAt" minTickGap={48} tick={{ fill: "var(--faint)", fontSize: 11 }} tickFormatter={(value: string) => formatCapacityTick(value, capacityWindow)} tickLine={false} />
                 <YAxis allowDecimals={false} axisLine={false} tick={{ fill: "var(--faint)", fontSize: 11 }} tickLine={false} tickMargin={4} width={32} />
-                <ChartTooltip
-                  contentStyle={{ background: "var(--popover)", border: "1px solid var(--border-strong)", borderRadius: 8, boxShadow: "var(--popover-shadow)", color: "var(--foreground)", fontSize: 12 }}
-                  cursor={{ stroke: "var(--border-strong)" }}
-                  labelFormatter={(value) => new Date(String(value)).toLocaleString()}
-                />
+                {/* The legend above shows the hovered values, so only the cursor line is drawn here. */}
+                <ChartTooltip content={() => null} cursor={{ stroke: "var(--border-strong)" }} isAnimationActive={false} />
                 <Area dataKey="available" isAnimationActive={false} fill="url(#capacity-success)" name="Available" stroke="var(--success)" strokeWidth={1.5} type="monotone" />
                 <Area dataKey="busy" isAnimationActive={false} fill="url(#capacity-info)" name="Busy" stroke="var(--info)" strokeWidth={1.5} type="monotone" />
                 <Area dataKey="queued" isAnimationActive={false} fill="url(#capacity-warning)" name="Queued" stroke="var(--warning)" strokeWidth={1.5} type="monotone" />
@@ -274,8 +289,8 @@ function AttentionSection({ data }: { data: DashboardOverview }) {
       <SectionHeading actions={<span className="text-xs text-faint">Last {windowHours}h</span>}>Service level</SectionHeading>
       <div className="grid grid-cols-3 overflow-hidden rounded-lg border border-border">
         <SloCell hint={queue.p95Seconds === null ? "Queue is clear" : `p95 ${formatSeconds(queue.p95Seconds)}`} label="Oldest queued" value={formatSeconds(queue.oldestSeconds)} />
-        <SloCell className="border-l" hint={startLatency.sampleSize ? `p95 ${formatSeconds(startLatency.p95Seconds)} · ${startLatency.sampleSize} starts` : "No starts"} label="Start latency" value={formatSeconds(startLatency.p50Seconds)} />
-        <SloCell className="border-l" hint={failures.length ? failures.map((item) => `${item.count} ${item.reason}`).join(" · ") : "None"} label="Failures" value={String(failures.reduce((total, item) => total + item.count, 0))} />
+        <SloCell className="border-l" hint={startLatency.sampleSize ? phrases([`p95 ${formatSeconds(startLatency.p95Seconds)}`, `${startLatency.sampleSize} starts`]) : "No starts"} label="Start latency" value={formatSeconds(startLatency.p50Seconds)} />
+        <SloCell className="border-l" hint={failures.length ? phrases(failures.map((item) => `${item.count} ${failureLabel(item.reason)}`)) : "None"} label="Failures" value={String(failures.reduce((total, item) => total + item.count, 0))} />
       </div>
       <div className="overflow-hidden rounded-lg border border-border">
         <div className="flex h-9 items-center gap-2 border-b border-border bg-panel-subtle px-4 text-xs font-medium">
@@ -303,9 +318,20 @@ function SloCell({ label, value, hint, className }: { label: string; value: stri
     <div className={cn("min-w-0 px-3 py-3", className)}>
       <div className="truncate text-xs text-muted-foreground">{label}</div>
       <div className="tabular mt-1 text-lg font-semibold tracking-tight">{value}</div>
-      <div className="mt-0.5 truncate text-2xs text-faint" title={hint}>{hint}</div>
+      <div className="mt-0.5 line-clamp-2 text-2xs text-faint" title={hint}>{hint}</div>
     </div>
   );
+}
+
+/** Joins short phrases with " · ", letting lines wrap only between them, never inside "16 failed". */
+function phrases(parts: string[]) {
+  return parts.map((part) => part.replaceAll(" ", "\u00a0")).join(" · ");
+}
+
+/** GitHub conclusions as they read in a sentence: "16 failed", "2 timed out". */
+function failureLabel(conclusion: string) {
+  const labels: Record<string, string> = { failure: "failed", startup_failure: "failed to start", timed_out: "timed out", action_required: "need action" };
+  return labels[conclusion] ?? conclusion.replaceAll("_", " ");
 }
 
 function formatSeconds(value: number | null) {

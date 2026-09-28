@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { MoreHorizontal, Pause, Play, RefreshCw, RotateCcw, Square, Terminal, Trash2 } from "lucide-react";
 
-import { listRowClassName } from "~/components/page";
+import { listRowClassName, rowActionClassName } from "~/components/page";
 import { StatusBadge, statusLabel } from "~/components/status-icon";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -22,8 +22,12 @@ export function RunnerRow({ runner, showPool = true }: { runner: Runner; showPoo
     <div className={cn(listRowClassName, "relative pr-2")}>
       <Link aria-label={`Open logs for ${runner.name}`} className="absolute inset-0 outline-none" data-list-row="" search={{ target: runner.id }} to="/live-logs" />
       <Tooltip content={statusLabel(state)}><span className="relative inline-flex"><StatusBadge iconOnly status={state} /></span></Tooltip>
-      <span className="min-w-0 shrink truncate font-mono text-xs font-medium text-foreground">{runner.name}</span>
-      <Badge className="hidden sm:inline-flex" dot={runner.provider === "tart" ? "bg-[#bb87fc]" : "bg-info"}>{runner.provider === "tart" ? "macOS" : "Linux"} · {runner.architecture}</Badge>
+      <span className="min-w-0 shrink">
+        <span className="block truncate font-mono text-xs font-medium text-foreground">{runner.name}</span>
+        {/* The job and repository columns appear at wider breakpoints; below them they sit under the name. */}
+        <span className="block truncate text-2xs text-muted-foreground md:hidden">{runner.currentJobName ?? runner.repository ?? runner.accountLogin}</span>
+      </span>
+      <Badge className="hidden sm:inline-flex" dot={runner.provider === "tart" ? "bg-[#bb87fc]" : "bg-info"}>{runner.provider === "tart" ? "macOS" : "Linux"} · {runner.architecture.toLowerCase()}</Badge>
       {runner.ephemeral ? null : <Badge className="hidden md:inline-flex" variant="outline">persistent</Badge>}
       {runner.currentJobName ? (
         runner.currentRunId ? (
@@ -53,7 +57,7 @@ export function RunnerActionsMenu({ runner }: { runner: Runner }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button aria-label={`Actions for ${runner.name}`} className="data-[state=open]:bg-hover" size="icon-xs" variant="ghost"><MoreHorizontal /></Button>
+        <Button aria-label={`Actions for ${runner.name}`} className={rowActionClassName} size="icon-xs" variant="ghost"><MoreHorizontal /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-52">
         <DropdownMenuItem asChild icon={<Terminal />}><Link search={{ target: runner.id }} to="/live-logs">View logs</Link></DropdownMenuItem>

@@ -2,6 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { ExternalLink, Minus, MoreHorizontal, Pause, Play, Plus, RefreshCw, RotateCcw, Settings2, Trash2 } from "lucide-react";
 
 import { runnerPoolAction } from "./runner-pools.functions";
+import { rowActionClassName } from "~/components/page";
 import { Button } from "~/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "~/components/ui/dropdown-menu";
 import { useAction } from "~/lib/use-action";
@@ -23,7 +24,7 @@ export function PoolActionsMenu({ pool, showOpen = true, triggerVariant = "ghost
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button aria-label={`Actions for ${pool.name}`} className="data-[state=open]:bg-hover" size={triggerVariant === "ghost" ? "icon-xs" : "icon-sm"} variant={triggerVariant}>
+        <Button aria-label={`Actions for ${pool.name}`} className={triggerVariant === "ghost" ? rowActionClassName : "data-[state=open]:bg-hover"} size={triggerVariant === "ghost" ? "icon-xs" : "icon-sm"} variant={triggerVariant}>
           <MoreHorizontal />
         </Button>
       </DropdownMenuTrigger>

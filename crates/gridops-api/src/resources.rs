@@ -362,14 +362,20 @@ pub async fn overview(
     let open_circuits = provisioning.get::<i64, _>("open_circuits");
     if open_circuits > 0 {
         alerts.push(json!({
-            "level": "error", "title": format!("{open_circuits} provisioning circuit(s) open"),
+            "level": "error", "title": format!(
+                "{open_circuits} provisioning {} open",
+                if open_circuits == 1 { "circuit is" } else { "circuits are" }
+            ),
             "detail": "GridOps is pausing repeated failed runner starts until the pool is retried.",
             "href": "/runner-pools",
         }));
     }
     if failed_webhooks > 0 {
         alerts.push(json!({
-            "level": "warning", "title": format!("{failed_webhooks} webhook delivery failure(s) in 24h"),
+            "level": "warning", "title": format!(
+                "{failed_webhooks} webhook {} failed in the last 24h",
+                if failed_webhooks == 1 { "delivery" } else { "deliveries" }
+            ),
             "detail": "Polling continues to synchronize Actions data, but delivery failures should be reviewed.",
             "href": "/webhooks",
         }));
@@ -862,15 +868,16 @@ pub async fn search(
     }
     let pattern = like_pattern(query);
     let rows = sqlx::query(
-        r#"SELECT kind,id,title,subtitle,href FROM (
+        r#"SELECT kind,id,title,subtitle,href,state FROM (
           SELECT 'repository' AS kind,CAST(repo.id AS TEXT) AS id,repo.full_name AS title,
-            i.account_login AS subtitle,'/repositories' AS href,repo.full_name AS sort_value
+            i.account_login AS subtitle,'/repositories' AS href,repo.full_name AS sort_value,
+            NULL AS state,0 AS recency
           FROM repositories repo JOIN installations i ON i.id=repo.installation_id
           JOIN user_installations ui ON ui.installation_id=repo.installation_id
           WHERE ui.user_id=? AND repo.full_name LIKE ? ESCAPE '\'
           UNION ALL
           SELECT 'runner pool',p.id,p.name,COALESCE(repo.full_name,i.account_login),
-            '/runner-pools/' || p.id,p.name
+            '/runner-pools/' || p.id,p.name,p.state,0
           FROM runner_pools p JOIN installations i ON i.id=p.installation_id
           LEFT JOIN repositories repo ON repo.id=p.repository_id
           WHERE p.name LIKE ? ESCAPE '\' AND EXISTS (
@@ -881,7 +888,7 @@ pub async fn search(
                 WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
           )
           UNION ALL
-          SELECT 'runner',r.id,r.name,p.name,'/runners',r.name FROM runners r
+          SELECT 'runner',r.id,r.name,p.name,'/runners',r.name,r.status,0 FROM runners r
           JOIN runner_pools p ON p.id=r.pool_id
           WHERE r.deleted_at IS NULL AND r.name LIKE ? ESCAPE '\' AND EXISTS (
             SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
@@ -891,12 +898,15 @@ pub async fn search(
                 WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
           )
           UNION ALL
-          SELECT 'workflow run',CAST(wr.id AS TEXT),wr.workflow_name,repo.full_name,
-            '/workflow-runs/' || wr.id,wr.workflow_name FROM workflow_runs wr
+          SELECT 'workflow run',CAST(wr.id AS TEXT),wr.workflow_name || ' #' || wr.run_number,
+            repo.full_name || COALESCE(' · ' || wr.head_branch,''),
+            '/workflow-runs/' || wr.id,wr.workflow_name,
+            CASE WHEN wr.status='completed' THEN COALESCE(wr.conclusion,'completed') ELSE wr.status END,
+            wr.github_created_at FROM workflow_runs wr
           JOIN repositories repo ON repo.id=wr.repository_id
           JOIN user_installations ui ON ui.installation_id=repo.installation_id
           WHERE ui.user_id=? AND (wr.workflow_name LIKE ? ESCAPE '\' OR repo.full_name LIKE ? ESCAPE '\')
-        ) ORDER BY sort_value LIMIT 12"#,
+        ) ORDER BY sort_value,recency DESC LIMIT 12"#,
     )
     .bind(&user.id).bind(&pattern).bind(&pattern).bind(&user.id)
     .bind(&pattern).bind(&user.id).bind(&user.id).bind(&pattern).bind(&pattern)
@@ -907,7 +917,7 @@ pub async fn search(
             json!({
                 "kind": row.get::<String,_>("kind"), "id": row.get::<String,_>("id"),
                 "title": row.get::<String,_>("title"), "subtitle": row.get::<String,_>("subtitle"),
-                "href": row.get::<String,_>("href"),
+                "href": row.get::<String,_>("href"), "state": row.get::<Option<String>,_>("state"),
             })
         })
         .collect::<Vec<_>>();

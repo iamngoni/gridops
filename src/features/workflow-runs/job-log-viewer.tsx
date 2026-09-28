@@ -3,6 +3,7 @@ import { ArrowDown, ChevronRight, CircleX, LoaderCircle, RefreshCw, Search, Tria
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
 
+import { InlineError } from "~/components/page";
 import { RunStatusIcon } from "~/components/status-icon";
 import { Button, buttonVariants } from "~/components/ui/button";
 import { Tooltip } from "~/components/ui/tooltip";
@@ -174,7 +175,7 @@ export function JobLogViewer({
 
       {error || jobLog?.metadataWarning || jobLog?.truncated ? (
         <div className="shrink-0 space-y-1 border-b border-border px-4 py-2 text-xs">
-          {error ? <p className="text-danger">{error}</p> : null}
+          {error ? <InlineError className="mt-0" onRetry={() => void refreshLog(true)} title="Couldn’t load this log">{error}</InlineError> : null}
           {jobLog?.metadataWarning ? <p className="text-warning">{jobLog.metadataWarning}</p> : null}
           {jobLog?.truncated ? <p className="text-warning">This very large job log is showing its final 25 MB.</p> : null}
         </div>

@@ -3,7 +3,7 @@ import { Boxes, Github, LoaderCircle, Plus } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { Callout, EmptyState, PageBody, PageHeader } from "~/components/page";
+import { Callout, EmptyState, InlineError, PageBody, PageHeader } from "~/components/page";
 import { PoolPlanPreview } from "~/components/pool-plan-preview";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { SettingsLayout, SettingsRow, SettingsSection, Switch, UnitField } from "~/components/settings-ui";
@@ -165,6 +165,8 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
   const runnerGroups = runnerGroupLoad.items;
   const defaultRunnerGroup = runnerGroups.find((group) => group.isDefault) ?? runnerGroups[0];
   const [runnerGroupId, setRunnerGroupId] = useState(options.defaults.runnerGroupId);
+  const [repositoryAttempt, setRepositoryAttempt] = useState(0);
+  const [runnerGroupAttempt, setRunnerGroupAttempt] = useState(0);
   const resourceWarning = hostResourceWarning({
     runnerCount: desiredCount,
     cpuLimit,
@@ -186,7 +188,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
         });
       });
     return () => controller.abort();
-  }, []);
+  }, [repositoryAttempt]);
 
   useEffect(() => {
     if (!installationId || scope !== "organization") return;
@@ -208,7 +210,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
         });
     }
     return () => controller.abort();
-  }, [installationId, options.defaults.runnerGroupId, options.installations, scope]);
+  }, [installationId, options.defaults.runnerGroupId, options.installations, runnerGroupAttempt, scope]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -320,7 +322,9 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
                 selectedNoun="repositories"
                 values={repositoryIds}
               />
-              {repositoryLoad.status === "error" ? <p className="mt-1.5 text-xs text-danger">{repositoryLoad.error}</p> : null}
+              {repositoryLoad.status === "error" ? (
+                <InlineError onRetry={() => { setRepositoryLoad({ status: "loading", items: [], error: null }); setRepositoryAttempt((attempt) => attempt + 1); }} title="Couldn’t load repositories">{repositoryLoad.error}</InlineError>
+              ) : null}
             </SettingsRow>
           )}
           {scope === "organization" ? (
@@ -339,7 +343,9 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
               ) : (
                 <Input min="1" name="runnerGroupId" onChange={(event) => setRunnerGroupId(Number(event.target.value))} required type="number" value={runnerGroupId} />
               )}
-              {runnerGroupLoad.status === "error" ? <p className="mt-1.5 text-left text-xs text-danger">{runnerGroupLoad.error}</p> : null}
+              {runnerGroupLoad.status === "error" ? (
+                <InlineError onRetry={() => { setRunnerGroupLoad({ status: "loading", items: [], error: null }); setRunnerGroupAttempt((attempt) => attempt + 1); }} title="Couldn’t load runner groups">{runnerGroupLoad.error}</InlineError>
+              ) : null}
             </SettingsRow>
           ) : null}
           <SettingsRow
@@ -459,7 +465,7 @@ function RunnerPoolForm({ options }: { options: RunnerPoolFormOptions }) {
         </SettingsSection>
 
         <SettingsSection description="Grow from the queue, shrink when idle." title="Autoscaling">
-          <SettingsRow description="Queued workflow jobs raise the target up to the maximum." label="Autoscale from queued jobs">
+          <SettingsRow description="Queued workflow jobs raise the target up to the maximum." inline label="Autoscale from queued jobs">
             <Switch aria-label="Autoscale from queued jobs" defaultChecked={options.defaults.autoscalingEnabled} name="autoscalingEnabled" />
           </SettingsRow>
           <SettingsRow description="Runner slots requested per queued job, capped by the maximum." htmlFor="queue-factor" label="Runners per queued job">
