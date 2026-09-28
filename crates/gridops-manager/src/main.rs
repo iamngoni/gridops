@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     env,
+    os::unix::fs::MetadataExt as _,
     path::Path as FsPath,
     process::Command,
     str::FromStr,
@@ -46,9 +47,19 @@ struct ManagerState {
     tart: Option<TartAgent>,
     token: SecretString,
     limits: ManagerLimits,
+    shared_docker_socket: Option<SharedDockerSocket>,
     reservations: Arc<Mutex<HashMap<String, CapacityReservation>>>,
     provisioning_paused: Arc<AtomicBool>,
     provision_lock: Arc<Mutex<()>>,
+}
+
+/// The Docker host's engine, shared with runner containers so jobs can run
+/// `docker` against it. Every job on a Docker runner then controls that engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SharedDockerSocket {
+    host_path: String,
+    /// The socket's owning group, which the runner user must join to open it.
+    group_id: u32,
 }
 
 #[derive(Clone)]
@@ -551,6 +562,29 @@ where
         .transpose()
 }
 
+/// `host_path` is the socket's path on the Docker host, which is what a bind
+/// mount resolves against. The manager's own mount of the same engine supplies
+/// the socket's group.
+fn shared_docker_socket(
+    host_path: Option<String>,
+    manager_socket: &FsPath,
+) -> Result<Option<SharedDockerSocket>> {
+    let Some(host_path) = host_path.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        host_path.starts_with('/') && !host_path.contains([':', ',']),
+        "GRIDOPS_RUNNER_DOCKER_SOCKET must be an absolute path on the Docker host"
+    );
+    let group_id = std::fs::metadata(manager_socket)
+        .with_context(|| format!("could not inspect {}", manager_socket.display()))?
+        .gid();
+    Ok(Some(SharedDockerSocket {
+        host_path,
+        group_id,
+    }))
+}
+
 fn tart_agent_from_environment() -> Result<Option<TartAgent>> {
     let url = env::var("GRIDOPS_TART_AGENT_URL")
         .ok()
@@ -670,6 +704,10 @@ async fn main() -> Result<()> {
         info.mem_total.unwrap_or(512 * 1_024 * 1_024),
     )?;
     let tart = tart_agent_from_environment()?;
+    let shared_docker_socket = shared_docker_socket(
+        env::var("GRIDOPS_RUNNER_DOCKER_SOCKET").ok(),
+        FsPath::new(&socket),
+    )?;
     let provisioning_paused = env::var("GRIDOPS_PROVISIONING_PAUSED")
         .ok()
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
@@ -678,6 +716,7 @@ async fn main() -> Result<()> {
         memory_budget_mb = limits.memory_budget_mb,
         max_runners = limits.max_runners,
         tart_enabled = tart.is_some(),
+        docker_socket_shared = shared_docker_socket.is_some(),
         min_free_disk_mb = limits.min_free_disk_mb,
         provisioning_paused,
         "runner host guardrails initialized"
@@ -687,6 +726,7 @@ async fn main() -> Result<()> {
         tart,
         token: SecretString::from(token),
         limits,
+        shared_docker_socket,
         reservations: Arc::new(Mutex::new(HashMap::new())),
         provisioning_paused: Arc::new(AtomicBool::new(provisioning_paused)),
         provision_lock: Arc::new(Mutex::new(())),
@@ -962,6 +1002,14 @@ async fn provision_runner_inner(
                 memory_bytes.saturating_add(memory_bytes * state.limits.runner_swap_percent / 100),
             ),
             pids_limit: Some(state.limits.runner_pids_limit),
+            binds: state
+                .shared_docker_socket
+                .as_ref()
+                .map(|socket| vec![format!("{}:/var/run/docker.sock", socket.host_path)]),
+            group_add: state
+                .shared_docker_socket
+                .as_ref()
+                .map(|socket| vec![socket.group_id.to_string()]),
             cap_drop: Some(vec!["ALL".into()]),
             security_opt: Some(vec!["no-new-privileges:true".into()]),
             oom_score_adj: Some(500),
@@ -1878,6 +1926,41 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn runners_share_the_host_docker_socket_only_when_configured() -> Result<()> {
+        let manager_socket =
+            std::env::temp_dir().join(format!("gridops-socket-test-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&manager_socket, "")?;
+        let group_id = std::fs::metadata(&manager_socket)?.gid();
+
+        assert_eq!(shared_docker_socket(None, &manager_socket)?, None);
+        assert_eq!(
+            shared_docker_socket(Some(" ".into()), &manager_socket)?,
+            None
+        );
+        assert_eq!(
+            shared_docker_socket(Some("/var/run/docker.sock".into()), &manager_socket)?,
+            Some(SharedDockerSocket {
+                host_path: "/var/run/docker.sock".into(),
+                group_id,
+            })
+        );
+        // A relative path or bind-mount syntax could mount something else.
+        for invalid in ["docker.sock", "/var/run/docker.sock:/etc", "/a,/b"] {
+            assert!(shared_docker_socket(Some(invalid.into()), &manager_socket).is_err());
+        }
+        assert!(
+            shared_docker_socket(
+                Some("/var/run/docker.sock".into()),
+                &manager_socket.with_extension("missing"),
+            )
+            .is_err()
+        );
+
+        std::fs::remove_file(manager_socket)?;
+        Ok(())
     }
 
     #[test]

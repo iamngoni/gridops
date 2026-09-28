@@ -7,10 +7,10 @@ use anyhow::{Context as _, Result, bail};
 use futures_util::StreamExt as _;
 use gridops_core::{
     BitbucketClient, BitbucketRunnerTarget, Config, GitHubClient, GitHubWorkflowRun, JitRequest,
-    RunnerTarget, Vault, WorkflowJobPage, WorkflowRunPage, assigned_queued_jobs,
-    associate_runner_with_job, connect_database, effective_runner_labels, next_runner_provider,
-    next_runner_repository, now_millis, provider_capacities, provider_capacity_deficit,
-    repository_capacities, repository_capacity_deficit, scale_up_target,
+    ProviderCapacity, RepositoryCapacity, RunnerTarget, Vault, WorkflowJobPage, WorkflowRunPage,
+    assigned_queued_jobs, associate_runner_with_job, connect_database, effective_runner_labels,
+    next_runner_provider, next_runner_repository, now_millis, provider_capacities,
+    provider_capacity_deficit, repository_capacities, repository_capacity_deficit, scale_up_target,
 };
 use reqwest::{Method, StatusCode};
 use secrecy::ExposeSecret as _;
@@ -138,7 +138,13 @@ struct CreatedRunner {
 
 enum ProvisionAttempt {
     Provisioned,
-    Deferred,
+    /// The host had no safe capacity. `full_provider` names the provider whose
+    /// runner budget is exhausted, so idle runners of that provider could make
+    /// room.
+    Deferred {
+        reason: Option<String>,
+        full_provider: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -336,7 +342,7 @@ async fn reconcile_pool(
             .get::<i64, _>("desired_count")
             .clamp(pool.min_count, pool.max_count)
     };
-    let rebalanced = if provisioning_blocked {
+    let mut rebalanced = if provisioning_blocked {
         0
     } else {
         rebalance_repository_capacity(app, pool, desired).await?
@@ -351,9 +357,26 @@ async fn reconcile_pool(
     let mut capacity_deferred = false;
     if !provisioning_blocked && active.len() < desired as usize {
         for _ in active.len()..desired as usize {
-            match provision(app, pool).await? {
+            let mut attempt = provision(app, pool).await?;
+            // An idle runner parked on a repository without work does not make
+            // the host full: reclaim its slot and retry straight away.
+            // Rebalancing waits for the pool to reach its desired size, which
+            // a full host never allows, so it cannot free the slot itself.
+            if let ProvisionAttempt::Deferred {
+                full_provider: Some(provider),
+                ..
+            } = &attempt
+            {
+                let current = runners(app, &pool.id).await?;
+                if evict_surplus_runner(app, pool, &current, Some(provider)).await? > 0 {
+                    rebalanced += 1;
+                    attempt = provision(app, pool).await?;
+                }
+            }
+            match attempt {
                 ProvisionAttempt::Provisioned => provisioned += 1,
-                ProvisionAttempt::Deferred => {
+                ProvisionAttempt::Deferred { reason, .. } => {
+                    defer_pool_capacity(app, pool, reason.as_deref()).await?;
                     capacity_deferred = true;
                     break;
                 }
@@ -511,23 +534,57 @@ async fn rebalance_repository_capacity(app: &Reconciler, pool: &Pool, desired: i
     if active < usize::try_from(desired).unwrap_or(usize::MAX) {
         return Ok(0);
     }
+    evict_surplus_runner(app, pool, &current, None).await
+}
+
+/// Deletes one idle runner that has no work, when a repository or provider is
+/// short of runners, so the freed slot can be provisioned where it is needed.
+/// With `provider`, only that provider's runners are considered.
+async fn evict_surplus_runner(
+    app: &Reconciler,
+    pool: &Pool,
+    current: &[Runner],
+    provider: Option<&str>,
+) -> Result<i64> {
     let capacities = if pool.scope == "repository" {
         repository_capacities(&app.database, &pool.id).await?
     } else {
         Vec::new()
     };
-    let repository_needs_capacity = capacities
-        .iter()
-        .any(|capacity| repository_capacity_deficit(capacity, pool.queue_scale_factor) > 0);
     let providers = serde_json::from_str::<Vec<String>>(&pool.providers).unwrap_or_default();
     let labels = serde_json::from_str::<Vec<String>>(&pool.labels).unwrap_or_default();
     let provider_capacities =
         provider_capacities(&app.database, &pool.id, &providers, &labels).await?;
+    let Some(runner) = surplus_runner(
+        current,
+        &capacities,
+        &provider_capacities,
+        &providers,
+        pool.queue_scale_factor,
+        provider,
+    ) else {
+        return Ok(0);
+    };
+    delete_runner(app, pool, runner).await?;
+    Ok(1)
+}
+
+fn surplus_runner<'a>(
+    runners: &'a [Runner],
+    capacities: &[RepositoryCapacity],
+    provider_capacities: &[ProviderCapacity],
+    providers: &[String],
+    factor: i64,
+    provider: Option<&str>,
+) -> Option<&'a Runner> {
+    let repository_needs_capacity = capacities
+        .iter()
+        .any(|capacity| repository_capacity_deficit(capacity, factor) > 0);
     let provider_needs_capacity = provider_capacities
         .iter()
-        .any(|capacity| provider_capacity_deficit(capacity, pool.queue_scale_factor) > 0);
+        .any(|capacity| provider_capacity_deficit(capacity, factor) > 0);
     if !repository_needs_capacity && !provider_needs_capacity {
-        return Ok(0);
+        return None;
     }
     let surplus = capacities
         .iter()
@@ -535,7 +592,7 @@ async fn rebalance_repository_capacity(app: &Reconciler, pool: &Pool, desired: i
             capacity.active
                 > capacity
                     .busy
-                    .saturating_add(capacity.queued.saturating_mul(pool.queue_scale_factor))
+                    .saturating_add(capacity.queued.saturating_mul(factor))
         })
         .map(|capacity| capacity.repository_id)
         .collect::<HashSet<_>>();
@@ -545,7 +602,7 @@ async fn rebalance_repository_capacity(app: &Reconciler, pool: &Pool, desired: i
             capacity.active
                 > capacity
                     .busy
-                    .saturating_add(capacity.queued.saturating_mul(pool.queue_scale_factor))
+                    .saturating_add(capacity.queued.saturating_mul(factor))
         })
         .map(|capacity| capacity.provider.as_str())
         .collect::<HashSet<_>>();
@@ -553,20 +610,17 @@ async fn rebalance_repository_capacity(app: &Reconciler, pool: &Pool, desired: i
         .iter()
         .map(|capacity| capacity.repository_id)
         .collect::<HashSet<_>>();
-    let Some(runner) = current.iter().find(|runner| {
+    runners.iter().find(|runner| {
         runner.ci_platform != "bitbucket"
             && !runner.busy
             && active_status(&runner.status)
+            && provider.is_none_or(|provider| runner.provider == provider)
             && (provider_surplus.contains(runner.provider.as_str())
                 || !providers.contains(&runner.provider)
                 || runner.target_repository_id.is_some_and(|repository_id| {
                     surplus.contains(&repository_id) || !membership.contains(&repository_id)
                 }))
-    }) else {
-        return Ok(0);
-    };
-    delete_runner(app, pool, runner).await?;
-    Ok(1)
+    })
 }
 
 async fn maybe_scale_down(app: &Reconciler, pool: &Pool, runners: &[Runner]) -> Result<()> {
@@ -1152,8 +1206,10 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
     )
     .await?;
     let Some(capacity_lease) = admission.lease_id else {
-        defer_pool_capacity(app, pool, admission.reason.as_deref()).await?;
-        return Ok(ProvisionAttempt::Deferred);
+        return Ok(ProvisionAttempt::Deferred {
+            full_provider: host_capacity_exhausted(admission.reason.as_deref()).then_some(provider),
+            reason: admission.reason,
+        });
     };
     let now = now_millis();
     let (runner_os, runner_architecture) = if provider == "tart" {
@@ -1347,8 +1403,10 @@ async fn provision(app: &Reconciler, pool: &Pool) -> Result<ProvisionAttempt> {
         )
         .await?;
         if deferred_manager_error(&error) {
-            defer_pool_capacity(app, pool, Some(&message)).await?;
-            return Ok(ProvisionAttempt::Deferred);
+            return Ok(ProvisionAttempt::Deferred {
+                full_provider: host_capacity_exhausted(Some(&message)).then_some(provider),
+                reason: Some(message),
+            });
         }
         record_provision_failure(app, pool).await?;
         return Err(error);
@@ -1908,6 +1966,10 @@ fn deferred_manager_error(error: &anyhow::Error) -> bool {
     .any(|code| message.contains(code))
 }
 
+fn host_capacity_exhausted(reason: Option<&str>) -> bool {
+    reason.is_some_and(|reason| reason.contains("[host_capacity_exhausted]"))
+}
+
 async fn defer_pool_capacity(app: &Reconciler, pool: &Pool, reason: Option<&str>) -> Result<()> {
     let retry_at = now_millis().saturating_add(30_000);
     sqlx::query(
@@ -2234,6 +2296,108 @@ mod tests {
             .map(|runner| runner.id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["created-orphan", "exited-orphan"]);
+    }
+
+    #[test]
+    fn a_full_host_evicts_idle_runners_parked_on_repositories_without_work() {
+        let repository = |repository_id: i64, queued: i64, active: i64| RepositoryCapacity {
+            repository_id,
+            installation_id: 1,
+            owner: "octo".into(),
+            name: format!("repo-{repository_id}"),
+            queued,
+            active,
+            busy: 0,
+        };
+        let parked = |id: &str, repository_id: i64| Runner {
+            id: id.into(),
+            target_repository_id: Some(repository_id),
+            ..runner(1)
+        };
+        // Four idle runners fill the host while repositories 10 and 11 wait.
+        let runners = vec![
+            parked("runner-12", 12),
+            parked("runner-13", 13),
+            parked("runner-14", 14),
+            parked("runner-15", 15),
+        ];
+        let mut capacities = vec![repository(10, 2, 0), repository(11, 2, 0)];
+        capacities.extend((12..=15).map(|repository_id| repository(repository_id, 0, 1)));
+        let providers = vec!["docker".to_owned(), "tart".to_owned()];
+        let provider_capacities = vec![
+            ProviderCapacity {
+                provider: "docker".into(),
+                queued: 4,
+                active: 4,
+                busy: 0,
+            },
+            ProviderCapacity {
+                provider: "tart".into(),
+                queued: 0,
+                active: 0,
+                busy: 0,
+            },
+        ];
+
+        let evicted = surplus_runner(
+            &runners,
+            &capacities,
+            &provider_capacities,
+            &providers,
+            1,
+            Some("docker"),
+        )
+        .map(|runner| runner.id.as_str());
+        assert_eq!(evicted, Some("runner-12"));
+        // Freeing a Docker slot cannot help a full macOS host.
+        assert!(
+            surplus_runner(
+                &runners,
+                &capacities,
+                &provider_capacities,
+                &providers,
+                1,
+                Some("tart")
+            )
+            .is_none()
+        );
+
+        // Without queued work anywhere, idle runners are left alone.
+        let idle = (12..=15)
+            .map(|repository_id| repository(repository_id, 0, 1))
+            .collect::<Vec<_>>();
+        let quiet = vec![ProviderCapacity {
+            provider: "docker".into(),
+            queued: 0,
+            active: 4,
+            busy: 0,
+        }];
+        assert!(surplus_runner(&runners, &idle, &quiet, &providers, 1, Some("docker")).is_none());
+
+        // A runner whose own repository has queued work is never the one evicted.
+        let mut claimed = capacities.clone();
+        claimed[2].queued = 1;
+        let evicted = surplus_runner(
+            &runners,
+            &claimed,
+            &provider_capacities,
+            &providers,
+            1,
+            Some("docker"),
+        )
+        .map(|runner| runner.id.as_str());
+        assert_eq!(evicted, Some("runner-13"));
+    }
+
+    #[test]
+    fn only_host_capacity_exhaustion_frees_idle_runners() {
+        assert!(host_capacity_exhausted(Some(
+            "runner manager request failed (429 Too Many Requests) [host_capacity_exhausted]: Host runner limit reached (5/4 including reservations)."
+        )));
+        assert!(!host_capacity_exhausted(Some(
+            "runner manager request failed (429 Too Many Requests) [host_disk_guardrail]: only 100 MB disk space remains"
+        )));
+        assert!(!host_capacity_exhausted(None));
     }
 
     #[test]
