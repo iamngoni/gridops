@@ -40,7 +40,7 @@ impl IntoResponse for ApiError {
                 tracing::error!(error = ?error, "request failed");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "GridOps could not complete the request.".into(),
+                    "GridOps hit an unexpected error. Try again, and check the API logs if it keeps happening.".into(),
                 )
             }
         };
