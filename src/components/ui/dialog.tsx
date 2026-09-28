@@ -44,8 +44,15 @@ export function SheetContent({
   heading,
   description,
   actions,
+  bare = false,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Content> & { heading: React.ReactNode; description?: React.ReactNode; actions?: React.ReactNode }) {
+}: React.ComponentProps<typeof DialogPrimitive.Content> & {
+  heading: React.ReactNode;
+  description?: React.ReactNode;
+  actions?: React.ReactNode;
+  /** Content supplies its own header; the heading stays available to screen readers. */
+  bare?: boolean;
+}) {
   return (
     <DialogPrimitive.Portal>
       <Overlay className="bg-black/20 dark:bg-black/40" />
@@ -56,6 +63,13 @@ export function SheetContent({
         )}
         {...props}
       >
+        {bare ? (
+          <>
+            <DialogPrimitive.Title className="sr-only">{heading}</DialogPrimitive.Title>
+            {children}
+          </>
+        ) : (
+        <>
         <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
           <div className="min-w-0 flex-1">
             <DialogPrimitive.Title className="truncate text-sm font-medium">{heading}</DialogPrimitive.Title>
@@ -67,6 +81,8 @@ export function SheetContent({
           </DialogPrimitive.Close>
         </header>
         <div className="min-h-0 flex-1 overflow-auto">{children}</div>
+        </>
+        )}
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   );

@@ -1,19 +1,25 @@
-import { Link, createFileRoute } from "@tanstack/react-router";
-import { CircleCheck, CircleX, ExternalLink, GitBranch, GitCommitHorizontal, GitPullRequestArrow, Terminal } from "lucide-react";
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
+import { CircleCheck, CircleX, ExternalLink, GitBranch, GitCommitHorizontal, GitPullRequestArrow, Radio, X } from "lucide-react";
 
 import { PageBody, PageHeader, PropertiesPanel, PropertyGroup, PropertyRow, SectionHeading, listRowClassName } from "~/components/page";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { RunStatusIcon, StatusBadge, statusLabel } from "~/components/status-icon";
 import { Avatar, githubAvatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
-import { buttonVariants } from "~/components/ui/button";
+import { Button, buttonVariants } from "~/components/ui/button";
+import { Dialog, DialogClose, SheetContent } from "~/components/ui/dialog";
 import { Tooltip } from "~/components/ui/tooltip";
 import { type WorkflowRunDetail, getWorkflowRunDetailAction } from "~/features/operations/operations.functions";
+import { JobLogViewer } from "~/features/workflow-runs/job-log-viewer";
 import { RunActionsMenu, isActiveRun } from "~/features/workflow-runs/run-actions";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 import { cn, formatDateTime, formatDuration } from "~/lib/utils";
 
 export const Route = createFileRoute("/_app/workflow-runs/$runId")({
+  validateSearch: (search: Record<string, unknown>): { job?: number } => {
+    const job = Number(search.job);
+    return Number.isInteger(job) && job > 0 ? { job } : {};
+  },
   loader: ({ params }) => getWorkflowRunDetailAction({ data: { runId: Number(params.runId) } }),
   pendingComponent: () => <ResourcePageLoading icon={GitPullRequestArrow} title="Workflow run" />,
   component: WorkflowRunDetailPage,
@@ -23,7 +29,11 @@ type Job = WorkflowRunDetail["jobs"][number];
 
 function WorkflowRunDetailPage() {
   const run = Route.useLoaderData();
+  const search = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
   useLiveRouteRefresh(3_000, isActiveRun(run));
+  const openJob = run.jobs.find((job) => job.id === search.job);
+  const showJob = (jobId: number | undefined) => void navigate({ search: jobId ? { job: jobId } : {}, replace: Boolean(search.job && jobId) });
   const state = run.conclusion ?? run.status;
   const failed = run.jobs.filter((job) => job.conclusion === "failure").length;
 
@@ -60,7 +70,7 @@ function WorkflowRunDetailPage() {
                 </SectionHeading>
                 {run.jobs.length ? (
                   <div className="overflow-hidden rounded-lg border border-border [&>*:last-child]:border-b-0">
-                    {run.jobs.map((job) => <JobRow job={job} key={job.id} />)}
+                    {run.jobs.map((job) => <JobRow job={job} key={job.id} onOpen={() => showJob(job.id)} selected={job.id === search.job} />)}
                   </div>
                 ) : (
                   <div className="rounded-lg border border-dashed border-border-strong px-4 py-10 text-center text-sm text-muted-foreground">Job details arrive through workflow job webhooks and polling.</div>
@@ -87,32 +97,57 @@ function WorkflowRunDetailPage() {
           </PropertiesPanel>
         </div>
       </PageBody>
+      <Dialog onOpenChange={(open) => { if (!open) showJob(undefined); }} open={Boolean(openJob)}>
+        {openJob ? (
+          <SheetContent aria-describedby={undefined} bare className="max-w-[min(1040px,calc(100%-1rem))]" heading={`${openJob.name} logs`} onOpenAutoFocus={(event) => event.preventDefault()}>
+            <JobLogViewer
+              actions={
+                <>
+                  {openJob.liveRunnerId || openJob.archivedLogId ? (
+                    <Tooltip content="Open in Live logs">
+                      <Link aria-label="Open in Live logs" className={buttonVariants({ size: "icon-sm", variant: "ghost" })} search={{ target: openJob.liveRunnerId ?? openJob.archivedLogId ?? undefined }} to="/live-logs"><Radio /></Link>
+                    </Tooltip>
+                  ) : null}
+                  <Tooltip content="Open on GitHub">
+                    <a aria-label="Open job on GitHub" className={buttonVariants({ size: "icon-sm", variant: "ghost" })} href={openJob.htmlUrl} rel="noreferrer" target="_blank"><ExternalLink /></a>
+                  </Tooltip>
+                  <DialogClose asChild><Button aria-label="Close logs" size="icon-sm" variant="ghost"><X /></Button></DialogClose>
+                </>
+              }
+              fallback={{ name: openJob.name, status: openJob.conclusion ?? openJob.status, repository: run.repository, workflowName: run.workflowName, runNumber: run.runNumber, runId: run.id }}
+              jobId={openJob.id}
+              key={openJob.id}
+              showRunLink={false}
+            />
+          </SheetContent>
+        ) : null}
+      </Dialog>
     </>
   );
 }
 
-function JobRow({ job }: { job: Job }) {
+function JobRow({ job, onOpen, selected }: { job: Job; onOpen: () => void; selected: boolean }) {
   const state = job.conclusion ?? job.status;
-  const logTarget = job.liveRunnerId ?? job.archivedLogId ?? undefined;
+  const waiting = job.status === "queued" || job.status === "waiting";
   return (
     <div className="border-b border-border">
-      <div className={cn(listRowClassName, "border-b-0")}>
-        <Tooltip content={statusLabel(state)}><span className="inline-flex"><RunStatusIcon status={state} /></span></Tooltip>
+      <div className={cn(listRowClassName, "relative border-b-0", selected && "bg-selected")}>
+        <button aria-label={`Show logs for ${job.name}`} className="absolute inset-0 outline-none" data-list-row="" onClick={onOpen} type="button" />
+        <Tooltip content={statusLabel(state)}><span className="relative inline-flex"><RunStatusIcon status={state} /></span></Tooltip>
         <span className="min-w-0 flex-1 truncate font-medium">{job.name}</span>
         <span className="hidden max-w-60 items-center gap-1 overflow-hidden md:flex">
           {job.labels.slice(0, 3).map((label) => <Badge key={label} variant="outline">{label}</Badge>)}
           {job.labels.length > 3 ? <span className="text-2xs text-faint">+{job.labels.length - 3}</span> : null}
         </span>
-        {logTarget ? (
-          <Link className="hidden max-w-44 truncate rounded-md px-1.5 py-0.5 font-mono text-2xs text-muted-foreground hover:bg-selected hover:text-foreground sm:block" search={{ target: logTarget }} to="/live-logs">{job.runnerName ?? "runner"}</Link>
-        ) : <span className="hidden max-w-44 truncate font-mono text-2xs text-faint sm:block">{job.runnerName ?? "unassigned"}</span>}
-        <span className="tabular w-14 shrink-0 text-right text-xs text-muted-foreground">{formatDuration(job.startedAt, job.completedAt)}</span>
-        <span className="flex shrink-0 items-center gap-0.5">
-          {logTarget ? (
-            <Tooltip content="View logs"><Link aria-label={`View logs for ${job.name}`} className={buttonVariants({ size: "icon-xs", variant: "ghost" })} search={{ target: logTarget }} to="/live-logs"><Terminal /></Link></Tooltip>
-          ) : null}
-          <Tooltip content="Open on GitHub"><a aria-label={`Open ${job.name} on GitHub`} className={buttonVariants({ size: "icon-xs", variant: "ghost" })} href={job.htmlUrl} rel="noreferrer" target="_blank"><ExternalLink /></a></Tooltip>
-        </span>
+        <span className="hidden max-w-44 truncate font-mono text-2xs text-faint sm:block">{job.runnerName ?? (waiting ? "no runner yet" : "—")}</span>
+        {waiting ? (
+          <Tooltip content="Time since the job was queued">
+            <span className="tabular relative w-24 shrink-0 text-right text-xs text-warning">queued {formatDuration(job.startedAt, null)}</span>
+          </Tooltip>
+        ) : <span className="tabular w-24 shrink-0 text-right text-xs text-muted-foreground">{formatDuration(job.startedAt, job.completedAt)}</span>}
+        <Tooltip content="Open on GitHub">
+          <a aria-label={`Open ${job.name} on GitHub`} className={cn(buttonVariants({ size: "icon-xs", variant: "ghost" }), "relative")} href={job.htmlUrl} rel="noreferrer" target="_blank"><ExternalLink /></a>
+        </Tooltip>
       </div>
       {job.diagnosis ? <JobDiagnosis diagnosis={job.diagnosis} /> : null}
     </div>
