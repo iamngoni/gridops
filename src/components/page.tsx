@@ -1,6 +1,6 @@
 import { Link, type LinkProps } from "@tanstack/react-router";
 import type { LucideIcon } from "lucide-react";
-import { ChevronRight, LoaderCircle, TriangleAlert } from "lucide-react";
+import { ChevronRight, Info, LoaderCircle, TriangleAlert } from "lucide-react";
 import type * as React from "react";
 
 import { MobileNavButton } from "./app-shell-context";
@@ -194,7 +194,7 @@ export function Callout({
   const accent = tone === "danger" ? "text-danger" : tone === "warning" ? "text-warning" : tone === "info" ? "text-info" : "text-muted-foreground";
   return (
     <div className={cn("flex items-start gap-3 rounded-lg border border-border-strong bg-panel-subtle px-3 py-2.5 text-sm", className)} role={tone === "danger" ? "alert" : undefined}>
-      <TriangleAlert className={cn("mt-0.5 size-4 shrink-0", accent)} />
+      {tone === "danger" || tone === "warning" ? <TriangleAlert className={cn("mt-0.5 size-4 shrink-0", accent)} /> : <Info className={cn("mt-0.5 size-4 shrink-0", accent)} />}
       <div className="min-w-0 flex-1">
         {title ? <div className="font-medium text-foreground">{title}</div> : null}
         {children ? <div className={cn("text-xs leading-5 text-muted-foreground", title ? "mt-0.5" : undefined)}>{children}</div> : null}

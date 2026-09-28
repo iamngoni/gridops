@@ -1,68 +1,98 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, FileClock } from "lucide-react";
+import { Bot, ChevronRight, FileClock } from "lucide-react";
+import { useState } from "react";
 
-import { ResourcePage } from "~/components/resource-page";
-import { ResourcePageLoading } from "~/components/resource-page-loading";
 import { ListPagination } from "~/components/list-pagination";
-import { Badge } from "~/components/ui/badge";
-import { Card, CardContent } from "~/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
-import { getAuditLogPage } from "~/features/operations/operations.functions";
+import { EmptyState, ListGroup, PageBody, PageHeader, listRowClassName } from "~/components/page";
+import { ResourcePageLoading } from "~/components/resource-page-loading";
+import { Avatar, githubAvatar } from "~/components/ui/avatar";
+import { Tooltip } from "~/components/ui/tooltip";
+import { type AuditEvent, getAuditLogPage } from "~/features/operations/operations.functions";
 import { validatePageSearch } from "~/lib/pagination";
-import { formatRelativeTime } from "~/lib/utils";
+import { cn, formatDateTime } from "~/lib/utils";
 
 export const Route = createFileRoute("/_app/audit-log")({
   validateSearch: validatePageSearch,
   loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
   loader: ({ deps }) => getAuditLogPage({ page: deps.page }),
-  pendingComponent: () => (
-    <ResourcePageLoading
-      title="Audit log"
-      description="Trace configuration and runner lifecycle actions across the control plane."
-      icon={FileClock}
-    />
-  ),
+  pendingComponent: () => <ResourcePageLoading icon={FileClock} title="Audit log" />,
   component: AuditLogPage,
 });
+
+function dayLabel(value: string) {
+  const date = new Date(value);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (date.toDateString() === today.toDateString()) return "Today";
+  if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return date.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric", year: date.getFullYear() === today.getFullYear() ? undefined : "numeric" });
+}
 
 function AuditLogPage() {
   const data = Route.useLoaderData();
   const navigate = useNavigate({ from: Route.fullPath });
+  const days = new Map<string, AuditEvent[]>();
+  for (const event of data.items) {
+    const label = dayLabel(event.createdAt);
+    days.set(label, [...(days.get(label) ?? []), event]);
+  }
+
   return (
-    <ResourcePage
-      title="Audit log"
-      description="Trace configuration and runner lifecycle actions across the control plane."
-      icon={FileClock}
-      emptyTitle="No audit events"
-      emptyDescription="User actions and automated reconciliation decisions will be recorded here."
-    >
-      {data.items.length > 0 ? (
-        <Card><CardContent className="px-0 py-0"><Table>
-          <TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Actor</TableHead><TableHead>Action</TableHead><TableHead>Target</TableHead><TableHead>Details</TableHead></TableRow></TableHeader>
-          <TableBody>{data.items.map((event) => (
-            <TableRow key={event.id}>
-              <TableCell><div className="text-xs">{formatRelativeTime(event.createdAt)}</div><div className="mt-1 text-[11px] text-muted-foreground">{new Date(event.createdAt).toLocaleString()}</div></TableCell>
-              <TableCell><Badge variant={event.actorLabel === "system" ? "secondary" : "outline"}>{event.actorLabel}</Badge></TableCell>
-              <TableCell className="font-mono text-xs">{event.action}</TableCell>
-              <TableCell><AuditTarget id={event.targetId} type={event.targetType} /></TableCell>
-              <TableCell><AuditMetadata value={event.metadata} /></TableCell>
-            </TableRow>
-          ))}</TableBody>
-        </Table><ListPagination itemCount={data.items.length} noun="audit events" onPageChange={(page) => void navigate({ search: { page } })} page={data.page} perPage={data.perPage} total={data.total} /></CardContent></Card>
-      ) : undefined}
-    </ResourcePage>
+    <>
+      <PageHeader count={data.total || undefined} icon={FileClock} title="Audit log" />
+      <PageBody>
+        {data.items.length === 0 ? (
+          <EmptyState description="User actions and automated reconciliation decisions are recorded here." icon={FileClock} title="No audit events yet" />
+        ) : (
+          <>
+            {[...days.entries()].map(([label, events]) => (
+              <ListGroup count={events.length} key={label} label={label}>
+                {events.map((event) => <AuditRow event={event} key={event.id} />)}
+              </ListGroup>
+            ))}
+            <ListPagination itemCount={data.items.length} noun="events" onPageChange={(page) => void navigate({ search: { page } })} page={data.page} perPage={data.perPage} total={data.total} />
+          </>
+        )}
+      </PageBody>
+    </>
+  );
+}
+
+function AuditRow({ event }: { event: AuditEvent }) {
+  const [open, setOpen] = useState(false);
+  const hasMetadata = Boolean(event.metadata && event.metadata !== "{}");
+  const system = event.actorLabel === "system";
+  let metadata = event.metadata;
+  try {
+    metadata = JSON.stringify(JSON.parse(event.metadata), null, 2);
+  } catch {
+    // Show non-JSON detail verbatim.
+  }
+  return (
+    <div className="border-b border-border">
+      <div className={cn(listRowClassName, "relative border-b-0 pr-3")}>
+        {hasMetadata ? <button aria-expanded={open} aria-label="Toggle event details" className="absolute inset-0" onClick={() => setOpen((current) => !current)} type="button" /> : null}
+        <ChevronRight className={cn("size-3.5 shrink-0 text-faint transition-transform", open && "rotate-90", !hasMetadata && "opacity-0")} />
+        {system ? <span className="grid size-[18px] shrink-0 place-items-center rounded-full bg-selected text-muted-foreground"><Bot className="size-3" /></span> : <Avatar name={event.actorLabel} size={18} src={githubAvatar(event.actorLabel.replace(/^@/, ""))} />}
+        <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground sm:block">{system ? "GridOps" : event.actorLabel}</span>
+        <span className="min-w-0 shrink truncate font-mono text-xs font-medium text-foreground">{event.action}</span>
+        <span className="flex-1" />
+        <AuditTarget id={event.targetId} type={event.targetType} />
+        <Tooltip content={new Date(event.createdAt).toLocaleString()}>
+          <span className="tabular relative w-24 shrink-0 text-right text-xs text-faint">{formatDateTime(event.createdAt).split(", ").pop()}</span>
+        </Tooltip>
+      </div>
+      {open ? <pre className="mx-4 mb-3 ml-11 max-h-64 overflow-auto rounded-md border border-border bg-panel-subtle p-3 font-mono text-2xs leading-5 text-secondary-foreground">{metadata}</pre> : null}
+    </div>
   );
 }
 
 function AuditTarget({ id, type }: { id: string | null; type: string }) {
-  const label = <><span className="max-w-48 truncate font-mono text-[11px]">{id ?? "—"}</span>{id ? <ArrowUpRight className="size-3" /> : null}</>;
-  const className = "mt-1 inline-flex items-center gap-1 text-muted-foreground hover:text-primary";
-  return <div><div className="text-xs capitalize">{type.replaceAll("_", " ")}</div>{id && type === "runner_pool" ? <Link className={className} params={{ poolId: id }} to="/runner-pools/$poolId">{label}</Link> : id && type === "workflow_run" ? <Link className={className} params={{ runId: id }} to="/workflow-runs/$runId">{label}</Link> : id && type === "runner" ? <Link className={className} search={{ target: id }} to="/live-logs">{label}</Link> : <div className="mt-1 flex items-center gap-1 text-muted-foreground">{label}</div>}</div>;
-}
-
-function AuditMetadata({ value }: { value: string }) {
-  if (!value || value === "{}") return <span className="text-muted-foreground">—</span>;
-  let formatted = value;
-  try { formatted = JSON.stringify(JSON.parse(value), null, 2); } catch { /* Preserve non-JSON audit detail verbatim. */ }
-  return <details className="group max-w-96"><summary className="cursor-pointer list-none truncate text-[11px] text-muted-foreground hover:text-foreground">{value}<span className="ml-2 text-primary/70 group-open:hidden">View</span></summary><pre className="mt-2 max-h-52 overflow-auto rounded-lg bg-background/70 p-3 text-[11px] leading-5 text-foreground/80">{formatted}</pre></details>;
+  const label = <><span className="text-muted-foreground">{type.replaceAll("_", " ")}</span>{id ? <span className="ml-1.5 font-mono text-faint">{id.slice(0, 8)}</span> : null}</>;
+  const className = "relative hidden max-w-56 truncate rounded-md px-1.5 py-0.5 text-xs hover:bg-selected md:block";
+  if (id && type === "runner_pool") return <Link className={className} params={{ poolId: id }} to="/runner-pools/$poolId">{label}</Link>;
+  if (id && type === "workflow_run") return <Link className={className} params={{ runId: id }} to="/workflow-runs/$runId">{label}</Link>;
+  if (id && type === "runner") return <Link className={className} search={{ target: id }} to="/live-logs">{label}</Link>;
+  return <span className="hidden max-w-56 truncate px-1.5 text-xs md:block">{label}</span>;
 }

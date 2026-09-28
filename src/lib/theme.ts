@@ -22,5 +22,5 @@ export function applyTheme(theme: Theme) {
   document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", theme);
   document
     .querySelector('meta[name="theme-color"]')
-    ?.setAttribute("content", theme === "dark" ? "#0d120f" : "#f7faf8");
+    ?.setAttribute("content", theme === "dark" ? "#08090a" : "#f4f4f6");
 }

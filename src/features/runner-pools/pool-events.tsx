@@ -1,9 +1,10 @@
+import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { type RunnerPoolEvent, getRunnerPoolEvents } from "./runner-pools.functions";
 import { StatusDot } from "~/components/status-icon";
 import { Tooltip } from "~/components/ui/tooltip";
-import { formatAge } from "~/lib/utils";
+import { cn, formatAge } from "~/lib/utils";
 
 type EventPage = { items: RunnerPoolEvent[]; total: number; page: number; perPage: number };
 
@@ -39,50 +40,72 @@ export function usePoolEvents(poolId: string, page: number) {
   return state;
 }
 
-/** Linear-style activity timeline: a thin rail with one dot per event. */
-export function PoolEventTimeline({ events, detailed = false }: { events: RunnerPoolEvent[]; detailed?: boolean }) {
+/** Event names embed GitHub states such as "in_progress"; show them as words. */
+export function humanizeEvent(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+const columns = "grid grid-cols-[14px_minmax(0,1fr)_64px] items-center gap-x-3 md:grid-cols-[14px_minmax(160px,220px)_minmax(0,1fr)_104px_64px]";
+
+/** Pool events as an aligned table: event, details, runner, and age, with expandable metadata. */
+export function PoolEventTable({ events, stickyHeader = true }: { events: RunnerPoolEvent[]; stickyHeader?: boolean }) {
   return (
-    <ol className="relative before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
-      {events.map((event) => <PoolEventItem detailed={detailed} event={event} key={event.id} />)}
-    </ol>
+    <div role="table">
+      <div className={cn(columns, "h-8 border-b border-border bg-panel-subtle px-4 text-xs font-medium text-muted-foreground", stickyHeader && "sticky top-0 z-10")} role="row">
+        <span />
+        <span role="columnheader">Event</span>
+        <span className="hidden md:block" role="columnheader">Details</span>
+        <span className="hidden md:block" role="columnheader">Runner</span>
+        <span className="text-right" role="columnheader">When</span>
+      </div>
+      {events.map((event) => <PoolEventRow event={event} key={event.id} />)}
+    </div>
   );
 }
 
-function PoolEventItem({ event, detailed }: { event: RunnerPoolEvent; detailed: boolean }) {
+function PoolEventRow({ event }: { event: RunnerPoolEvent }) {
+  const [open, setOpen] = useState(false);
   const tone = event.level === "error" ? "danger" : event.level === "warning" ? "warning" : "success";
+  const capacity = event.capacitySnapshot;
+  const hasMetadata = Boolean(event.metadata && event.metadata !== "{}");
+  const expandable = hasMetadata || Boolean(capacity);
   let metadata = event.metadata;
   try {
     metadata = JSON.stringify(JSON.parse(event.metadata), null, 2);
   } catch {
     // Keep non-JSON metadata readable as-is.
   }
-  const capacity = event.capacitySnapshot;
   return (
-    <li className="relative flex gap-3 py-2">
-      <span className="relative z-[1] mt-1 grid size-[15px] shrink-0 place-items-center rounded-full bg-panel"><StatusDot pulse={false} tone={tone} /></span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="text-sm font-medium text-foreground">{event.event}</span>
-          <Tooltip content={new Date(event.createdAt).toLocaleString()}>
-            <time className="tabular ml-auto shrink-0 text-2xs text-faint" dateTime={event.createdAt}>{formatAge(event.createdAt)}</time>
-          </Tooltip>
-        </div>
-        <p className="mt-0.5 text-sm leading-5 text-muted-foreground">{event.message}</p>
-        {detailed && capacity ? (
-          <div className="mt-2 grid gap-x-4 gap-y-1 rounded-md border border-border bg-panel-subtle px-3 py-2 text-xs text-muted-foreground sm:grid-cols-3">
-            <span><span className="tabular text-foreground">{capacity.active.cpu.toLocaleString()}</span> / {capacity.cpuBudget.toLocaleString()} cores</span>
-            <span><span className="tabular text-foreground">{capacity.active.memoryMb.toLocaleString()}</span> / {capacity.memoryBudgetMb.toLocaleString()} MB</span>
-            <span><span className="tabular text-foreground">{capacity.active.activeRunners}</span> / {capacity.maxRunners} runners</span>
-          </div>
-        ) : null}
-        {detailed && event.runnerId ? <p className="mt-1 font-mono text-2xs text-faint">Runner {event.runnerId}</p> : null}
-        {detailed && event.metadata && event.metadata !== "{}" ? (
-          <details className="group mt-1.5">
-            <summary className="w-fit list-none rounded px-1 text-xs text-muted-foreground hover:bg-hover hover:text-foreground">Details</summary>
-            <pre className="mt-1.5 max-h-56 overflow-auto rounded-md border border-border bg-panel-subtle p-3 font-mono text-2xs leading-5 text-secondary-foreground">{metadata}</pre>
-          </details>
-        ) : null}
+    <div className="border-b border-border" role="rowgroup">
+      <div
+        aria-expanded={expandable ? open : undefined}
+        className={cn(columns, "min-h-10 px-4 py-2 text-sm", expandable && "cursor-pointer hover:bg-hover")}
+        onClick={expandable ? () => setOpen((current) => !current) : undefined}
+        role="row"
+      >
+        <StatusDot pulse={false} tone={tone} />
+        <span className="truncate font-medium text-foreground" role="cell">{humanizeEvent(event.event)}</span>
+        <span className="hidden truncate text-muted-foreground md:block" role="cell" title={event.message}>{event.message}</span>
+        <span className="hidden truncate font-mono text-2xs text-faint md:block" role="cell">
+          {event.runnerId ? <Link className="hover:text-foreground" onClick={(click) => click.stopPropagation()} search={{ target: event.runnerId }} to="/live-logs">{event.runnerId.slice(0, 8)}</Link> : "—"}
+        </span>
+        <Tooltip content={new Date(event.createdAt).toLocaleString()}>
+          <time className="tabular text-right text-xs text-faint" dateTime={event.createdAt} role="cell">{formatAge(event.createdAt)}</time>
+        </Tooltip>
       </div>
-    </li>
+      {open ? (
+        <div className="space-y-2 px-4 pb-3 md:pl-[calc(1rem+14px+0.75rem)]">
+          <p className="text-sm text-muted-foreground md:hidden">{event.message}</p>
+          {capacity ? (
+            <div className="grid gap-x-6 gap-y-1 rounded-md border border-border bg-panel-subtle px-3 py-2 text-xs text-muted-foreground sm:grid-cols-3">
+              <span><span className="tabular text-foreground">{capacity.active.cpu.toLocaleString()}</span> / {capacity.cpuBudget.toLocaleString()} cores in use</span>
+              <span><span className="tabular text-foreground">{capacity.active.memoryMb.toLocaleString()}</span> / {capacity.memoryBudgetMb.toLocaleString()} MB in use</span>
+              <span><span className="tabular text-foreground">{capacity.active.activeRunners}</span> / {capacity.maxRunners} runners</span>
+            </div>
+          ) : null}
+          {hasMetadata ? <pre className="max-h-56 overflow-auto rounded-md border border-border bg-panel-subtle p-3 font-mono text-2xs leading-5 text-secondary-foreground">{metadata}</pre> : null}
+        </div>
+      ) : null}
+    </div>
   );
 }

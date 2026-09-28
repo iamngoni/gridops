@@ -4,22 +4,42 @@ import { Activity, ArrowRight, Server } from "lucide-react";
 
 import { CapacityMeter } from "~/components/capacity-meter";
 import { Callout, InlineLoading, ListGroup, PropertiesPanel, PropertyGroup, PropertyRow, SectionHeading } from "~/components/page";
-import { StatusBadge } from "~/components/status-icon";
-import { Avatar } from "~/components/ui/avatar";
+import { StatusBadge, StatusDot, statusLabel } from "~/components/status-icon";
+import { Avatar, githubAvatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
 import { buttonVariants } from "~/components/ui/button";
 import { getRunnersPage } from "~/features/operations/operations.functions";
+import type { RunnerPoolDetail } from "~/features/runner-pools/runner-pools.functions";
 import { providerLabel } from "~/features/runner-pools/pool-actions";
-import { PoolEventTimeline, usePoolEvents } from "~/features/runner-pools/pool-events";
+import { PoolEventTable, usePoolEvents } from "~/features/runner-pools/pool-events";
 import { RunnerRow, groupRunners } from "~/features/runners/runner-row";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
-import { formatAge } from "~/lib/utils";
 
 export const Route = createFileRoute("/_app/runner-pools/$poolId/")({
   component: PoolOverviewTab,
 });
 
 const poolRoute = getRouteApi("/_app/runner-pools/$poolId");
+
+/** Explains why the pool is not provisioning, distinguishing failures from a full host. */
+function ProvisioningCallout({ pool }: { pool: RunnerPoolDetail }) {
+  const retry = pool.provisionRetryAt ? new Date(pool.provisionRetryAt) : null;
+  const when = retry ? `at ${retry.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "shortly";
+  let content: { title: string; body: string; tone: "danger" | "warning" | "neutral" } | null = null;
+  if (pool.provisionCircuitOpen) {
+    content = { title: `Provisioning paused after ${pool.provisionFailureCount} consecutive failures`, body: `GridOps tries again ${when}. The Activity tab shows the failing step; use the pool menu to retry now.`, tone: "danger" };
+  } else if (pool.provisionFailureCount > 0) {
+    content = { title: "Provisioning is backing off", body: `The last ${pool.provisionFailureCount === 1 ? "attempt" : `${pool.provisionFailureCount} attempts`} failed. GridOps retries ${when}.`, tone: "warning" };
+  } else if (pool.state === "waiting") {
+    content = { title: "Waiting for host capacity", body: `The runner host is at its safe limit. GridOps starts more runners as capacity frees up, next check ${when}.`, tone: "neutral" };
+  }
+  if (!content) return null;
+  return (
+    <div className="border-b border-border px-4 py-3">
+      <Callout title={content.title} tone={content.tone}>{content.body}</Callout>
+    </div>
+  );
+}
 
 function PoolOverviewTab() {
   const pool = poolRoute.useLoaderData();
@@ -38,16 +58,7 @@ function PoolOverviewTab() {
   return (
     <div className="flex min-h-full flex-col lg:flex-row">
       <div className="min-w-0 flex-1">
-        {pool.provisionCircuitOpen || pool.provisionRetryAt ? (
-          <div className="border-b border-border px-4 py-3">
-            <Callout
-              title={pool.provisionCircuitOpen ? `Provisioning paused after ${pool.provisionFailureCount} consecutive failures` : "Provisioning is backing off"}
-              tone={pool.provisionCircuitOpen ? "danger" : "warning"}
-            >
-              {pool.provisionRetryAt ? `GridOps retries ${formatAge(pool.provisionRetryAt) === "now" ? "shortly" : `at ${new Date(pool.provisionRetryAt).toLocaleTimeString()}`}.` : null} Check the Activity tab for the failing step. Use the pool menu to retry immediately.
-            </Callout>
-          </div>
-        ) : null}
+        <ProvisioningCallout pool={pool} />
 
         {runners.isPending ? <InlineLoading label="Loading runners…" /> : items.length === 0 ? (
           <div className="border-b border-border px-4 py-10 text-center">
@@ -65,18 +76,18 @@ function PoolOverviewTab() {
           ))
         )}
 
-        <section className="px-4 py-6 sm:px-6">
+        <section className="pt-6">
           <SectionHeading
             actions={<Link className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-hover hover:text-foreground" params={{ poolId: pool.id }} to="/runner-pools/$poolId/activity">All activity<ArrowRight className="size-3" /></Link>}
-            className="mb-3"
+            className="mb-2 px-4"
           >
             Recent activity
           </SectionHeading>
           {events.status === "loading" ? <InlineLoading label="Loading activity…" /> : null}
-          {events.status === "error" ? <p className="text-sm text-danger">{events.error}</p> : null}
+          {events.status === "error" ? <p className="px-4 text-sm text-danger">{events.error}</p> : null}
           {events.status === "ready" ? (
-            events.data.items.length ? <PoolEventTimeline events={events.data.items.slice(0, 8)} /> : (
-              <p className="flex items-center gap-2 text-sm text-muted-foreground"><Activity className="size-4" />No lifecycle events recorded yet.</p>
+            events.data.items.length ? <div className="border-t border-border"><PoolEventTable events={events.data.items.slice(0, 10)} stickyHeader={false} /></div> : (
+              <p className="flex items-center gap-2 px-4 text-sm text-muted-foreground"><Activity className="size-4" />No lifecycle events recorded yet.</p>
             )
           ) : null}
         </section>
@@ -84,7 +95,7 @@ function PoolOverviewTab() {
 
       <PropertiesPanel>
         <PropertyGroup title="Status">
-          <PropertyRow label="State"><StatusBadge status={pool.paused ? "paused" : pool.state} /></PropertyRow>
+          <PropertyRow label="State"><StatusDot status={pool.paused ? "paused" : pool.state} />{statusLabel(pool.paused ? "paused" : pool.state)}</PropertyRow>
           <PropertyRow label="Runners"><CapacityMeter busy={busy} className="flex w-full" desired={pool.desiredCount} online={online} /></PropertyRow>
           <PropertyRow label="Range"><span className="tabular">{pool.minCount}–{pool.maxCount} runners</span></PropertyRow>
           <PropertyRow label="Autoscaling">{pool.autoscalingEnabled ? `On · idle after ${pool.idleTimeoutMinutes}m` : "Off"}</PropertyRow>
@@ -105,7 +116,7 @@ function PoolOverviewTab() {
 
         <PropertyGroup title="Destination">
           <PropertyRow label="Scope"><span className="capitalize">{pool.scope}</span></PropertyRow>
-          <PropertyRow label="Account"><Avatar name={pool.accountLogin} size={16} square />{pool.accountLogin}</PropertyRow>
+          <PropertyRow label="Account"><Avatar name={pool.accountLogin} size={16} square src={githubAvatar(pool.accountLogin)} />{pool.accountLogin}</PropertyRow>
           {pool.scope === "repository" ? (
             <div className="space-y-1 pt-1">
               {pool.repositories.slice(0, 6).map((repository) => (

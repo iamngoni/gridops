@@ -130,78 +130,86 @@
   --shadow-popover: var(--popover-shadow);
 }
 
-* {
-  border-color: var(--border);
-}
+/* Base element styles live in the base layer so Tailwind utilities can override them. */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
 
-html {
-  background: var(--background);
-}
+  html,
+  body {
+    overscroll-behavior: none;
+  }
 
-body {
-  min-width: 320px;
-  margin: 0;
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans);
-  font-size: 0.8125rem;
-  line-height: 1.25rem;
-  font-feature-settings: "cv01", "ss03";
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
-}
+  html {
+    background: var(--background);
+  }
 
-button,
-a,
-input,
-textarea,
-select {
-  -webkit-tap-highlight-color: transparent;
-}
+  body {
+    min-width: 320px;
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 0.8125rem;
+    line-height: 1.25rem;
+    font-feature-settings: "cv01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
 
-button:not(:disabled),
-a,
-summary {
-  cursor: pointer;
-}
+  button,
+  a,
+  input,
+  textarea,
+  select {
+    -webkit-tap-highlight-color: transparent;
+  }
 
-::selection {
-  background: color-mix(in oklab, var(--primary) 32%, transparent);
-}
+  button:not(:disabled),
+  a,
+  summary {
+    cursor: pointer;
+  }
 
-:focus-visible {
-  outline: 2px solid color-mix(in oklab, var(--ring) 70%, transparent);
-  outline-offset: 1px;
-}
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 32%, transparent);
+  }
 
-input:focus-visible,
-textarea:focus-visible,
-select:focus-visible,
-[cmdk-input]:focus-visible {
-  outline: none;
-}
+  :focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--ring) 70%, transparent);
+    outline-offset: 1px;
+  }
 
-/* Quiet, Linear-like scrollbars that stay out of the way until needed. */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent) transparent;
-}
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  [cmdk-input]:focus-visible {
+    outline: none;
+  }
 
-*::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
+  /* Quiet, Linear-like scrollbars that stay out of the way until needed. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent) transparent;
+  }
 
-*::-webkit-scrollbar-thumb {
-  border: 3px solid transparent;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--muted-foreground) 32%, transparent);
-  background-clip: padding-box;
-}
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
 
-*::-webkit-scrollbar-track {
-  background: transparent;
+  *::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--muted-foreground) 32%, transparent);
+    background-clip: padding-box;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
 }
 
 .tabular {

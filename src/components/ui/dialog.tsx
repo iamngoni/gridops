@@ -41,11 +41,11 @@ export function DialogContent({ className, children, ...props }: React.Component
 export function SheetContent({
   className,
   children,
-  title,
+  heading,
   description,
   actions,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Content> & { title: React.ReactNode; description?: React.ReactNode; actions?: React.ReactNode }) {
+}: React.ComponentProps<typeof DialogPrimitive.Content> & { heading: React.ReactNode; description?: React.ReactNode; actions?: React.ReactNode }) {
   return (
     <DialogPrimitive.Portal>
       <Overlay className="bg-black/20 dark:bg-black/40" />
@@ -58,7 +58,7 @@ export function SheetContent({
       >
         <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
           <div className="min-w-0 flex-1">
-            <DialogPrimitive.Title className="truncate text-sm font-medium">{title}</DialogPrimitive.Title>
+            <DialogPrimitive.Title className="truncate text-sm font-medium">{heading}</DialogPrimitive.Title>
             {description ? <DialogPrimitive.Description className="truncate text-2xs text-muted-foreground">{description}</DialogPrimitive.Description> : null}
           </div>
           {actions}

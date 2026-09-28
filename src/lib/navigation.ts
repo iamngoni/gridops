@@ -42,7 +42,7 @@ export const navigation: NavGroup[] = [
   {
     label: "Observe",
     items: [
-      { label: "Webhooks", to: "/webhooks", icon: Webhook, shortcut: "h", alert: "failedWebhooks" },
+      { label: "Webhooks", to: "/webhooks", icon: Webhook, shortcut: "h" },
       { label: "Audit log", to: "/audit-log", icon: FileClock, shortcut: "a" },
     ],
   },

@@ -1,29 +1,13 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import {
-  Activity,
-  ArrowDown,
-  ChevronDown,
-  ChevronRight,
-  Circle,
-  CircleCheck,
-  CircleX,
-  Clock3,
-  LoaderCircle,
-  Radio,
-  RefreshCw,
-  Search,
-  Terminal,
-  TriangleAlert,
-} from "lucide-react";
+import { ArrowDown, ChevronRight, CircleX, GitPullRequestArrow, LoaderCircle, Radio, RefreshCw, Search, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ListPagination } from "~/components/list-pagination";
-import { ResourcePage } from "~/components/resource-page";
+import { EmptyState, PageHeader } from "~/components/page";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
-import { StatusBadge } from "~/components/status-badge";
-import { Button } from "~/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
-import { Input } from "~/components/ui/input";
+import { RunStatusIcon } from "~/components/status-icon";
+import { Button, buttonVariants } from "~/components/ui/button";
+import { Tooltip } from "~/components/ui/tooltip";
 import {
   type StructuredJobLog,
   getLiveLogsPage,
@@ -31,7 +15,7 @@ import {
 } from "~/features/operations/operations.functions";
 import { advanceFollowedSteps, isNearLogEnd } from "~/lib/log-follow";
 import { parsePage } from "~/lib/pagination";
-import { cn, formatDuration } from "~/lib/utils";
+import { cn, formatAge, formatDuration } from "~/lib/utils";
 
 export const Route = createFileRoute("/_app/live-logs")({
   validateSearch: (search: Record<string, unknown>): { target?: string; page?: number } => {
@@ -41,13 +25,7 @@ export const Route = createFileRoute("/_app/live-logs")({
   },
   loaderDeps: ({ search }) => ({ target: search.target, page: search.page ?? 1 }),
   loader: ({ deps }) => getLiveLogsPage({ page: deps.page, target: deps.target }),
-  pendingComponent: () => (
-    <ResourcePageLoading
-      title="Live logs"
-      description="Loading workflow jobs, steps, and annotations."
-      icon={Radio}
-    />
-  ),
+  pendingComponent: () => <ResourcePageLoading icon={Radio} title="Live logs" />,
   component: LiveLogsRoutePage,
 });
 
@@ -215,193 +193,160 @@ function LiveLogsPage() {
     viewport?.scrollTo({ behavior: "smooth", top: viewport.scrollHeight });
   }
 
+  const status = jobLog?.conclusion ?? jobLog?.status ?? selected?.jobConclusion ?? selected?.jobStatus ?? "queued";
+
+  if (targets.length === 0) {
+    return (
+      <>
+        <PageHeader icon={Radio} title="Live logs" />
+        <EmptyState description="Logs appear once GitHub assigns a workflow job to a managed runner." icon={Radio} title="No job logs yet">
+          <Link className={buttonVariants({ variant: "outline" })} to="/workflow-runs"><GitPullRequestArrow />Workflow runs</Link>
+        </EmptyState>
+      </>
+    );
+  }
+
   return (
-    <ResourcePage
-      title="Live logs"
-      description="Inspect clean workflow output by job and step, with failures and annotations surfaced first."
-      icon={Radio}
-      emptyTitle="No workflow job logs"
-      emptyDescription="Logs appear when GitHub assigns a workflow job to a managed runner."
-      action="Workflow runs"
-      actionHref="/workflow-runs"
-      actionIcon={Activity}
-    >
-      {targets.length > 0 ? (
-        <div className="grid items-start gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle>Workflow jobs</CardTitle>
-                <p className="mt-1 text-xs text-muted-foreground">Choose a current or retained job log.</p>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              <div className="max-h-[30rem] space-y-2 overflow-y-auto p-3 xl:max-h-[44rem]">
-                {targets.map((target) => (
-                  <button
-                    aria-pressed={target.id === selectedId}
-                    className={cn(
-                      "w-full rounded-lg p-3 text-left transition-colors",
-                      target.id === selectedId
-                        ? "bg-primary/[0.09] shadow-[inset_3px_0_0_hsl(153_64%_52%)]"
-                        : "hover:bg-muted/50",
-                    )}
-                    key={target.id}
-                    onClick={() => selectTarget(target.id)}
-                    type="button"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <span className="line-clamp-2 text-sm font-medium leading-5">{target.jobName}</span>
-                      <StatusBadge status={target.jobConclusion ?? target.jobStatus} />
-                    </div>
-                    <div className="mt-1.5 truncate text-[11px] text-muted-foreground">
-                      {target.workflowName} #{target.runNumber}
-                    </div>
-                    <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                      <span className="truncate">{target.repository}</span>
-                      <span className="shrink-0 uppercase tracking-wide">{target.kind}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-              <ListPagination
-                itemCount={targets.length}
-                noun="job logs"
-                onPageChange={(page) => void navigate({ search: { page, target: undefined } })}
-                page={targetPage.page}
-                perPage={targetPage.perPage}
-                total={targetPage.total}
-              />
-            </CardContent>
-          </Card>
-
-          <div className="min-w-0 space-y-4">
-            <Card>
-              <CardHeader>
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Terminal className="size-4 text-primary" />
-                    <CardTitle className="truncate">{jobLog?.name ?? selected?.jobName ?? "Job log"}</CardTitle>
-                    <StatusBadge status={jobLog?.conclusion ?? jobLog?.status ?? selected?.jobConclusion ?? selected?.jobStatus ?? "queued"} />
-                  </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {jobLog?.repository ?? selected?.repository} · {jobLog?.workflowName ?? selected?.workflowName} #{jobLog?.runNumber ?? selected?.runNumber}
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  {active ? <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground"><span className={cn("size-1.5 rounded-full", following ? "bg-emerald-400" : "bg-amber-400")} />{following ? "Following" : "Follow paused"}</span> : null}
-                  {selected?.runId ? <Link className="text-xs font-medium text-muted-foreground hover:text-foreground" params={{ runId: String(selected.runId) }} to="/workflow-runs/$runId">View run</Link> : null}
-                  <Button disabled={loading} onClick={() => selected?.jobId && void refreshLog(selected.jobId, true)} size="icon" title="Refresh job log" variant="outline">
-                    {loading ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
-                    <span className="sr-only">Refresh job log</span>
-                  </Button>
-                </div>
-              </CardHeader>
-              {jobLog ? <CardContent className="border-t border-border/60 py-3">
-                <div className="grid gap-3 text-xs sm:grid-cols-3">
-                  <Meta label="Duration" value={formatDuration(jobLog.startedAt, jobLog.completedAt)} />
-                  <Meta label="Steps" value={`${jobLog.steps.length}`} />
-                  <Meta label="Log source" value={jobLog.source === "github" ? "GitHub job log" : jobLog.source === "runner" ? "Live runner" : "Waiting for output"} />
-                </div>
-              </CardContent> : null}
-            </Card>
-
-            {error ? <div className="rounded-lg border border-red-500/25 bg-red-500/8 px-4 py-3 text-sm text-red-200">{error}</div> : null}
-            {jobLog?.metadataWarning ? <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 px-4 py-3 text-sm text-amber-100">{jobLog.metadataWarning}</div> : null}
-            {jobLog?.truncated ? <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 px-4 py-3 text-sm text-amber-100">This exceptionally large job log is showing its final 25 MB.</div> : null}
-
-            {jobLog?.annotations.length ? <Card>
-              <CardHeader>
-                <div>
-                  <CardTitle>Annotations</CardTitle>
-                  <p className="mt-1 text-xs text-muted-foreground">{annotationSummary(jobLog)}</p>
-                </div>
-                <TriangleAlert className="size-5 text-red-400" />
-              </CardHeader>
-              <CardContent className="space-y-2 pt-0">
-                {jobLog.annotations.map((annotation, index) => (
-                  <button
-                    className={cn(
-                      "flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
-                      annotation.level === "error"
-                        ? "border-red-500/20 bg-red-500/6 hover:bg-red-500/10"
-                        : "border-amber-500/20 bg-amber-500/6 hover:bg-amber-500/10",
-                    )}
-                    key={`${annotation.stepNumber}:${annotation.message}:${index}`}
-                    onClick={() => revealStep(annotation.stepNumber)}
-                    type="button"
-                  >
-                    {annotation.level === "error" ? <CircleX className="mt-0.5 size-4 shrink-0 text-red-400" /> : <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-400" />}
-                    <span className="min-w-0"><span className="block text-xs font-medium">{annotation.stepName}</span><span className="mt-1 block break-words font-mono text-[11px] leading-5 text-muted-foreground">{annotation.message}</span></span>
-                  </button>
-                ))}
-              </CardContent>
-            </Card> : null}
-
-            <Card className="min-w-0 overflow-hidden">
-              <CardHeader>
-                <div>
-                  <CardTitle>Steps</CardTitle>
-                  <p className="mt-1 text-xs text-muted-foreground">Running and failed steps open automatically while following.</p>
-                </div>
-                <div className="relative w-full sm:w-64">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                  <Input aria-label="Search job logs" className="h-9 pl-9" onChange={(event) => setQuery(event.target.value)} placeholder="Search logs…" value={query} />
-                </div>
-              </CardHeader>
-              <CardContent className="relative p-0">
-                <div className="max-h-[68vh] min-h-[360px] overflow-auto border-t border-border/60" onScroll={handleLogScroll} ref={logViewport}>
-                  {loading && !jobLog ? <div className="grid min-h-80 place-items-center text-sm text-muted-foreground"><LoaderCircle className="mr-2 inline size-4 animate-spin" />Loading structured job output…</div> : null}
-                  {!loading && jobLog && visibleSteps.length === 0 ? <div className="grid min-h-64 place-items-center text-sm text-muted-foreground">No step output matches “{query}”.</div> : null}
-                  {visibleSteps.map((step) => {
-                    const expanded = expandedSteps.has(step.number) || Boolean(query);
-                    return <div className="border-b border-border/50 last:border-b-0" key={step.number}>
-                      <button className={cn("flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30", step.conclusion === "failure" && "bg-red-500/[0.035]")} onClick={() => toggleStep(step.number)} type="button">
-                        {expanded ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
-                        <StepIcon conclusion={step.conclusion} status={step.status} />
-                        <span className="min-w-0 flex-1 truncate text-sm font-medium">{step.name}</span>
-                        <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground"><Clock3 className="size-3" />{formatDuration(step.startedAt, step.completedAt)}</span>
-                      </button>
-                      {expanded ? <div className="border-t border-border/40 bg-[hsl(222_35%_5%)]">
-                        {step.lines.length ? <pre className="overflow-x-auto py-3 font-mono text-[12px] leading-5 text-slate-200"><code>{step.lines.map((line, index) => <LogLine index={index + 1} key={`${line.timestamp}:${index}`} level={line.level} text={line.text} />)}</code></pre> : <div className="px-12 py-5 text-xs text-muted-foreground">{active && step.status === "in_progress" ? "Waiting for output from this step…" : "No console output for this step."}</div>}
-                      </div> : null}
-                    </div>;
-                  })}
-                </div>
-                {active && !following ? <Button className="absolute bottom-4 right-4 shadow-lg" onClick={jumpToLatest} size="sm" variant="secondary"><ArrowDown />Jump to latest</Button> : null}
-              </CardContent>
-            </Card>
+    <>
+      <PageHeader count={targetPage.total || undefined} icon={Radio} title="Live logs" />
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <aside className="flex max-h-72 shrink-0 flex-col border-b border-border md:max-h-none md:w-[320px] md:border-b-0 md:border-r">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {targets.map((target) => {
+              const targetState = target.jobConclusion ?? target.jobStatus;
+              const current = target.id === selectedId;
+              return (
+                <button
+                  aria-pressed={current}
+                  className={cn("flex w-full items-start gap-2.5 border-b border-border px-3 py-2 text-left transition-colors", current ? "bg-selected" : "hover:bg-hover")}
+                  key={target.id}
+                  onClick={() => selectTarget(target.id)}
+                  type="button"
+                >
+                  <RunStatusIcon className="mt-[3px]" status={targetState} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{target.jobName}</span>
+                      {target.kind === "live" ? <span className="shrink-0 rounded-full bg-info/15 px-1.5 text-2xs font-medium text-info">Live</span> : null}
+                      <span className="tabular shrink-0 text-2xs text-faint">{formatAge(target.updatedAt)}</span>
+                    </span>
+                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                      {target.workflowName} #{target.runNumber}<span className="text-faint"> · {target.repository?.split("/").pop()}</span>
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
-        </div>
-      ) : undefined}
-    </ResourcePage>
+          <div className="shrink-0 border-t border-border">
+            <ListPagination compact itemCount={targets.length} noun="jobs" onPageChange={(page) => void navigate({ search: { page, target: undefined } })} page={targetPage.page} perPage={targetPage.perPage} total={targetPage.total} />
+          </div>
+        </aside>
+
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-4 py-2">
+            <RunStatusIcon status={status} />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium">{jobLog?.name ?? selected?.jobName ?? "Job log"}</div>
+              <div className="truncate text-xs text-muted-foreground">
+                {jobLog?.repository ?? selected?.repository} · {jobLog?.workflowName ?? selected?.workflowName} #{jobLog?.runNumber ?? selected?.runNumber}
+                {jobLog ? <> · {formatDuration(jobLog.startedAt, jobLog.completedAt)} · {jobLog.source === "github" ? "GitHub log" : jobLog.source === "runner" ? "live runner" : "waiting for output"}</> : null}
+              </div>
+            </div>
+            {active ? (
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span className={cn("size-1.5 rounded-full", following ? "bg-success live-pulse" : "bg-warning")} />{following ? "Following" : "Paused"}
+              </span>
+            ) : null}
+            <label className="relative hidden h-7 w-56 items-center sm:flex">
+              <Search className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground" />
+              <input
+                aria-label="Search job logs"
+                className="h-7 w-full rounded-md border border-border-strong bg-panel pl-7 pr-2 text-xs outline-none placeholder:text-faint focus:border-primary/70"
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search output…"
+                value={query}
+              />
+            </label>
+            {selected?.runId ? <Link className={buttonVariants({ size: "sm", variant: "ghost" })} params={{ runId: String(selected.runId) }} to="/workflow-runs/$runId">View run</Link> : null}
+            <Tooltip content="Refresh log">
+              <Button aria-label="Refresh job log" disabled={loading} onClick={() => selected?.jobId && void refreshLog(selected.jobId, true)} size="icon-sm" variant="ghost">
+                {loading ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
+              </Button>
+            </Tooltip>
+          </div>
+
+          {error || jobLog?.metadataWarning || jobLog?.truncated ? (
+            <div className="shrink-0 space-y-1 border-b border-border px-4 py-2 text-xs">
+              {error ? <p className="text-danger">{error}</p> : null}
+              {jobLog?.metadataWarning ? <p className="text-warning">{jobLog.metadataWarning}</p> : null}
+              {jobLog?.truncated ? <p className="text-warning">This very large job log is showing its final 25 MB.</p> : null}
+            </div>
+          ) : null}
+
+          {jobLog?.annotations.length ? (
+            <div className="shrink-0 border-b border-border">
+              <div className="flex h-8 items-center gap-2 px-4 text-xs font-medium text-muted-foreground">Annotations<span className="font-normal text-faint">{annotationSummary(jobLog)}</span></div>
+              <div className="max-h-40 overflow-y-auto pb-1">
+                {jobLog.annotations.map((annotation, index) => (
+                  <button className="flex w-full items-start gap-2.5 px-4 py-1.5 text-left hover:bg-hover" key={`${annotation.stepNumber}:${annotation.message}:${index}`} onClick={() => revealStep(annotation.stepNumber)} type="button">
+                    {annotation.level === "error" ? <CircleX className="mt-0.5 size-3.5 shrink-0 text-danger" /> : <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" />}
+                    <span className="min-w-0 text-xs"><span className="font-medium text-foreground">{annotation.stepName}</span><span className="ml-2 break-words font-mono text-muted-foreground">{annotation.message}</span></span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="relative min-h-0 flex-1">
+            <div className="absolute inset-0 overflow-auto bg-[var(--log-background)]" onScroll={handleLogScroll} ref={logViewport}>
+              {loading && !jobLog ? <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Loading job output…</div> : null}
+              {!loading && jobLog && visibleSteps.length === 0 ? <div className="p-6 text-sm text-muted-foreground">No step output matches “{query}”.</div> : null}
+              {visibleSteps.map((step) => {
+                const expanded = expandedSteps.has(step.number) || Boolean(query);
+                return (
+                  <div className="border-b border-white/[0.06]" key={step.number}>
+                    <button className={cn("sticky top-0 z-[1] flex w-full items-center gap-2.5 bg-[var(--log-background)] px-4 py-2 text-left hover:bg-white/[0.03]", step.conclusion === "failure" && "text-[#ff8a8a]")} onClick={() => toggleStep(step.number)} type="button">
+                      <ChevronRight className={cn("size-3.5 shrink-0 text-[#62666d] transition-transform", expanded && "rotate-90")} />
+                      <RunStatusIcon status={step.conclusion ?? step.status} />
+                      <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[#d0d6e0]">{step.name}</span>
+                      <span className="tabular shrink-0 text-xs text-[#62666d]">{formatDuration(step.startedAt, step.completedAt)}</span>
+                    </button>
+                    {expanded ? (
+                      step.lines.length ? (
+                        <pre className="overflow-x-auto pb-2 font-mono text-xs leading-5 text-[#c9ced6]"><code>{step.lines.map((line, index) => <LogLine index={index + 1} key={`${line.timestamp}:${index}`} level={line.level} text={line.text} />)}</code></pre>
+                      ) : <div className="px-11 pb-3 text-xs text-[#62666d]">{active && step.status === "in_progress" ? "Waiting for output from this step…" : "No console output for this step."}</div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+            {active && !following ? <Button className="absolute bottom-4 right-4 shadow-popover" onClick={jumpToLatest} size="sm" variant="secondary"><ArrowDown />Jump to latest</Button> : null}
+          </div>
+        </section>
+      </div>
+    </>
   );
 }
 
-function Meta({ label, value }: { label: string; value: string }) {
-  return <div><div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</div><div className="mt-1 font-medium">{value}</div></div>;
-}
-
-function StepIcon({ conclusion, status }: { conclusion: string | null; status: string }) {
-  if (conclusion === "failure") return <CircleX className="size-4 shrink-0 text-red-400" />;
-  if (conclusion === "success") return <CircleCheck className="size-4 shrink-0 text-emerald-400" />;
-  if (status === "in_progress") return <LoaderCircle className="size-4 shrink-0 animate-spin text-sky-400" />;
-  return <Circle className="size-4 shrink-0 text-muted-foreground" />;
-}
-
 function LogLine({ index, level, text }: { index: number; level: string; text: string }) {
-  return <span className={cn(
-    "grid min-w-max grid-cols-[3.5rem_minmax(0,1fr)] px-4",
-    level === "error" && "bg-red-500/15 text-red-200",
-    level === "warning" && "bg-amber-500/12 text-amber-100",
-    level === "command" && "text-sky-200",
-    level === "group" && "mt-1 font-semibold text-slate-100",
-    level === "notice" && "text-emerald-200",
-  )}><span className="select-none pr-4 text-right text-slate-600">{index}</span><span className="whitespace-pre-wrap break-words pr-4">{level === "group" ? `› ${text}` : text || " "}</span></span>;
+  return (
+    <span className={cn(
+      "grid min-w-max grid-cols-[3.25rem_minmax(0,1fr)] pr-4",
+      level === "error" && "bg-[#eb5757]/15 text-[#ffb4b4]",
+      level === "warning" && "bg-[#f2994a]/12 text-[#ffd8b0]",
+      level === "command" && "text-[#8fc1ff]",
+      level === "group" && "mt-1 font-semibold text-[#f7f8f8]",
+      level === "notice" && "text-[#8fe0b5]",
+    )}>
+      <span className="select-none pr-4 text-right text-[#4a4d54]">{index}</span>
+      <span className="whitespace-pre-wrap break-words">{level === "group" ? `▸ ${text}` : text || " "}</span>
+    </span>
+  );
 }
 
 function annotationSummary(job: StructuredJobLog) {
   const errors = job.annotations.filter((annotation) => annotation.level === "error").length;
   const warnings = job.annotations.filter((annotation) => annotation.level === "warning").length;
-  return `${errors} ${errors === 1 ? "error" : "errors"} and ${warnings} ${warnings === 1 ? "warning" : "warnings"}`;
+  return `${errors} ${errors === 1 ? "error" : "errors"} · ${warnings} ${warnings === 1 ? "warning" : "warnings"}`;
 }

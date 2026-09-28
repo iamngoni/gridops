@@ -67,7 +67,7 @@ export function AppShell({ children, sidebar }: { children: React.ReactNode; sid
 
   return (
     <ShellContext.Provider value={shell}>
-      <div className="flex h-dvh overflow-hidden bg-background text-foreground">
+      <div className="fixed inset-0 flex overflow-hidden bg-background text-foreground">
         <div className="hidden lg:flex">{sidebar ?? <Sidebar onSearch={openCommandMenu} viewer={viewer} />}</div>
         {mobileOpen ? (
           <div className="fixed inset-0 z-50 flex lg:hidden">

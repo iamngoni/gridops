@@ -3,7 +3,7 @@ import { Boxes } from "lucide-react";
 
 import { PageBody, PageHeader, PageToolbar, ViewTabLink } from "~/components/page";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
-import { StatusBadge } from "~/components/status-icon";
+import { StatusDot } from "~/components/status-icon";
 import { PoolActionsMenu } from "~/features/runner-pools/pool-actions";
 import { getRunnerPoolAction } from "~/features/runner-pools/runner-pools.functions";
 
@@ -24,7 +24,7 @@ function PoolLayout() {
       <PageHeader
         actions={pool.canManage ? <PoolActionsMenu pool={pool} showOpen={false} triggerVariant="outline" /> : null}
         breadcrumbs={[{ label: "Runner pools", to: "/runner-pools" }]}
-        title={<span className="flex items-center gap-2"><StatusBadge iconOnly status={pool.paused ? "paused" : pool.state} />{pool.name}</span>}
+        title={<span className="flex items-center gap-2"><StatusDot status={pool.paused ? "paused" : pool.state} />{pool.name}</span>}
       />
       <PageToolbar>
         <ViewTabLink active={tab === "overview"} params={params} to="/runner-pools/$poolId">Overview</ViewTabLink>

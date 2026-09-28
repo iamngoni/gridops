@@ -4,6 +4,8 @@ import { Button } from "~/components/ui/button";
 import { pageNumbers } from "~/lib/pagination";
 
 type ListPaginationProps = {
+  /** Previous/next only, for narrow panes. */
+  compact?: boolean;
   itemCount: number;
   noun: string;
   onPageChange: (page: number) => void;
@@ -13,7 +15,7 @@ type ListPaginationProps = {
 };
 
 /** Quiet list footer: range on the left, compact page stepper on the right. */
-export function ListPagination({ itemCount, noun, onPageChange, page, perPage, total }: ListPaginationProps) {
+export function ListPagination({ compact = false, itemCount, noun, onPageChange, page, perPage, total }: ListPaginationProps) {
   if (total === 0) return null;
   const totalPages = Math.max(1, Math.ceil(total / perPage));
   const currentPage = Math.min(page, totalPages);
@@ -22,11 +24,11 @@ export function ListPagination({ itemCount, noun, onPageChange, page, perPage, t
 
   return (
     <nav aria-label={`${noun} pagination`} className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-xs text-muted-foreground">
-      <span className="tabular">{start}–{end} of {total} {noun}</span>
+      <span className="tabular">{start}–{end} of {total}{compact ? "" : ` ${noun}`}</span>
       {totalPages > 1 ? (
         <div className="ml-auto flex max-w-full flex-nowrap items-center gap-0.5 overflow-x-auto">
           <Button aria-label={`Previous ${noun} page`} disabled={currentPage === 1} onClick={() => onPageChange(currentPage - 1)} size="icon-xs" variant="ghost"><ChevronLeft /></Button>
-          {pageNumbers(currentPage, totalPages).map((pageNumber) => (
+          {compact ? null : pageNumbers(currentPage, totalPages).map((pageNumber) => (
             <Button
               aria-current={pageNumber === currentPage ? "page" : undefined}
               aria-label={`${noun} page ${pageNumber}`}

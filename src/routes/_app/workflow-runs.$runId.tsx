@@ -42,7 +42,7 @@ function WorkflowRunDetailPage() {
       <PageBody>
         <div className="flex min-h-full flex-col lg:flex-row">
           <div className="min-w-0 flex-1">
-            <div className="mx-auto max-w-[880px] px-5 py-8 sm:px-8">
+            <div className="px-5 py-8 sm:px-8">
               <div className="flex items-start gap-3">
                 <RunStatusIcon className="mt-1.5" size={18} status={state} />
                 <div className="min-w-0">

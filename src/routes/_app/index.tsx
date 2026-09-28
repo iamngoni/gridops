@@ -7,11 +7,12 @@ import { AsyncActionButton } from "~/components/async-action-button";
 import { CapacityMeter } from "~/components/capacity-meter";
 import { Callout, EmptyState, PageBody, PageHeader, SectionHeading, listRowClassName } from "~/components/page";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
-import { StatusBadge, StatusDot } from "~/components/status-icon";
+import { StatusDot } from "~/components/status-icon";
 import { buttonVariants } from "~/components/ui/button";
 import { getCapacityHistory, getDashboardOverview } from "~/features/dashboard/dashboard.functions";
 import type { CapacityHistory, CapacityWindow, DashboardOverview } from "~/features/dashboard/types";
 import { syncGitHubAction } from "~/features/operations/operations.functions";
+import { humanizeEvent } from "~/features/runner-pools/pool-events";
 import { RunRow } from "~/features/workflow-runs/run-row";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 import { cn, formatAge } from "~/lib/utils";
@@ -51,7 +52,7 @@ function OverviewPage() {
         title="Overview"
       />
       <PageBody>
-        <div className="mx-auto w-full max-w-[1320px] space-y-8 px-4 py-6 sm:px-6 lg:px-8">
+        <div className="w-full space-y-8 px-4 py-6 sm:px-6 lg:px-8">
           {!configurationComplete ? <ConfigurationCallout data={data} /> : null}
           <MetricStrip data={data} />
           <div className="grid gap-8 xl:grid-cols-[minmax(0,1.55fr)_minmax(340px,1fr)]">
@@ -207,9 +208,9 @@ function CapacitySection({ installations }: { installations: number }) {
                   cursor={{ stroke: "var(--border-strong)" }}
                   labelFormatter={(value) => new Date(String(value)).toLocaleString()}
                 />
-                <Area dataKey="available" fill="url(#capacity-success)" name="Available" stroke="var(--success)" strokeWidth={1.5} type="monotone" />
-                <Area dataKey="busy" fill="url(#capacity-info)" name="Busy" stroke="var(--info)" strokeWidth={1.5} type="monotone" />
-                <Area dataKey="queued" fill="url(#capacity-warning)" name="Queued" stroke="var(--warning)" strokeWidth={1.5} type="monotone" />
+                <Area dataKey="available" isAnimationActive={false} fill="url(#capacity-success)" name="Available" stroke="var(--success)" strokeWidth={1.5} type="monotone" />
+                <Area dataKey="busy" isAnimationActive={false} fill="url(#capacity-info)" name="Busy" stroke="var(--info)" strokeWidth={1.5} type="monotone" />
+                <Area dataKey="queued" isAnimationActive={false} fill="url(#capacity-warning)" name="Queued" stroke="var(--warning)" strokeWidth={1.5} type="monotone" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -249,7 +250,7 @@ function PoolsSection({ pools }: { pools: DashboardOverview["pools"] }) {
           </EmptyState>
         ) : pools.map((pool) => (
           <Link className={cn(listRowClassName, "last:border-b-0")} key={pool.id} params={{ poolId: pool.id }} to="/runner-pools/$poolId">
-            <StatusBadge iconOnly status={pool.status} />
+            <span className="inline-flex size-3.5 items-center justify-center"><StatusDot status={pool.status} /></span>
             <span className="min-w-0 flex-1 truncate font-medium">{pool.name}</span>
             <span className="hidden text-xs capitalize text-muted-foreground sm:inline">{pool.scope} · {pool.mode}</span>
             <CapacityMeter busy={pool.busy} desired={pool.desired} online={pool.online} />
@@ -328,16 +329,11 @@ function ActivitySection({ activity }: { activity: DashboardOverview["activity"]
   return (
     <section className="space-y-3">
       <SectionHeading actions={<ViewAll label="Live logs" to="/live-logs" />}>Activity</SectionHeading>
-      {activity.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border-strong px-4 py-8 text-center">
-          <Radio className="mx-auto size-5 text-faint" />
-          <p className="mt-2 text-sm text-muted-foreground">Runner lifecycle and assignment events will stream here.</p>
-        </div>
-      ) : (
-        <ol className="relative space-y-0.5 before:absolute before:bottom-3 before:left-[7px] before:top-3 before:w-px before:bg-border">
-          {activity.map((item) => <ActivityItem item={item} key={item.id} />)}
-        </ol>
-      )}
+      <div className="overflow-hidden rounded-lg border border-border">
+        {activity.length === 0 ? (
+          <div className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground"><Radio className="size-4 text-faint" />Runner lifecycle and assignment events stream here.</div>
+        ) : activity.map((item) => <ActivityItem item={item} key={item.id} />)}
+      </div>
     </section>
   );
 }
@@ -346,18 +342,14 @@ function ActivityItem({ item }: { item: DashboardOverview["activity"][number] })
   const tone = item.level === "error" ? "danger" : item.level === "warning" ? "warning" : "success";
   const body = (
     <>
-      <span className="relative z-[1] mt-1.5 grid size-[15px] shrink-0 place-items-center rounded-full bg-panel"><StatusDot pulse={false} tone={tone} /></span>
-      <span className="min-w-0 flex-1">
-        <span className="flex items-baseline gap-2">
-          <span className="truncate text-sm font-medium text-foreground">{item.event}</span>
-          <time className="tabular ml-auto shrink-0 text-2xs text-faint" dateTime={item.createdAt}>{formatAge(item.createdAt)}</time>
-        </span>
-        <span className="mt-0.5 line-clamp-2 block text-xs leading-5 text-muted-foreground">{item.message}</span>
-      </span>
+      <StatusDot pulse={false} tone={tone} />
+      <span className="max-w-[45%] shrink-0 truncate font-medium text-foreground">{humanizeEvent(item.event)}</span>
+      <span className="min-w-0 flex-1 truncate text-muted-foreground" title={item.message}>{item.message}</span>
+      <time className="tabular shrink-0 text-xs text-faint" dateTime={item.createdAt}>{formatAge(item.createdAt)}</time>
     </>
   );
-  const className = "flex gap-3 rounded-md px-0 py-1.5 transition-colors hover:bg-hover/60";
-  if (item.runnerId) return <li><Link className={className} search={{ target: item.runnerId }} to="/live-logs">{body}</Link></li>;
-  if (item.poolId) return <li><Link className={className} params={{ poolId: item.poolId }} to="/runner-pools/$poolId">{body}</Link></li>;
-  return <li className={className}>{body}</li>;
+  const className = cn(listRowClassName, "min-h-10 last:border-b-0");
+  if (item.runnerId) return <Link className={className} search={{ target: item.runnerId }} to="/live-logs">{body}</Link>;
+  if (item.poolId) return <Link className={className} params={{ poolId: item.poolId }} to="/runner-pools/$poolId">{body}</Link>;
+  return <div className={className}>{body}</div>;
 }

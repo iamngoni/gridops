@@ -5,8 +5,8 @@ import { CapacityMeter } from "~/components/capacity-meter";
 import { ListPagination } from "~/components/list-pagination";
 import { EmptyState, ListGroup, PageBody, PageHeader, listRowClassName } from "~/components/page";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
-import { StatusBadge, statusLabel } from "~/components/status-icon";
-import { Avatar } from "~/components/ui/avatar";
+import { StatusDot, statusLabel } from "~/components/status-icon";
+import { Avatar, githubAvatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
 import { buttonVariants } from "~/components/ui/button";
 import { Tooltip } from "~/components/ui/tooltip";
@@ -25,16 +25,18 @@ export const Route = createFileRoute("/_app/runner-pools/")({
 });
 
 const GROUPS = [
-  { key: "attention", label: "Needs attention" },
-  { key: "active", label: "Active" },
-  { key: "changing", label: "Scaling or updating" },
-  { key: "paused", label: "Paused" },
+  { key: "attention", label: "Needs attention", tone: "danger" },
+  { key: "waiting", label: "Waiting for capacity", tone: "warning" },
+  { key: "changing", label: "Scaling or updating", tone: "progress" },
+  { key: "active", label: "Active", tone: "success" },
+  { key: "paused", label: "Paused", tone: "neutral" },
 ] as const;
 
 function poolGroup(pool: RunnerPool): (typeof GROUPS)[number]["key"] {
   if (pool.paused || pool.state === "paused" || pool.state === "provisioning-paused") return "paused";
-  if (pool.provisionCircuitOpen || pool.failedRunners > 0 || ["blocked", "backoff"].includes(pool.state)) return "attention";
-  if (["scaling", "updating", "draining", "waiting"].includes(pool.state) || pool.outdatedRunners > 0) return "changing";
+  if (pool.provisionCircuitOpen || pool.failedRunners > 0 || pool.state === "blocked") return "attention";
+  if (pool.state === "waiting" || pool.state === "backoff") return "waiting";
+  if (["scaling", "updating", "draining"].includes(pool.state) || pool.outdatedRunners > 0) return "changing";
   return "active";
 }
 
@@ -66,7 +68,7 @@ function RunnerPoolsPage() {
         ) : (
           <>
             {grouped.map((group) => (
-              <ListGroup count={group.pools.length} icon={<StatusBadge iconOnly status={group.key === "attention" ? "failed" : group.key === "paused" ? "paused" : group.key === "changing" ? "scaling" : "active"} />} key={group.key} label={group.label}>
+              <ListGroup count={group.pools.length} icon={<StatusDot pulse={false} tone={group.tone} />} key={group.key} label={group.label}>
                 {group.pools.map((pool) => <PoolRow key={pool.id} pool={pool} />)}
               </ListGroup>
             ))}
@@ -85,7 +87,7 @@ function PoolRow({ pool }: { pool: RunnerPool }) {
   return (
     <div className={cn(listRowClassName, "relative pr-2")}>
       <Link aria-label={`Open ${pool.name}`} className="absolute inset-0" params={{ poolId: pool.id }} to="/runner-pools/$poolId" />
-      <Tooltip content={statusLabel(state)}><span className="relative inline-flex"><StatusBadge iconOnly status={state} /></span></Tooltip>
+      <Tooltip content={statusLabel(state)}><span className="relative inline-flex size-3.5 items-center justify-center"><StatusDot status={state} /></span></Tooltip>
       <span className="min-w-0 shrink truncate font-medium">{pool.name}</span>
       <span className="hidden min-w-0 items-center gap-1 overflow-hidden md:flex">
         {providers.map((provider) => <Badge dot={provider === "tart" ? "bg-[#bb87fc]" : "bg-info"} key={provider}>{providerLabel(provider, pool.macosRuntime)}</Badge>)}
@@ -96,7 +98,7 @@ function PoolRow({ pool }: { pool: RunnerPool }) {
       {pool.outdatedRunners > 0 ? <Badge className="hidden lg:inline-flex" dot="bg-warning">{pool.outdatedRunners} updating</Badge> : null}
       <span className="flex-1" />
       <span className="hidden w-40 shrink-0 items-center gap-1.5 truncate text-xs text-muted-foreground xl:flex" title={destination}>
-        <Avatar name={pool.accountLogin} size={16} square />
+        <Avatar name={pool.accountLogin} size={16} square src={githubAvatar(pool.accountLogin)} />
         <span className="truncate">{destination}</span>
       </span>
       <span className="tabular hidden w-24 shrink-0 text-right text-xs text-muted-foreground lg:block">{pool.cpuLimit} CPU · {pool.memoryLimitMb >= 1024 ? `${Math.round(pool.memoryLimitMb / 102.4) / 10} GB` : `${pool.memoryLimitMb} MB`}</span>

@@ -1,26 +1,23 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ExternalLink, LoaderCircle, Lock, PackageSearch, RefreshCw, Search, X } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { ExternalLink, GitBranch, Lock, PackageSearch, Plus, RefreshCw, Search, X } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { ListPagination } from "~/components/list-pagination";
-import { ResourcePage } from "~/components/resource-page";
+import { EmptyState, ListGroup, LoadingRows, PageBody, PageHeader, PageToolbar, listRowClassName } from "~/components/page";
+import { Avatar, githubAvatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
-import { Button } from "~/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
-import { Input } from "~/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "~/components/ui/table";
-import { getRepositoriesPage } from "~/features/operations/operations.functions";
+import { Button, buttonVariants } from "~/components/ui/button";
+import { Tooltip } from "~/components/ui/tooltip";
+import { type Repository, getRepositoriesPage } from "~/features/operations/operations.functions";
 import { parsePage } from "~/lib/pagination";
-import { cn, formatRelativeTime } from "~/lib/utils";
+import { cn, formatAge } from "~/lib/utils";
 
 export const Route = createFileRoute("/_app/repositories")({
-  validateSearch: (search: Record<string, unknown>) => {
-    return {
-      q: typeof search.q === "string" ? search.q.slice(0, 100) : "",
-      page: parsePage(search.page),
-    };
-  },
+  validateSearch: (search: Record<string, unknown>) => ({
+    q: typeof search.q === "string" ? search.q.slice(0, 100) : "",
+    page: parsePage(search.page),
+  }),
   component: RepositoriesPage,
 });
 
@@ -33,182 +30,106 @@ function RepositoriesPage() {
     placeholderData: keepPreviousData,
   });
   const data = repositories.data;
+  const groups = groupByAccount(data?.items ?? []);
+  const [draft, setDraft] = useState(search.q);
 
-  function searchRepositories(query: string) {
-    void navigate({ search: { q: query, page: 1 } });
-  }
-
-  function clearSearch() {
-    searchRepositories("");
-  }
-
-  function goToPage(page: number) {
-    void navigate({ search: { q: search.q, page } });
-  }
+  useEffect(() => {
+    const trimmed = draft.trim();
+    if (trimmed === search.q) return undefined;
+    const timeout = window.setTimeout(() => void navigate({ search: { q: trimmed, page: 1 } }), 280);
+    return () => window.clearTimeout(timeout);
+  }, [draft, navigate, search.q]);
 
   return (
-    <ResourcePage
-      title="Repositories"
-      description="A live view of repositories available to your GitHub App installations."
-      icon={PackageSearch}
-      emptyTitle={data?.authenticated ? "No repositories in this installation" : "No repositories connected"}
-      emptyDescription="Authorize GridOps and install the GitHub App on the repositories or organizations you want to operate."
-      action="Create runner pool"
-      actionHref="/runner-pools/new"
-    >
-      {repositories.isError && !data ? (
-        <Card>
-          <CardContent className="grid min-h-72 place-items-center p-6 text-center">
-            <div className="max-w-sm">
-              <PackageSearch className="mx-auto size-7 text-destructive" />
-              <h2 className="mt-3 text-sm font-medium">Repositories could not be loaded</h2>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                {repositories.error instanceof Error ? repositories.error.message : "The live GitHub repository request failed."}
-              </p>
-              <Button className="mt-4" onClick={() => void repositories.refetch()} size="sm" variant="outline">
-                <RefreshCw />Try again
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      ) : !data ? (
-        <RepositoryLoadingCard initialQuery={search.q} onSearch={searchRepositories} />
-      ) : data.authenticated ? (
-        <Card>
-          <CardHeader className="flex-col md:flex-row md:items-center">
-            <div>
-              <CardTitle>Available repositories</CardTitle>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {search.q
-                  ? `${data.total} repositories match “${search.q}”`
-                  : `${data.total} repositories available across your installations`}
-              </p>
-            </div>
-            <Button disabled={repositories.isFetching} onClick={() => void repositories.refetch()} size="sm" variant="outline">
-              <RefreshCw className={cn(repositories.isFetching && "animate-spin")} />
-              {repositories.isFetching ? "Refreshing…" : "Refresh from GitHub"}
+    <>
+      <PageHeader
+        actions={
+          <>
+            <Button disabled={repositories.isFetching} onClick={() => void repositories.refetch()} size="sm" variant="ghost">
+              <RefreshCw className={cn(repositories.isFetching && "animate-spin")} /><span className="hidden sm:inline">Refresh</span>
             </Button>
-          </CardHeader>
-          <CardContent aria-busy={repositories.isFetching} className={cn("px-0 pb-0 transition-opacity", repositories.isPlaceholderData && "opacity-60")}>
-            <RepositorySearchForm initialQuery={search.q} key={search.q} onSearch={searchRepositories} />
-
-            {data.items.length > 0 ? (
-              <Table>
-                <TableHeader><TableRow>
-                  <TableHead>Repository</TableHead><TableHead>Installation</TableHead><TableHead>Default branch</TableHead>
-                  <TableHead>Runner pools</TableHead><TableHead>Workflow runs</TableHead><TableHead className="w-12" />
-                </TableRow></TableHeader>
-                <TableBody>{data.items.map((repository) => (
-                  <TableRow key={repository.id}>
-                    <TableCell>
-                      <a className="group inline-flex items-center gap-2 font-medium hover:text-primary" href={String(repository.htmlUrl)} rel="noreferrer" target="_blank">{repository.fullName}{repository.private ? <Lock className="size-3 text-muted-foreground" /> : null}<ExternalLink className="size-3 text-muted-foreground/40 transition-colors group-hover:text-primary" /></a>
-                      <div className="mt-1 flex gap-1">
-                        {repository.archived ? <Badge variant="warning">archived</Badge> : null}
-                        <Badge variant={repository.connected ? "success" : "outline"}>{repository.connected ? "connected" : "available"}</Badge>
-                        <Badge variant="outline">{repository.permission ?? "installed"}</Badge>
-                      </div>
-                    </TableCell>
-                    <TableCell><div className="text-xs">{repository.accountLogin}</div><div className="mt-1 text-[11px] text-muted-foreground">{repository.accountType} · {repository.repositorySelection}</div></TableCell>
-                    <TableCell className="font-mono text-xs">{repository.defaultBranch}</TableCell>
-                    <TableCell><Link className="text-xs font-medium hover:text-primary" to="/runner-pools">{repository.poolCount} {repository.poolCount === 1 ? "pool" : "pools"}</Link><div className="mt-1 text-[11px] text-muted-foreground">Using this repository</div></TableCell>
-                    <TableCell><Link className="text-xs font-medium hover:text-primary" to="/workflow-runs">{repository.runCount} {repository.runCount === 1 ? "run" : "runs"}</Link><div className="mt-1 text-[11px] text-muted-foreground">{repository.lastRunAt ? `Last ${formatRelativeTime(String(repository.lastRunAt))}` : "No workflow history"}</div></TableCell>
-                    <TableCell><a aria-label={`Open ${repository.fullName} on GitHub`} className="inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground" href={String(repository.htmlUrl)} rel="noreferrer" target="_blank" title={`Open ${repository.fullName} on GitHub`}><ExternalLink className="size-4" /></a></TableCell>
-                  </TableRow>
-                ))}</TableBody>
-              </Table>
-            ) : (
-              <div className="grid min-h-64 place-items-center px-6 py-12 text-center">
-                <div>
-                  <PackageSearch className="mx-auto size-7 text-muted-foreground" />
-                  <h3 className="mt-3 text-sm font-medium">{search.q ? "No matching repositories" : "No repositories synchronized"}</h3>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {search.q ? "Try a different owner or repository name." : "Sync GitHub to refresh this installation."}
-                  </p>
-                  {search.q ? <Button className="mt-4" onClick={clearSearch} size="sm" variant="outline">Clear search</Button> : null}
-                </div>
-              </div>
-            )}
-
-            <ListPagination itemCount={data.items.length} noun="repositories" onPageChange={goToPage} page={data.page} perPage={data.perPage} total={data.total} />
-          </CardContent>
-        </Card>
-      ) : undefined}
-    </ResourcePage>
-  );
-}
-
-function RepositoryLoadingCard({ initialQuery, onSearch }: { initialQuery: string; onSearch: (query: string) => void }) {
-  return (
-    <Card aria-busy="true" aria-live="polite">
-      <CardHeader className="flex-col md:flex-row md:items-center">
-        <div>
-          <CardTitle>Available repositories</CardTitle>
-          <p className="mt-1 text-xs text-muted-foreground">Loading repositories from GitHub…</p>
-        </div>
-        <div className="inline-flex items-center gap-2 text-xs text-muted-foreground" role="status">
-          <LoaderCircle className="size-4 animate-spin text-primary" />
-          Fetching live data
-        </div>
-      </CardHeader>
-      <CardContent className="px-0 pb-0">
-        <RepositorySearchForm initialQuery={initialQuery} onSearch={onSearch} />
-        <Table>
-          <TableHeader><TableRow>
-            <TableHead>Repository</TableHead><TableHead>Installation</TableHead><TableHead>Default branch</TableHead>
-            <TableHead>Runner pools</TableHead><TableHead>Workflow runs</TableHead><TableHead />
-          </TableRow></TableHeader>
-          <TableBody>
-            {Array.from({ length: 7 }, (_, index) => (
-              <TableRow key={index}>
-                {Array.from({ length: 6 }, (_, cell) => (
-                  <TableCell key={cell}><div className="h-7 animate-pulse rounded bg-muted" /></TableCell>
-                ))}
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </CardContent>
-    </Card>
-  );
-}
-
-function RepositorySearchForm({ initialQuery, onSearch }: { initialQuery: string; onSearch: (query: string) => void }) {
-  const [query, setQuery] = useState(initialQuery);
-
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    onSearch(query.trim());
-  }
-
-  function clear() {
-    setQuery("");
-    onSearch("");
-  }
-
-  return (
-    <form className="flex flex-col gap-2 border-y border-border px-4 py-3 sm:flex-row" onSubmit={submit}>
-      <div className="relative flex-1">
-        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          aria-label="Search repositories"
-          className="pl-9 pr-9"
-          maxLength={100}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search by owner or repository name…"
-          value={query}
-        />
-        {query ? (
-          <button
-            aria-label="Clear repository search"
-            className="absolute right-2 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-            onClick={clear}
-            type="button"
+            <Link className={buttonVariants({ size: "sm" })} to="/runner-pools/new"><Plus />New pool</Link>
+          </>
+        }
+        count={data?.total || undefined}
+        icon={PackageSearch}
+        title="Repositories"
+      />
+      <PageToolbar>
+        <RepositoryFilter onChange={setDraft} value={draft} />
+      </PageToolbar>
+      <PageBody className={cn("transition-opacity", repositories.isPlaceholderData && "opacity-60")}>
+        {repositories.isError && !data ? (
+          <EmptyState description={repositories.error instanceof Error ? repositories.error.message : "The live GitHub request failed."} icon={PackageSearch} title="Repositories could not be loaded">
+            <Button onClick={() => void repositories.refetch()} variant="outline"><RefreshCw />Try again</Button>
+          </EmptyState>
+        ) : !data ? <LoadingRows /> : data.items.length === 0 ? (
+          <EmptyState
+            description={search.q ? "Try a different owner or repository name." : "Install the GitHub App on the repositories or organizations you want GridOps to operate."}
+            icon={PackageSearch}
+            title={search.q ? `No repositories match “${search.q}”` : "No repositories yet"}
           >
-            <X className="size-3.5" />
-          </button>
-        ) : null}
-      </div>
-      <Button type="submit" variant="outline"><Search />Search</Button>
-    </form>
+            {search.q ? <Button onClick={() => setDraft("")} variant="outline">Clear filter</Button> : null}
+          </EmptyState>
+        ) : (
+          <>
+            {groups.map((group) => (
+              <ListGroup count={group.items.length} icon={<Avatar name={group.account} size={16} square src={githubAvatar(group.account)} />} key={group.account} label={group.account}>
+                {group.items.map((repository) => <RepositoryRow key={repository.id} repository={repository} />)}
+              </ListGroup>
+            ))}
+            <ListPagination itemCount={data.items.length} noun="repositories" onPageChange={(page) => void navigate({ search: { q: search.q, page } })} page={data.page} perPage={data.perPage} total={data.total} />
+          </>
+        )}
+      </PageBody>
+    </>
+  );
+}
+
+function groupByAccount(items: Repository[]) {
+  const groups = new Map<string, Repository[]>();
+  for (const repository of items) groups.set(repository.accountLogin, [...(groups.get(repository.accountLogin) ?? []), repository]);
+  return [...groups.entries()].map(([account, groupItems]) => ({ account, items: groupItems }));
+}
+
+function RepositoryFilter({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="relative flex h-7 w-full max-w-sm items-center">
+      <Search className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground" />
+      <input
+        aria-label="Filter repositories"
+        className="h-7 w-full rounded-md border border-transparent bg-transparent pl-7 pr-7 text-sm text-foreground outline-none placeholder:text-faint hover:bg-hover focus:border-border-strong focus:bg-panel"
+        maxLength={100}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Filter by owner or name…"
+        value={value}
+      />
+      {value ? (
+        <button aria-label="Clear filter" className="absolute right-1.5 grid size-5 place-items-center rounded text-muted-foreground hover:bg-selected hover:text-foreground" onClick={() => onChange("")} type="button"><X className="size-3" /></button>
+      ) : null}
+    </label>
+  );
+}
+
+function RepositoryRow({ repository }: { repository: Repository }) {
+  const [owner, name] = repository.fullName.split("/");
+  return (
+    <div className={cn(listRowClassName, "pr-2")}>
+      <span className="min-w-0 shrink truncate">
+        <span className="text-muted-foreground">{owner}/</span><span className="font-medium text-foreground">{name}</span>
+      </span>
+      {repository.private ? <Tooltip content="Private repository"><Lock className="size-3.5 shrink-0 text-faint" /></Tooltip> : null}
+      {repository.archived ? <Badge dot="bg-warning">Archived</Badge> : null}
+      {repository.connected ? <Badge dot="bg-primary">In pool</Badge> : null}
+      <span className="flex-1" />
+      <span className="hidden max-w-36 items-center gap-1 truncate font-mono text-2xs text-muted-foreground md:flex"><GitBranch className="size-3 shrink-0" />{repository.defaultBranch}</span>
+      <Link className="hidden w-20 shrink-0 rounded-md px-1.5 py-0.5 text-right text-xs text-muted-foreground hover:bg-selected hover:text-foreground lg:block" to="/runner-pools">{repository.poolCount} {repository.poolCount === 1 ? "pool" : "pools"}</Link>
+      <Link className="tabular hidden w-28 shrink-0 rounded-md px-1.5 py-0.5 text-right text-xs text-muted-foreground hover:bg-selected hover:text-foreground sm:block" to="/workflow-runs">
+        {repository.runCount} {repository.runCount === 1 ? "run" : "runs"}{repository.lastRunAt ? <span className="text-faint"> · {formatAge(repository.lastRunAt)}</span> : null}
+      </Link>
+      <Tooltip content="Open on GitHub">
+        <a aria-label={`Open ${repository.fullName} on GitHub`} className={buttonVariants({ size: "icon-xs", variant: "ghost" })} href={repository.htmlUrl} rel="noreferrer" target="_blank"><ExternalLink /></a>
+      </Tooltip>
+    </div>
   );
 }
