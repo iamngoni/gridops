@@ -5,6 +5,8 @@ FROM rust:1.96-slim-bookworm AS rust-toolchain
 
 FROM ghcr.io/actions/actions-runner:2.336.0
 
+LABEL org.opencontainers.image.source="https://github.com/iamngoni/gridops"
+
 USER root
 
 RUN apt-get update \

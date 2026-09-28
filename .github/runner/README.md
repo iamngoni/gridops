@@ -7,8 +7,14 @@ Build the image on the GridOps Docker host:
 ```sh
 docker build \
   --file .github/runner/Dockerfile \
-  --tag gridops-ci-runner:node22-rust196 \
+  --tag ghcr.io/iamngoni/gridops-ci-runner:node22-rust196 \
   .github/runner
 ```
 
-Configure the pool with that image and the `gridops-ci` label. The CI workflow requests that label so jobs cannot land on a generic runner without the required toolchain.
+Push the image to GHCR, then configure the pool with that image and the `gridops-ci` label:
+
+```sh
+docker push ghcr.io/iamngoni/gridops-ci-runner:node22-rust196
+```
+
+The CI workflow requests the `gridops-ci` label so jobs cannot land on a generic runner without the required toolchain.
