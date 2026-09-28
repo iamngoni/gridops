@@ -1,268 +1,244 @@
-import { Link, getRouteApi, useRouterState } from "@tanstack/react-router";
+import { Link, getRouteApi, useNavigate, useRouterState } from "@tanstack/react-router";
+import { ChevronDown, ChevronRight, Command as CommandIcon, LogOut, Moon, Search, Settings, SquarePen, Sun } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
+
+import { ShellContext } from "./app-shell-context";
+import { CommandMenu } from "./command-menu";
+import { GridMark } from "./grid-logo";
+import { StatusDot } from "./status-icon";
+import { useTheme } from "./theme-provider";
+import { Avatar } from "./ui/avatar";
+import { Button, buttonVariants } from "./ui/button";
 import {
-  Activity,
-  Bell,
-  Boxes,
-  ChevronDown,
-  CircleGauge,
-  CloudCog,
-  FileClock,
-  Github,
-  GitPullRequestArrow,
-  Menu,
-  PackageSearch,
-  Radio,
-  Search,
-  Settings,
-  Webhook,
-  X,
-} from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-
-import { GridLogo } from "./grid-logo";
-import { ThemeToggle } from "./theme-toggle";
-import { Button } from "./ui/button";
-import { Input } from "./ui/input";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
+import { Tooltip } from "./ui/tooltip";
+import { api, type Viewer } from "~/lib/api";
+import { allNavItems, isActivePath, navigation, settingsNavItem, type NavGroup, type NavItem } from "~/lib/navigation";
+import { useGlobalHotkeys } from "~/lib/use-hotkeys";
 import { cn } from "~/lib/utils";
-import { api } from "~/lib/api";
-import { searchAction } from "~/features/operations/operations.functions";
 
-const navigation = [
-  {
-    label: "Operate",
-    items: [
-      { label: "Overview", to: "/", icon: CircleGauge },
-      { label: "Repositories", to: "/repositories", icon: PackageSearch },
-      { label: "Runner pools", to: "/runner-pools", icon: Boxes },
-      { label: "Runners", to: "/runners", icon: Activity },
-      { label: "Workflow runs", to: "/workflow-runs", icon: GitPullRequestArrow },
-      { label: "Live logs", to: "/live-logs", icon: Radio },
-    ],
-  },
-  {
-    label: "Observe",
-    items: [
-      { label: "Webhooks", to: "/webhooks", icon: Webhook },
-      { label: "Audit log", to: "/audit-log", icon: FileClock },
-    ],
-  },
-  {
-    label: "System",
-    items: [{ label: "Platform connections", to: "/platform-connections", icon: CloudCog }, { label: "Settings", to: "/settings", icon: Settings }],
-  },
-] as const;
+const COLLAPSED_KEY = "gridops-sidebar-collapsed";
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+function readCollapsed(): string[] {
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(COLLAPSED_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function AppShell({ children, sidebar }: { children: React.ReactNode; sidebar?: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const [commandOpen, setCommandOpen] = useState(false);
+  const navigate = useNavigate();
   const viewer = getRouteApi("__root__").useLoaderData();
-  const search = searchAction;
-  const searchRoot = useRef<HTMLLabelElement>(null);
-  const searchInput = useRef<HTMLInputElement>(null);
-  const [query, setQuery] = useState("");
-  const normalizedQuery = query.trim();
-  const [searchResult, setSearchResult] = useState<{
-    query: string;
-    items: Array<{ kind: string; id: string; title: string; subtitle: string; href: string }>;
-  }>({ query: "", items: [] });
-  const [searchOpen, setSearchOpen] = useState(false);
-  const results = searchResult.query === normalizedQuery ? searchResult.items : [];
-  const searchPending = Boolean(viewer && normalizedQuery.length >= 2 && searchResult.query !== normalizedQuery);
 
-  useEffect(() => {
-    function shortcut(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        searchInput.current?.focus();
+  const openCommandMenu = useCallback(() => setCommandOpen(true), []);
+  const openNavigation = useCallback(() => setMobileOpen(true), []);
+  const shell = useMemo(() => ({ openCommandMenu, openNavigation }), [openCommandMenu, openNavigation]);
+
+  useGlobalHotkeys({
+    onCommandMenu: () => setCommandOpen((open) => !open),
+    onGo: (key) => {
+      const item = allNavItems.find((candidate) => candidate.shortcut === key);
+      if (!item) return false;
+      void navigate({ to: item.to });
+      return true;
+    },
+    onKey: (key) => {
+      if (key === "c" || key === "C") {
+        void navigate({ to: "/runner-pools/new" });
+        return true;
       }
-    }
-    window.addEventListener("keydown", shortcut);
-    return () => window.removeEventListener("keydown", shortcut);
-  }, []);
-
-  useEffect(() => {
-    if (!viewer || normalizedQuery.length < 2) {
-      return;
-    }
-    let cancelled = false;
-    const timeout = window.setTimeout(() => {
-      void search({ data: { query: normalizedQuery } }).then((items) => {
-        if (!cancelled) {
-          setSearchResult({ query: normalizedQuery, items });
-          setSearchOpen(true);
-        }
-      }).catch(() => {
-        if (!cancelled) setSearchResult({ query: normalizedQuery, items: [] });
-      });
-    }, 180);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeout);
-    };
-  }, [normalizedQuery, search, viewer]);
-
-  useEffect(() => {
-    function closeSearch(event: PointerEvent) {
-      if (!searchRoot.current?.contains(event.target as Node)) setSearchOpen(false);
-    }
-    document.addEventListener("pointerdown", closeSearch);
-    return () => document.removeEventListener("pointerdown", closeSearch);
-  }, []);
-
-  const alertCount = viewer
-    ? viewer.alerts.failedRunners + viewer.alerts.failedWebhooks + viewer.alerts.queuedJobs + viewer.alerts.deferredRunnerCleanup
-    : 0;
-  const currentSection = navigation
-    .map((group) => group.items.find((item) => item.to === "/" ? pathname === "/" : pathname.startsWith(item.to)))
-    .find((item) => item !== undefined);
+      if (key === "?") {
+        setCommandOpen(true);
+        return true;
+      }
+      return false;
+    },
+  });
 
   return (
-    <div className="app-shell min-h-screen text-foreground">
-      <aside
-        className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-64 -translate-x-full flex-col border-r border-border/60 bg-sidebar/95 shadow-[12px_0_40px_var(--sidebar-shadow)] backdrop-blur transition-transform lg:translate-x-0",
-          mobileOpen && "translate-x-0",
-        )}
-      >
-        <div className="flex h-16 items-center justify-between border-b border-border px-5">
-          <GridLogo />
-          <Button
-            aria-label="Close navigation"
-            className="lg:hidden"
-            onClick={() => setMobileOpen(false)}
-            size="icon"
-            variant="ghost"
-          >
-            <X />
-          </Button>
-        </div>
-
-        <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-5" aria-label="Main navigation">
-          {navigation.map((group) => (
-            <div key={group.label}>
-              <p className="px-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/55">{group.label}</p>
-              <div className="mt-1.5 space-y-1">
-                {group.items.map((item) => {
-                  const active = item.to === "/" ? pathname === "/" : pathname.startsWith(item.to);
-                  const Icon = item.icon;
-                  return (
-                    <Link
-                      key={item.to}
-                      to={item.to}
-                      onClick={() => setMobileOpen(false)}
-                      className={cn(
-                        "relative flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent/80 hover:text-foreground",
-                        active && "bg-primary/[0.09] text-primary shadow-[0_1px_0_hsl(150_70%_90%/0.03)_inset]",
-                      )}
-                    >
-                      {active && <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-primary" />}
-                      <span className={cn("grid size-6 place-items-center rounded-md", active && "bg-primary/10")}><Icon className="size-4" /></span>
-                      {item.label}
-                    </Link>
-                  );
-                })}
-              </div>
+    <ShellContext.Provider value={shell}>
+      <div className="flex h-dvh overflow-hidden bg-background text-foreground">
+        <div className="hidden lg:flex">{sidebar ?? <Sidebar onSearch={openCommandMenu} viewer={viewer} />}</div>
+        {mobileOpen ? (
+          <div className="fixed inset-0 z-50 flex lg:hidden">
+            <button aria-label="Close navigation" className="absolute inset-0 bg-black/50" onClick={() => setMobileOpen(false)} type="button" />
+            <div className="relative flex h-full border-r border-border bg-background shadow-popover animate-in slide-in-from-left-4">
+              {sidebar ? <div onClickCapture={(event) => { if ((event.target as HTMLElement).closest("a")) setMobileOpen(false); }}>{sidebar}</div> : <Sidebar onNavigate={() => setMobileOpen(false)} onSearch={() => { setMobileOpen(false); openCommandMenu(); }} viewer={viewer} />}
             </div>
-          ))}
-        </nav>
-
-        <div className="border-t border-border p-4">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="size-2 rounded-full bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.1)]" />
-            Control plane online
           </div>
-          <p className="mt-2 text-[11px] text-muted-foreground/65">GridOps v0.1.0</p>
-        </div>
-      </aside>
-
-      {mobileOpen && (
-        <button
-          aria-label="Close navigation overlay"
-          className="fixed inset-0 z-40 bg-black/60 lg:hidden"
-          onClick={() => setMobileOpen(false)}
-          type="button"
-        />
-      )}
-
-      <div className="lg:pl-64">
-        <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border/60 bg-background/80 px-4 backdrop-blur-xl md:px-6">
-          <Button
-            aria-label="Open navigation"
-            className="lg:hidden"
-            onClick={() => setMobileOpen(true)}
-            size="icon"
-            variant="ghost"
-          >
-            <Menu />
-          </Button>
-
-          <div className="hidden min-w-0 items-center gap-2 text-sm md:flex">
-            <span className="font-medium">GridOps</span>
-            <span className="text-muted-foreground">/</span>
-            <span className="truncate text-muted-foreground">{currentSection?.label ?? "Resource detail"}</span>
-          </div>
-
-          <div className="ml-auto flex items-center gap-2">
-            <label className="relative hidden w-72 xl:block" ref={searchRoot}>
-              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input autoComplete="off" className="pl-9 pr-14" onChange={(event) => setQuery(event.target.value)} onFocus={() => setSearchOpen(true)} onKeyDown={(event) => { if (event.key === "Escape") setSearchOpen(false); }} placeholder="Search GridOps…" ref={searchInput} value={query} />
-              <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                ⌘ K
-              </kbd>
-              {searchOpen && normalizedQuery.length >= 2 ? (
-                <div className="absolute right-0 top-11 z-50 w-[420px] overflow-hidden rounded-xl border border-border/80 bg-popover p-1.5 shadow-2xl">
-                  {searchPending ? <div className="px-3 py-6 text-center text-xs text-muted-foreground">Searching GridOps…</div> : results.length ? results.map((result) => (
-                    <Link className="flex items-center gap-3 rounded-sm px-3 py-2 hover:bg-accent" key={`${result.kind}-${result.id}`} onClick={() => setSearchOpen(false)} to={result.href}>
-                      <Search className="size-3.5 text-muted-foreground" />
-                      <span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium">{result.title}</span><span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{result.subtitle}</span></span>
-                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{result.kind}</span>
-                    </Link>
-                  )) : <div className="px-3 py-6 text-center text-xs text-muted-foreground">No GridOps resources match “{query}”.</div>}
-                </div>
-              ) : null}
-            </label>
-            <ThemeToggle />
-            <details className="group relative">
-              <summary className="relative inline-flex size-9 cursor-pointer list-none items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><Bell className="size-4" />{alertCount > 0 ? <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-red-400" /> : null}<span className="sr-only">Notifications</span></summary>
-              <div className="absolute right-0 top-11 z-50 w-72 rounded-md border border-border bg-popover p-3 shadow-2xl">
-                <div className="text-xs font-medium">Operational notifications</div>
-                {viewer ? <div className="mt-3 space-y-2 text-xs"><AlertRow href="/runners" label="Failed runners" value={viewer.alerts.failedRunners} /><AlertRow href="/webhooks" label="Failed webhooks" value={viewer.alerts.failedWebhooks} /><AlertRow href="/workflow-runs" label="Queued jobs" value={viewer.alerts.queuedJobs} /><AlertRow href="/audit-log" label="Deferred GitHub cleanup" value={viewer.alerts.deferredRunnerCleanup} /></div> : <p className="mt-2 text-xs text-muted-foreground">Connect GitHub to see operational alerts.</p>}
-              </div>
-            </details>
-            {viewer ? (
-              <div className="flex h-9 items-center gap-2 rounded-md border border-border bg-background px-2.5 text-sm font-medium">
-                {viewer.avatarUrl ? (
-                  <img className="size-5 rounded-full" src={viewer.avatarUrl} alt="" />
-                ) : (
-                  <Github className="size-4" />
-                )}
-                <span className="hidden sm:inline">{viewer.login}</span>
-              </div>
-            ) : (
-              <a
-                href="/auth/github"
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium transition-colors hover:bg-accent"
-              >
-                <Github className="size-4" />
-                <span className="hidden sm:inline">Connect GitHub</span>
-              </a>
-            )}
-            <details className="relative">
-              <summary className="inline-flex size-9 cursor-pointer list-none items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><ChevronDown className="size-4" /><span className="sr-only">Account menu</span></summary>
-              <div className="absolute right-0 top-11 z-50 w-48 rounded-md border border-border bg-popover p-1 shadow-2xl">
-                <Link className="block rounded-sm px-3 py-2 text-xs hover:bg-accent" to="/settings">Settings</Link>
-                {viewer ? <button className="block w-full rounded-sm px-3 py-2 text-left text-xs text-red-300 hover:bg-accent" type="button" onClick={() => void api("/auth/logout", { method: "POST" }).then(() => { window.location.href = "/login"; })}>Sign out</button> : <a className="block rounded-sm px-3 py-2 text-xs hover:bg-accent" href="/auth/github">Connect GitHub</a>}
-              </div>
-            </details>
-          </div>
-        </header>
-
-        <main className="mx-auto max-w-[1600px] p-4 md:p-6 xl:p-8">{children}</main>
+        ) : null}
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-panel lg:my-2 lg:mr-2 lg:rounded-lg lg:border lg:border-border lg:shadow-panel">
+          {children}
+        </main>
       </div>
+      <CommandMenu onOpenChange={setCommandOpen} open={commandOpen} signedIn={Boolean(viewer)} />
+    </ShellContext.Provider>
+  );
+}
+
+function Sidebar({ viewer, onSearch, onNavigate }: { viewer: Viewer | null; onSearch: () => void; onNavigate?: () => void }) {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const [collapsed, setCollapsed] = useState<string[]>(readCollapsed);
+
+  function toggleGroup(label: string) {
+    setCollapsed((current) => {
+      const next = current.includes(label) ? current.filter((item) => item !== label) : [...current, label];
+      try {
+        window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next));
+      } catch {
+        // Collapsing still works for this visit when storage is unavailable.
+      }
+      return next;
+    });
+  }
+
+  return (
+    <aside className="flex h-full w-[244px] shrink-0 flex-col gap-3 px-2 py-2">
+      <div className="flex h-9 items-center gap-1">
+        <WorkspaceMenu viewer={viewer} />
+        <Tooltip content="Search and commands" shortcut={["⌘", "K"]}>
+          <Button aria-label="Search and commands" onClick={onSearch} size="icon-sm" variant="ghost"><Search /></Button>
+        </Tooltip>
+        <Tooltip content="Create runner pool" shortcut={["C"]}>
+          <Link aria-label="Create runner pool" className={cn(buttonVariants({ size: "icon-sm", variant: "outline" }), "rounded-md")} onClick={onNavigate} to="/runner-pools/new"><SquarePen /></Link>
+        </Tooltip>
+      </div>
+
+      <nav aria-label="Main navigation" className="-mx-1 min-h-0 flex-1 space-y-4 overflow-y-auto px-1">
+        {navigation.map((group, index) => (
+          <NavSection
+            collapsed={group.label ? collapsed.includes(group.label) : false}
+            group={group}
+            key={group.label ?? `group-${index}`}
+            onNavigate={onNavigate}
+            onToggle={group.label ? () => toggleGroup(group.label as string) : undefined}
+            pathname={pathname}
+            viewer={viewer}
+          />
+        ))}
+      </nav>
+
+      <div className="space-y-1">
+        <NavLinkItem active={isActivePath(pathname, settingsNavItem.to)} item={settingsNavItem} onNavigate={onNavigate} />
+        <div className="flex h-7 items-center gap-2 px-2 text-2xs text-faint">
+          <StatusDot tone="success" />
+          <span className="flex-1">Control plane online</span>
+          <button className="inline-flex items-center gap-1 rounded px-1 hover:text-muted-foreground" onClick={onSearch} type="button"><CommandIcon className="size-3" />K</button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function NavSection({
+  group,
+  pathname,
+  viewer,
+  collapsed,
+  onToggle,
+  onNavigate,
+}: {
+  group: NavGroup;
+  pathname: string;
+  viewer: Viewer | null;
+  collapsed: boolean;
+  onToggle?: () => void;
+  onNavigate?: () => void;
+}) {
+  return (
+    <div>
+      {group.label ? (
+        <button
+          aria-expanded={!collapsed}
+          className="group/section mb-0.5 flex h-7 w-full items-center gap-1 rounded-md px-2 text-xs font-medium text-faint hover:bg-hover hover:text-muted-foreground"
+          onClick={onToggle}
+          type="button"
+        >
+          {group.label}
+          {collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3 opacity-0 transition-opacity group-hover/section:opacity-100" />}
+        </button>
+      ) : null}
+      {collapsed ? null : (
+        <div className="space-y-px">
+          {group.items.map((item) => (
+            <NavLinkItem
+              active={isActivePath(pathname, item.to)}
+              count={item.alert && viewer ? viewer.alerts[item.alert] : undefined}
+              item={item}
+              key={item.to}
+              onNavigate={onNavigate}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function AlertRow({ href, label, value }: { href: string; label: string; value: number }) {
-  return <Link className="flex items-center justify-between rounded-sm border border-border px-3 py-2 hover:bg-accent" to={href}><span className="text-muted-foreground">{label}</span><span className={value > 0 ? "font-medium text-foreground" : "text-muted-foreground"}>{value}</span></Link>;
+function NavLinkItem({ item, active, count, onNavigate }: { item: NavItem; active: boolean; count?: number; onNavigate?: () => void }) {
+  const Icon = item.icon;
+  return (
+    <Link
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex h-7 items-center gap-2 rounded-md px-2 text-sm font-medium transition-colors",
+        active ? "bg-selected text-foreground" : "text-secondary-foreground/85 hover:bg-hover hover:text-foreground",
+      )}
+      onClick={onNavigate}
+      to={item.to}
+    >
+      <Icon className={cn("size-4 shrink-0", active ? "text-foreground" : "text-muted-foreground")} />
+      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+      {count ? <span className="tabular text-xs text-faint">{count}</span> : null}
+    </Link>
+  );
+}
+
+function WorkspaceMenu({ viewer }: { viewer: Viewer | null }) {
+  const { theme, toggleTheme } = useTheme();
+  const navigate = useNavigate();
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-left outline-none hover:bg-hover data-[state=open]:bg-hover" type="button">
+          <GridMark size={20} />
+          <span className="min-w-0 truncate text-sm font-semibold text-foreground">GridOps</span>
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-60">
+        {viewer ? (
+          <>
+            <div className="flex items-center gap-2.5 px-2 py-2">
+              <Avatar name={viewer.login} size={28} src={viewer.avatarUrl} />
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium">{viewer.name ?? viewer.login}</div>
+                <div className="truncate text-2xs text-muted-foreground">@{viewer.login} · {viewer.role === "admin" ? "Administrator" : "Member"}</div>
+              </div>
+            </div>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+        <DropdownMenuItem icon={<Settings />} onSelect={() => void navigate({ to: "/settings" })} shortcut={["G", "S"]}>Settings</DropdownMenuItem>
+        <DropdownMenuItem icon={theme === "dark" ? <Sun /> : <Moon />} onSelect={toggleTheme}>Switch to {theme === "dark" ? "light" : "dark"} theme</DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel>GridOps v0.1.0</DropdownMenuLabel>
+        {viewer ? (
+          <DropdownMenuItem icon={<LogOut />} onSelect={() => void api("/auth/logout", { method: "POST" }).then(() => { window.location.href = "/login"; })}>Sign out</DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem onSelect={() => { window.location.href = "/auth/github"; }}>Connect GitHub</DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }

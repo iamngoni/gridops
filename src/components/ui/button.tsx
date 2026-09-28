@@ -4,25 +4,25 @@ import type * as React from "react";
 import { cn } from "~/lib/utils";
 
 export const buttonVariants = cva(
-  "inline-flex h-9 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-transparent px-3 text-sm font-medium transition-[background-color,color,border-color,box-shadow,transform] outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4",
+  "inline-flex shrink-0 select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-transparent font-medium transition-[background-color,color,border-color,box-shadow] outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-45 [&_svg]:pointer-events-none [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground shadow-[0_1px_0_hsl(150_70%_90%/0.18)_inset,0_1px_3px_hsl(160_80%_2%/0.35)] hover:bg-primary/90",
-        destructive:
-          "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/40",
-        outline:
-          "border-border/80 bg-background/70 text-foreground shadow-[0_1px_0_hsl(150_20%_95%/0.03)_inset] hover:border-border hover:bg-accent hover:text-accent-foreground",
-        secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        ghost: "text-muted-foreground hover:bg-accent hover:text-foreground",
-        link: "h-auto px-0 text-primary underline-offset-4 hover:underline",
+        default: "bg-primary text-primary-foreground shadow-[inset_0_1px_0_rgb(255_255_255/0.12),0_1px_2px_rgb(0_0_0/0.2)] hover:bg-primary-hover",
+        destructive: "bg-destructive text-white hover:bg-destructive/90",
+        outline: "border-border-strong bg-panel text-foreground shadow-[0_1px_1px_rgb(0_0_0/0.04)] hover:bg-hover",
+        secondary: "border-border-strong bg-panel text-foreground shadow-[0_1px_1px_rgb(0_0_0/0.04)] hover:bg-hover",
+        ghost: "text-muted-foreground hover:bg-hover hover:text-foreground",
+        link: "h-auto border-0 px-0 text-primary underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-9 px-3",
-        sm: "h-8 rounded-md px-2.5 text-xs",
-        lg: "h-10 rounded-md px-5",
-        icon: "size-9 px-0",
+        default: "h-8 px-3 text-sm [&_svg]:size-4",
+        sm: "h-7 px-2.5 text-xs [&_svg]:size-3.5",
+        xs: "h-6 px-2 text-xs [&_svg]:size-3.5",
+        lg: "h-9 px-4 text-sm [&_svg]:size-4",
+        icon: "size-8 px-0 [&_svg]:size-4",
+        "icon-sm": "size-7 px-0 [&_svg]:size-4",
+        "icon-xs": "size-6 px-0 [&_svg]:size-3.5",
       },
     },
     defaultVariants: {
@@ -31,6 +31,9 @@ export const buttonVariants = cva(
     },
   },
 );
+
+export type ButtonVariant = NonNullable<VariantProps<typeof buttonVariants>["variant"]>;
+export type ButtonSize = NonNullable<VariantProps<typeof buttonVariants>["size"]>;
 
 export function Button({
   className,

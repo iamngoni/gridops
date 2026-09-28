@@ -11,7 +11,7 @@ import { getAuditLogPage } from "~/features/operations/operations.functions";
 import { validatePageSearch } from "~/lib/pagination";
 import { formatRelativeTime } from "~/lib/utils";
 
-export const Route = createFileRoute("/audit-log")({
+export const Route = createFileRoute("/_app/audit-log")({
   validateSearch: validatePageSearch,
   loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
   loader: ({ deps }) => getAuditLogPage({ page: deps.page }),

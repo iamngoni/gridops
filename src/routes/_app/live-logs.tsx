@@ -33,7 +33,7 @@ import { advanceFollowedSteps, isNearLogEnd } from "~/lib/log-follow";
 import { parsePage } from "~/lib/pagination";
 import { cn, formatDuration } from "~/lib/utils";
 
-export const Route = createFileRoute("/live-logs")({
+export const Route = createFileRoute("/_app/live-logs")({
   validateSearch: (search: Record<string, unknown>): { target?: string; page?: number } => {
     const target = typeof search.target === "string" ? search.target : undefined;
     const page = parsePage(search.page);

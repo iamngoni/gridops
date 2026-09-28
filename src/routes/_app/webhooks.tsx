@@ -19,7 +19,7 @@ import { validatePageSearch } from "~/lib/pagination";
 import { formatRelativeTime } from "~/lib/utils";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
 
-export const Route = createFileRoute("/webhooks")({
+export const Route = createFileRoute("/_app/webhooks")({
   validateSearch: validatePageSearch,
   loaderDeps: ({ search }) => ({ page: search.page ?? 1 }),
   loader: ({ deps }) => getWebhooksPage({ page: deps.page }),

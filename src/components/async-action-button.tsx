@@ -3,7 +3,8 @@ import { LoaderCircle } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
-import { Button } from "./ui/button";
+import { Button, type ButtonSize, type ButtonVariant } from "./ui/button";
+import { Tooltip } from "./ui/tooltip";
 
 export function AsyncActionButton({
   children,
@@ -15,16 +16,18 @@ export function AsyncActionButton({
   size = "sm",
   disabled,
   title,
+  className,
 }: {
-  children: ReactNode;
+  children?: ReactNode;
   icon?: ReactNode;
   action: () => Promise<unknown>;
   success: string;
   confirm?: string;
-  variant?: "default" | "destructive" | "outline" | "secondary" | "ghost" | "link";
-  size?: "default" | "sm" | "lg" | "icon";
+  variant?: ButtonVariant;
+  size?: ButtonSize;
   disabled?: boolean;
   title?: string;
+  className?: string;
 }) {
   const [pending, setPending] = useState(false);
   const router = useRouter();
@@ -43,10 +46,11 @@ export function AsyncActionButton({
     }
   }
 
-  return (
-    <Button disabled={disabled || pending} onClick={run} size={size} title={title} variant={variant}>
+  const button = (
+    <Button aria-label={title} className={className} disabled={disabled || pending} onClick={run} size={size} variant={variant}>
       {pending ? <LoaderCircle className="animate-spin" /> : icon}
       {children}
     </Button>
   );
+  return title ? <Tooltip content={title}>{button}</Tooltip> : button;
 }

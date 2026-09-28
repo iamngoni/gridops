@@ -14,7 +14,7 @@ import { getRepositoriesPage } from "~/features/operations/operations.functions"
 import { parsePage } from "~/lib/pagination";
 import { cn, formatRelativeTime } from "~/lib/utils";
 
-export const Route = createFileRoute("/repositories")({
+export const Route = createFileRoute("/_app/repositories")({
   validateSearch: (search: Record<string, unknown>) => {
     return {
       q: typeof search.q === "string" ? search.q.slice(0, 100) : "",
