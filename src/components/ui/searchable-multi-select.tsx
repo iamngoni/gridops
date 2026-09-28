@@ -197,8 +197,8 @@ export function SearchableMultiSelect<TValue extends SearchableSelectValue>({
                 <button
                   aria-selected={selected}
                   className={cn(
-                    "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover",
-                    index === activeIndex && "bg-hover",
+                    "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-hover",
+                    index === activeIndex && "bg-popover-hover",
                     atLimit && "cursor-not-allowed opacity-40",
                   )}
                   disabled={atLimit}

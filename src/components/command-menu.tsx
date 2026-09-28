@@ -14,7 +14,7 @@ import { allNavItems } from "~/lib/navigation";
 type SearchResult = { kind: string; id: string; title: string; subtitle: string; href: string };
 
 const itemClassName =
-  "flex h-10 cursor-default select-none items-center gap-3 rounded-md px-3 text-sm text-secondary-foreground outline-none data-[selected=true]:bg-hover data-[selected=true]:text-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground";
+  "flex h-10 cursor-default select-none items-center gap-3 rounded-md px-3 text-sm text-secondary-foreground outline-none data-[selected=true]:bg-popover-hover data-[selected=true]:text-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground";
 
 export function CommandMenu({ open, onOpenChange, signedIn }: { open: boolean; onOpenChange: (open: boolean) => void; signedIn: boolean }) {
   const navigate = useNavigate();

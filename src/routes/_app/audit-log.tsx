@@ -1,5 +1,5 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Bot, ChevronRight, FileClock } from "lucide-react";
+import { Bot, FileClock } from "lucide-react";
 import { useState } from "react";
 
 import { ListPagination } from "~/components/list-pagination";
@@ -71,9 +71,8 @@ function AuditRow({ event }: { event: AuditEvent }) {
   }
   return (
     <div className="border-b border-border">
-      <div className={cn(listRowClassName, "relative border-b-0 pr-3")}>
+      <div className={cn(listRowClassName, "relative border-b-0 pr-3", hasMetadata && "cursor-pointer")}>
         {hasMetadata ? <button aria-expanded={open} aria-label="Toggle event details" className="absolute inset-0" onClick={() => setOpen((current) => !current)} type="button" /> : null}
-        <ChevronRight className={cn("size-3.5 shrink-0 text-faint transition-transform", open && "rotate-90", !hasMetadata && "opacity-0")} />
         {system ? <span className="grid size-[18px] shrink-0 place-items-center rounded-full bg-selected text-muted-foreground"><Bot className="size-3" /></span> : <Avatar name={event.actorLabel} size={18} src={githubAvatar(event.actorLabel.replace(/^@/, ""))} />}
         <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground sm:block">{system ? "GridOps" : event.actorLabel}</span>
         <span className="min-w-0 shrink truncate font-mono text-xs font-medium text-foreground">{event.action}</span>
@@ -83,7 +82,7 @@ function AuditRow({ event }: { event: AuditEvent }) {
           <span className="tabular relative w-24 shrink-0 text-right text-xs text-faint">{formatDateTime(event.createdAt).split(", ").pop()}</span>
         </Tooltip>
       </div>
-      {open ? <pre className="mx-4 mb-3 ml-11 max-h-64 overflow-auto rounded-md border border-border bg-panel-subtle p-3 font-mono text-2xs leading-5 text-secondary-foreground">{metadata}</pre> : null}
+      {open ? <pre className="mx-4 mb-3 ml-[42px] max-h-64 overflow-auto rounded-md border border-border bg-panel-subtle p-3 font-mono text-2xs leading-5 text-secondary-foreground">{metadata}</pre> : null}
     </div>
   );
 }

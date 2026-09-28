@@ -41,7 +41,7 @@ export function DropdownMenuItem({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Item> & { icon?: React.ReactNode; shortcut?: string[]; destructive?: boolean }) {
   const itemClassName = cn(
-    "relative flex h-8 cursor-default select-none items-center gap-2 rounded-md px-2 text-sm text-foreground outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-45 data-[highlighted]:bg-hover [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
+    "relative flex h-8 cursor-default select-none items-center gap-2 rounded-md px-2 text-sm text-foreground outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-45 data-[highlighted]:bg-popover-hover [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
     destructive && "text-danger data-[highlighted]:bg-danger/10 [&_svg]:text-danger",
     className,
   );
@@ -77,7 +77,7 @@ export function DropdownMenuCheckboxItem({
     <DropdownMenuPrimitive.CheckboxItem
       checked={checked}
       className={cn(
-        "relative flex h-8 cursor-default select-none items-center gap-2 rounded-md pl-2 pr-8 text-sm outline-none data-[highlighted]:bg-hover",
+        "relative flex h-8 cursor-default select-none items-center gap-2 rounded-md pl-2 pr-8 text-sm outline-none data-[highlighted]:bg-popover-hover",
         className,
       )}
       {...props}

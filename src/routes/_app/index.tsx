@@ -99,26 +99,16 @@ function MetricStrip({ data }: { data: DashboardOverview }) {
     { label: "Success rate", value: data.metrics.successRate === null ? "—" : `${data.metrics.successRate}%`, hint: "Completed runs", to: "/workflow-runs", tone: "neutral" },
   ] as const;
   return (
-    <section aria-label="Runner metrics" className="grid overflow-hidden rounded-lg border border-border sm:grid-cols-2 xl:grid-cols-4">
-      {metrics.map((metric, index) => (
-        <Link
-          className={cn(
-            "group flex flex-col gap-1 px-4 py-3.5 transition-colors hover:bg-hover",
-            index > 0 && "border-t border-border sm:border-t-0",
-            index % 2 === 1 && "sm:border-l",
-            index >= 2 && "sm:border-t xl:border-t-0",
-            index === 2 && "xl:border-l",
-          )}
-          key={metric.label}
-          to={metric.to}
-        >
+    <section aria-label="Runner metrics" className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border xl:grid-cols-4">
+      {metrics.map((metric) => (
+        <Link className="group flex flex-col gap-1 bg-panel px-4 py-3.5 transition-colors hover:bg-hover" key={metric.label} to={metric.to}>
           <span className="flex items-center gap-2 text-xs text-muted-foreground">
             <StatusDot pulse={false} tone={metric.tone} />
-            {metric.label}
-            <ArrowUpRight className="ml-auto size-3.5 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+            <span className="truncate">{metric.label}</span>
+            <ArrowUpRight className="ml-auto size-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
           </span>
           <span className="tabular text-2xl font-semibold tracking-tight text-foreground">{metric.value}</span>
-          <span className="text-xs text-faint">{metric.hint}</span>
+          <span className="truncate text-xs text-faint">{metric.hint}</span>
         </Link>
       ))}
     </section>

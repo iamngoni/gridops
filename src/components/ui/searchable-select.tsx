@@ -228,7 +228,7 @@ export function SearchableSelect<TValue extends SearchableSelectValue>({
                   aria-selected={selected}
                   className={cn(
                     "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors",
-                    active && "bg-hover",
+                    active && "bg-popover-hover",
                   )}
                   id={`${listboxId}-option-${index}`}
                   key={option.value}
