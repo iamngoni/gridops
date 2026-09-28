@@ -126,7 +126,7 @@ export function ListGroup({
 }
 
 export const listRowClassName =
-  "group/row flex min-h-11 items-center gap-3 border-b border-border px-4 py-2 text-sm transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none";
+  "group/row flex min-h-11 items-center gap-3 border-b border-border px-4 py-2 text-sm transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none has-[[data-list-row]:focus]:bg-hover has-[[data-list-row]:focus]:shadow-[inset_2px_0_0_var(--primary)]";
 
 export function ListRow({ className, ...props }: React.ComponentProps<"div">) {
   return <div className={cn(listRowClassName, className)} {...props} />;

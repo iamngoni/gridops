@@ -239,7 +239,7 @@ function PoolsSection({ pools }: { pools: DashboardOverview["pools"] }) {
             <Link className={buttonVariants({ size: "sm", variant: "outline" })} to="/runner-pools/new"><Plus />Create pool</Link>
           </EmptyState>
         ) : pools.map((pool) => (
-          <Link className={cn(listRowClassName, "last:border-b-0")} key={pool.id} params={{ poolId: pool.id }} to="/runner-pools/$poolId">
+          <Link className={cn(listRowClassName, "last:border-b-0 focus:bg-hover focus:shadow-[inset_2px_0_0_var(--primary)] focus:outline-none")} data-list-row="" key={pool.id} params={{ poolId: pool.id }} to="/runner-pools/$poolId">
             <span className="inline-flex size-3.5 items-center justify-center"><StatusDot status={pool.status} /></span>
             <span className="min-w-0 flex-1 truncate font-medium">{pool.name}</span>
             <span className="hidden text-xs capitalize text-muted-foreground sm:inline">{pool.scope} · {pool.mode}</span>
@@ -339,7 +339,7 @@ function ActivityItem({ item }: { item: DashboardOverview["activity"][number] })
     </>
   );
   const className = cn(listRowClassName, "min-h-10 last:border-b-0");
-  if (item.runnerId) return <Link className={className} search={{ target: item.runnerId }} to="/live-logs">{body}</Link>;
-  if (item.poolId) return <Link className={className} params={{ poolId: item.poolId }} to="/runner-pools/$poolId">{body}</Link>;
+  if (item.runnerId) return <Link className={className} data-list-row="" search={{ target: item.runnerId }} to="/live-logs">{body}</Link>;
+  if (item.poolId) return <Link className={className} data-list-row="" params={{ poolId: item.poolId }} to="/runner-pools/$poolId">{body}</Link>;
   return <div className={className}>{body}</div>;
 }

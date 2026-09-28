@@ -86,7 +86,7 @@ function DeliveryRow({ delivery, onOpen }: { delivery: WebhookDelivery; onOpen: 
   const run = useAction();
   return (
     <div className={cn(listRowClassName, "relative pr-2")}>
-      <button aria-label={`Inspect delivery ${delivery.id}`} className="absolute inset-0" disabled={!delivery.hasPayload} onClick={onOpen} type="button" />
+      <button aria-label={`Inspect delivery ${delivery.id}`} className="absolute inset-0 outline-none" data-list-row="" disabled={!delivery.hasPayload} onClick={onOpen} type="button" />
       <Tooltip content={statusLabel(delivery.status)}><span className="relative inline-flex"><StatusBadge iconOnly status={delivery.status} /></span></Tooltip>
       <span className="shrink-0 font-mono text-xs font-medium text-foreground">{delivery.event}</span>
       {delivery.action ? <Badge variant="outline">{delivery.action}</Badge> : null}

@@ -218,7 +218,8 @@ function LiveLogsPage() {
               return (
                 <button
                   aria-pressed={current}
-                  className={cn("flex w-full items-start gap-2.5 border-b border-border px-3 py-2 text-left transition-colors", current ? "bg-selected" : "hover:bg-hover")}
+                  className={cn("flex w-full items-start gap-2.5 border-b border-border px-3 py-2 text-left outline-none transition-colors focus:shadow-[inset_2px_0_0_var(--primary)]", current ? "bg-selected" : "hover:bg-hover focus:bg-hover")}
+                  data-list-row=""
                   key={target.id}
                   onClick={() => selectTarget(target.id)}
                   type="button"

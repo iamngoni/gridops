@@ -28,7 +28,7 @@ export function RunRow({ run, meta, trailing, className }: { run: RunRowData; me
   const repositoryName = run.repository.split("/").pop() ?? run.repository;
   return (
     <div className={cn(listRowClassName, "relative gap-3 pr-2 sm:pr-4", className)}>
-      <Link aria-label={`${run.workflow} in ${run.repository}`} className="absolute inset-0 z-0" params={{ runId: String(run.id) }} to="/workflow-runs/$runId" />
+      <Link aria-label={`${run.workflow} in ${run.repository}`} className="absolute inset-0 z-0 outline-none" data-list-row="" params={{ runId: String(run.id) }} to="/workflow-runs/$runId" />
       <Tooltip content={statusLabel(state)}><span className="relative z-[1] inline-flex"><RunStatusIcon status={state} /></span></Tooltip>
       <span className="hidden w-40 shrink-0 truncate text-xs text-muted-foreground sm:block" title={run.repository}>
         {repositoryName}{run.runNumber ? <span className="text-faint"> #{run.runNumber}</span> : null}

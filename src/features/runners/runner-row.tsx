@@ -20,7 +20,7 @@ export function RunnerRow({ runner, showPool = true }: { runner: Runner; showPoo
   const state = runnerState(runner);
   return (
     <div className={cn(listRowClassName, "relative pr-2")}>
-      <Link aria-label={`Open logs for ${runner.name}`} className="absolute inset-0" search={{ target: runner.id }} to="/live-logs" />
+      <Link aria-label={`Open logs for ${runner.name}`} className="absolute inset-0 outline-none" data-list-row="" search={{ target: runner.id }} to="/live-logs" />
       <Tooltip content={statusLabel(state)}><span className="relative inline-flex"><StatusBadge iconOnly status={state} /></span></Tooltip>
       <span className="min-w-0 shrink truncate font-mono text-xs font-medium text-foreground">{runner.name}</span>
       <Badge className="hidden sm:inline-flex" dot={runner.provider === "tart" ? "bg-[#bb87fc]" : "bg-info"}>{runner.provider === "tart" ? "macOS" : "Linux"} · {runner.architecture}</Badge>

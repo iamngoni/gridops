@@ -17,8 +17,8 @@ export function Kbd({ className, ...props }: React.ComponentProps<"kbd">) {
 const MODIFIERS = new Set(["⌘", "⇧", "⌥", "⌃"]);
 
 /** Renders a sequence such as "G then P", or a chord such as "⌘ K", as separate keys. */
-export function Shortcut({ keys, className }: { keys: string[]; className?: string }) {
-  const sequence = keys.length === 2 && keys.every((key) => key.length === 1 && !MODIFIERS.has(key));
+export function Shortcut({ keys, className, alternatives = false }: { keys: string[]; className?: string; alternatives?: boolean }) {
+  const sequence = !alternatives && keys.length === 2 && keys.every((key) => key.length === 1 && !MODIFIERS.has(key));
   return (
     <span className={cn("inline-flex items-center gap-1", className)}>
       {keys.map((key, index) => (

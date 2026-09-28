@@ -61,6 +61,7 @@ export function AppShell({ children, sidebar }: { children: React.ReactNode; sid
         setCommandOpen(true);
         return true;
       }
+      if (key === "j" || key === "k") return moveRowFocus(key === "j" ? 1 : -1);
       return false;
     },
   });
@@ -84,6 +85,17 @@ export function AppShell({ children, sidebar }: { children: React.ReactNode; sid
       <CommandMenu onOpenChange={setCommandOpen} open={commandOpen} signedIn={Boolean(viewer)} />
     </ShellContext.Provider>
   );
+}
+
+/** Linear's J/K list navigation: focus the next or previous row link; Enter opens it. */
+function moveRowFocus(direction: 1 | -1) {
+  const rows = [...document.querySelectorAll<HTMLElement>("main [data-list-row]")].filter((row) => !row.hasAttribute("disabled"));
+  if (!rows.length) return false;
+  const current = rows.indexOf(document.activeElement as HTMLElement);
+  const next = current === -1 ? (direction === 1 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, current + direction));
+  rows[next]?.focus({ preventScroll: true });
+  rows[next]?.scrollIntoView({ block: "nearest" });
+  return true;
 }
 
 function Sidebar({ viewer, onSearch, onNavigate }: { viewer: Viewer | null; onSearch: () => void; onNavigate?: () => void }) {

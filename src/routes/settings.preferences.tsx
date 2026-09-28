@@ -39,14 +39,16 @@ function PreferencesSettings() {
       <SettingsSection description="Available anywhere outside a text field." title="Keyboard shortcuts">
         <ShortcutRow keys={["⌘", "K"]} label="Open command menu" />
         <ShortcutRow keys={["C"]} label="Create runner pool" />
+        <ShortcutRow alternatives keys={["J", "K"]} label="Move down or up a list" />
+        <ShortcutRow keys={["↵"]} label="Open the focused row" />
         {allNavItems.map((item) => <ShortcutRow keys={["G", item.shortcut.toUpperCase()]} key={item.to} label={`Go to ${item.label}`} />)}
       </SettingsSection>
     </SettingsLayout>
   );
 }
 
-function ShortcutRow({ label, keys }: { label: string; keys: string[] }) {
-  return <div className="flex items-center justify-between px-4 py-2.5 text-sm"><span className="text-secondary-foreground">{label}</span><Shortcut keys={keys} /></div>;
+function ShortcutRow({ label, keys, alternatives }: { label: string; keys: string[]; alternatives?: boolean }) {
+  return <div className="flex items-center justify-between px-4 py-2.5 text-sm"><span className="text-secondary-foreground">{label}</span><Shortcut alternatives={alternatives} keys={keys} /></div>;
 }
 
 function ThemePreview({ theme }: { theme: "light" | "dark" }) {

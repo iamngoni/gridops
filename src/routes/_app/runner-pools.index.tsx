@@ -86,7 +86,7 @@ function PoolRow({ pool }: { pool: RunnerPool }) {
   const state = pool.paused ? "paused" : pool.state;
   return (
     <div className={cn(listRowClassName, "relative pr-2")}>
-      <Link aria-label={`Open ${pool.name}`} className="absolute inset-0" params={{ poolId: pool.id }} to="/runner-pools/$poolId" />
+      <Link aria-label={`Open ${pool.name}`} className="absolute inset-0 outline-none" data-list-row="" params={{ poolId: pool.id }} to="/runner-pools/$poolId" />
       <Tooltip content={statusLabel(state)}><span className="relative inline-flex size-3.5 items-center justify-center"><StatusDot status={state} /></span></Tooltip>
       <span className="min-w-0 shrink truncate font-medium">{pool.name}</span>
       <span className="hidden min-w-0 items-center gap-1 overflow-hidden md:flex">
