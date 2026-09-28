@@ -2,7 +2,7 @@ import { Link, createFileRoute, getRouteApi, useNavigate } from "@tanstack/react
 import { LoaderCircle } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 
-import { Callout } from "~/components/page";
+import { Callout, InlineError } from "~/components/page";
 import { PoolPlanPreview } from "~/components/pool-plan-preview";
 import { SettingsLayout, SettingsRow, SettingsSection, SettingsValue, Switch, UnitField } from "~/components/settings-ui";
 import { Badge } from "~/components/ui/badge";
@@ -72,6 +72,8 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
     memoryBudgetMb: pool.maxMemoryLimitMb ?? 0,
   });
   const repositorySeed = pool.repositories;
+  const [repositoryAttempt, setRepositoryAttempt] = useState(0);
+  const [runnerGroupAttempt, setRunnerGroupAttempt] = useState(0);
 
   useEffect(() => {
     if (!shouldLoadRunnerGroups) return;
@@ -83,7 +85,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
         setRunnerGroupLoad({ status: "error", items: [], error: cause instanceof Error ? cause.message : "Runner groups could not be loaded." });
       });
     return () => controller.abort();
-  }, [pool.installationId, shouldLoadRunnerGroups]);
+  }, [pool.installationId, runnerGroupAttempt, shouldLoadRunnerGroups]);
 
   useEffect(() => {
     if (!shouldLoadRepositories) return;
@@ -95,7 +97,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
         setRepositoryLoad({ status: "error", items: repositorySeed, error: cause instanceof Error ? cause.message : "Repositories could not be loaded." });
       });
     return () => controller.abort();
-  }, [repositorySeed, shouldLoadRepositories]);
+  }, [repositoryAttempt, repositorySeed, shouldLoadRepositories]);
 
   const runnerGroups = runnerGroupLoad.items;
   const selectedRepositories = repositoryLoad.items.filter((repository) => repositoryIds.includes(repository.id));
@@ -169,7 +171,9 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
                 selectedNoun="repositories"
                 values={repositoryIds}
               />
-              {repositoryLoad.status === "error" ? <p className="mt-1.5 text-xs text-danger">{repositoryLoad.error}</p> : null}
+              {repositoryLoad.status === "error" ? (
+                <InlineError onRetry={() => { setRepositoryLoad({ status: "loading", items: repositorySeed, error: null }); setRepositoryAttempt((attempt) => attempt + 1); }} title="Couldn’t load repositories">{repositoryLoad.error}</InlineError>
+              ) : null}
             </SettingsRow>
           ) : (
             <SettingsRow
@@ -190,7 +194,9 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
               ) : (
                 <>
                   <Input min="1" name="runnerGroupId" onChange={(event) => setRunnerGroupId(Number(event.target.value))} required type="number" value={runnerGroupId} />
-                  {runnerGroupLoad.status === "error" ? <p className="mt-1.5 text-left text-xs text-danger">{runnerGroupLoad.error}</p> : null}
+                  {runnerGroupLoad.status === "error" ? (
+                    <InlineError onRetry={() => { setRunnerGroupLoad({ status: "loading", items: [], error: null }); setRunnerGroupAttempt((attempt) => attempt + 1); }} title="Couldn’t load runner groups">{runnerGroupLoad.error}</InlineError>
+                  ) : null}
                 </>
               )}
             </SettingsRow>
@@ -289,7 +295,7 @@ function RunnerPoolEditor({ pool }: { pool: RunnerPoolDetail }) {
         </SettingsSection>
 
         <SettingsSection description="Grow from the queue, shrink when idle." title="Autoscaling">
-          <SettingsRow description="Queued workflow jobs raise the target up to the maximum." label="Autoscale from queued jobs">
+          <SettingsRow description="Queued workflow jobs raise the target up to the maximum." inline label="Autoscale from queued jobs">
             <Switch aria-label="Autoscale from queued jobs" defaultChecked={pool.autoscalingEnabled} name="autoscalingEnabled" />
           </SettingsRow>
           <SettingsRow description="Runner slots requested per queued job, capped by the maximum." htmlFor="queue-factor" label="Runners per queued job">

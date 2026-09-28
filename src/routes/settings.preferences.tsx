@@ -11,25 +11,31 @@ export const Route = createFileRoute("/settings/preferences")({
 });
 
 function PreferencesSettings() {
-  const { theme, toggleTheme } = useTheme();
+  const { preference, setPreference } = useTheme();
   return (
     <SettingsLayout description="Personal settings for this browser." title="Preferences">
       <SettingsSection title="Appearance">
-        <SettingsRow description="GridOps follows Linear’s contrast levels in both themes." label="Theme" stacked>
-          <div className="grid grid-cols-2 gap-3">
-            {(["light", "dark"] as const).map((option) => (
+        <SettingsRow description="System follows your operating system as it switches between light and dark." label="Theme" stacked>
+          <div className="grid grid-cols-3 gap-2 sm:gap-3">
+            {(["light", "dark", "system"] as const).map((option) => (
               <button
-                aria-pressed={theme === option}
+                aria-pressed={preference === option}
                 className={cn(
-                  "group overflow-hidden rounded-lg border text-left transition-colors",
-                  theme === option ? "border-primary ring-2 ring-primary/25" : "border-border-strong hover:border-faint",
+                  "group overflow-hidden rounded-lg border text-left transition-[border-color,box-shadow,transform] duration-150 ease-out-strong motion-safe:active:scale-[0.98]",
+                  preference === option ? "border-primary ring-2 ring-primary/25" : "border-border-strong hover:border-faint",
                 )}
                 key={option}
-                onClick={() => { if (theme !== option) toggleTheme(); }}
+                onClick={() => setPreference(option)}
                 type="button"
               >
-                <ThemePreview theme={option} />
-                <span className="flex items-center justify-between border-t border-border px-3 py-2 text-sm font-medium capitalize">{option}{theme === option ? <span className="size-2 rounded-full bg-primary" /> : null}</span>
+                {option === "system" ? (
+                  <div className="relative">
+                    <ThemePreview theme="light" />
+                    {/* The dark half is clipped diagonally over the light one. */}
+                    <div className="absolute inset-0 [clip-path:polygon(100%_0,100%_100%,0_100%)]"><ThemePreview theme="dark" /></div>
+                  </div>
+                ) : <ThemePreview theme={option} />}
+                <span className="flex items-center justify-between border-t border-border px-3 py-2 text-sm font-medium capitalize">{option}{preference === option ? <span className="size-2 rounded-full bg-primary" /> : null}</span>
               </button>
             ))}
           </div>
@@ -54,8 +60,8 @@ function ShortcutRow({ label, keys, alternatives }: { label: string; keys: strin
 function ThemePreview({ theme }: { theme: "light" | "dark" }) {
   const dark = theme === "dark";
   return (
-    <div className={cn("flex h-24 gap-2 p-2.5", dark ? "bg-[#08090a]" : "bg-[#f4f4f6]")}>
-      <div className="w-10 space-y-1.5 pt-1">
+    <div className={cn("flex h-20 gap-2 p-2.5 sm:h-24", dark ? "bg-[#08090a]" : "bg-[#f4f4f6]")}>
+      <div className="hidden w-10 space-y-1.5 pt-1 sm:block">
         {[0, 1, 2, 3].map((line) => <div className={cn("h-1.5 rounded-full", dark ? "bg-white/15" : "bg-black/10", line === 1 && (dark ? "bg-white/35" : "bg-black/25"))} key={line} />)}
       </div>
       <div className={cn("flex-1 space-y-1.5 rounded-md border p-2", dark ? "border-white/10 bg-[#0f1011]" : "border-black/5 bg-white")}>

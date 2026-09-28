@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, getRouteApi } from "@tanstack/react-router";
-import { Activity, ArrowRight, Server } from "lucide-react";
+import { Activity, ArrowRight, ChevronDown, Server } from "lucide-react";
+import { useState } from "react";
 
 import { CapacityMeter } from "~/components/capacity-meter";
 import { Callout, InlineLoading, ListGroup, PropertiesPanel, PropertyGroup, PropertyRow, SectionHeading } from "~/components/page";
@@ -14,6 +15,7 @@ import { providerLabel } from "~/features/runner-pools/pool-actions";
 import { PoolEventTable, usePoolEvents } from "~/features/runner-pools/pool-events";
 import { RunnerRow, groupRunners } from "~/features/runners/runner-row";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
+import { cn, formatRunnerShape } from "~/lib/utils";
 
 export const Route = createFileRoute("/_app/runner-pools/$poolId/")({
   component: PoolOverviewTab,
@@ -108,7 +110,7 @@ function PoolOverviewTab() {
           <PropertyRow label="Mode"><span className="capitalize">{pool.mode}</span></PropertyRow>
           {providers.includes("docker") ? <PropertyRow label="Image" title={pool.dockerImage}><span className="truncate font-mono text-xs">{pool.dockerImage}</span></PropertyRow> : null}
           {providers.includes("tart") && pool.macosRuntime !== "native" ? <PropertyRow label="Base VM" title={pool.tartImage}><span className="truncate font-mono text-xs">{pool.tartImage}</span></PropertyRow> : null}
-          <PropertyRow label="Per runner"><span className="tabular">{pool.cpuLimit} cores · {pool.memoryLimitMb.toLocaleString()} MB</span></PropertyRow>
+          <PropertyRow label="Per runner"><span className="tabular">{formatRunnerShape(pool.cpuLimit, pool.memoryLimitMb)}</span></PropertyRow>
           <PropertyRow label="Labels">
             {pool.labels.length ? <span className="flex flex-wrap gap-1">{pool.labels.map((label) => <Badge key={label} variant="outline">{label}</Badge>)}</span> : <span className="text-faint">None</span>}
           </PropertyRow>
@@ -118,12 +120,7 @@ function PoolOverviewTab() {
           <PropertyRow label="Scope"><span className="capitalize">{pool.scope}</span></PropertyRow>
           <PropertyRow label="Account"><Avatar name={pool.accountLogin} size={16} square src={githubAvatar(pool.accountLogin)} />{pool.accountLogin}</PropertyRow>
           {pool.scope === "repository" ? (
-            <div className="space-y-1 pt-1">
-              {pool.repositories.slice(0, 6).map((repository) => (
-                <div className="truncate rounded-md bg-panel-subtle px-2 py-1 text-xs text-secondary-foreground" key={repository.id} title={repository.fullName}>{repository.fullName}</div>
-              ))}
-              {pool.repositories.length > 6 ? <div className="px-2 text-xs text-faint">+{pool.repositories.length - 6} more</div> : null}
-            </div>
+            <RepositoryList repositories={pool.repositories} />
           ) : <PropertyRow label="Runner group"><span className="tabular">#{pool.runnerGroupId}</span></PropertyRow>}
         </PropertyGroup>
 
@@ -134,6 +131,32 @@ function PoolOverviewTab() {
           ) : <PropertyRow label="Access">Read only</PropertyRow>}
         </PropertyGroup>
       </PropertiesPanel>
+    </div>
+  );
+}
+
+const COLLAPSED_REPOSITORIES = 6;
+
+function RepositoryList({ repositories }: { repositories: RunnerPoolDetail["repositories"] }) {
+  const [expanded, setExpanded] = useState(false);
+  const hidden = repositories.length - COLLAPSED_REPOSITORIES;
+  const visible = expanded ? repositories : repositories.slice(0, COLLAPSED_REPOSITORIES);
+  return (
+    <div className="space-y-1 pt-1">
+      {visible.map((repository) => (
+        <div className="truncate rounded-md bg-panel-subtle px-2 py-1 text-xs text-secondary-foreground" key={repository.id} title={repository.fullName}>{repository.fullName}</div>
+      ))}
+      {hidden > 0 ? (
+        <button
+          aria-expanded={expanded}
+          className="flex h-6 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-hover hover:text-foreground"
+          onClick={() => setExpanded((current) => !current)}
+          type="button"
+        >
+          <ChevronDown className={cn("size-3 transition-transform duration-200 ease-out-strong", expanded && "rotate-180")} />
+          {expanded ? "Show fewer" : `Show ${hidden} more`}
+        </button>
+      ) : null}
     </div>
   );
 }

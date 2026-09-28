@@ -3,6 +3,8 @@
 @import "@fontsource-variable/inter";
 
 @custom-variant dark (&:is(.dark *));
+/* Devices with a precise pointer that can hover; touch screens keep hover-revealed controls visible. */
+@custom-variant can-hover (@media (hover: hover) and (pointer: fine));
 
 /*
  * Linear-style surfaces: the canvas holds the sidebar, and each view sits on an
@@ -124,6 +126,10 @@
   --color-info: var(--info);
   --color-neutral: var(--neutral);
 
+  /* Strong ease-out for UI entering or responding; iOS-like curve for drawers. */
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
   --radius-sm: 0.25rem;
   --radius-md: 0.375rem;
   --radius-lg: 0.5rem;
@@ -213,6 +219,14 @@
   *::-webkit-scrollbar-track {
     background: transparent;
   }
+}
+
+/* Set for the frame in which the palette swaps, so the whole page changes at once. */
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
 }
 
 .tabular {

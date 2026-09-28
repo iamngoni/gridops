@@ -87,7 +87,7 @@ function PoolEventRow({ event }: { event: RunnerPoolEvent }) {
         <span className="truncate font-medium text-foreground" role="cell">{humanizeEvent(event.event)}</span>
         <span className="hidden truncate text-muted-foreground md:block" role="cell" title={event.message}>{event.message}</span>
         <span className="hidden truncate font-mono text-2xs text-faint md:block" role="cell">
-          {event.runnerId ? <Link className="hover:text-foreground" onClick={(click) => click.stopPropagation()} search={{ target: event.runnerId }} to="/live-logs">{event.runnerId.slice(0, 8)}</Link> : "—"}
+          {event.runnerId ? <Link className="hover:text-foreground" onClick={(click) => click.stopPropagation()} search={{ target: event.runnerId }} to="/live-logs">{event.runnerId.slice(0, 8)}</Link> : <span className="font-sans text-faint">—</span>}
         </span>
         <Tooltip content={new Date(event.createdAt).toLocaleString()}>
           <time className="tabular text-right text-xs text-faint" dateTime={event.createdAt} role="cell">{formatAge(event.createdAt)}</time>

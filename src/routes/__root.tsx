@@ -5,6 +5,7 @@ import { Link, Outlet, createRootRouteWithContext, redirect } from "@tanstack/re
 import type * as React from "react";
 import { Toaster } from "sonner";
 
+import { ConfirmHost } from "~/components/confirm-dialog";
 import { GridMark } from "~/components/grid-logo";
 import { ThemeProvider, useTheme } from "~/components/theme-provider";
 import { buttonVariants } from "~/components/ui/button";
@@ -44,8 +45,9 @@ function RootComponent() {
   return (
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>
-        <TooltipProvider delayDuration={450} skipDelayDuration={200}>
+        <TooltipProvider delayDuration={450} skipDelayDuration={400}>
           <Outlet />
+          <ConfirmHost />
           <ThemeToaster />
         </TooltipProvider>
       </QueryClientProvider>

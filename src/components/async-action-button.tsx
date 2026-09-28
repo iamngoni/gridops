@@ -3,6 +3,7 @@ import { LoaderCircle } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
+import { confirmAction } from "./confirm-dialog";
 import { Button, type ButtonSize, type ButtonVariant } from "./ui/button";
 import { Tooltip } from "./ui/tooltip";
 
@@ -33,7 +34,7 @@ export function AsyncActionButton({
   const router = useRouter();
 
   async function run() {
-    if (confirm && !window.confirm(confirm)) return;
+    if (confirm && !(await confirmAction(confirm))) return;
     setPending(true);
     try {
       await action();

@@ -21,7 +21,7 @@ export function DropdownMenuContent({
       <DropdownMenuPrimitive.Content
         align={align}
         className={cn(
-          "z-[90] min-w-48 overflow-hidden rounded-lg border border-border-strong bg-popover p-1 text-sm text-foreground shadow-popover data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1",
+          "z-[90] min-w-48 origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-lg border border-border-strong bg-popover p-1 text-sm text-foreground shadow-popover ease-out-strong data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-[0.98] data-[state=closed]:duration-100",
           className,
         )}
         sideOffset={sideOffset}

@@ -2,11 +2,13 @@ import { useRouter } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { toast } from "sonner";
 
+import { confirmAction, type ConfirmOptions } from "~/components/confirm-dialog";
+
 /** Runs a mutating action with optional confirmation, a toast, and a route refresh. */
 export function useAction() {
   const router = useRouter();
-  return useCallback(async (options: { action: () => Promise<unknown>; success: string; confirm?: string; after?: () => void | Promise<void> }) => {
-    if (options.confirm && !window.confirm(options.confirm)) return false;
+  return useCallback(async (options: { action: () => Promise<unknown>; success: string; confirm?: string; confirmOptions?: ConfirmOptions; after?: () => void | Promise<void> }) => {
+    if (options.confirm && !(await confirmAction(options.confirm, options.confirmOptions))) return false;
     const pending = options.action();
     toast.promise(pending, {
       loading: "Working…",

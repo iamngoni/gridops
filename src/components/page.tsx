@@ -1,10 +1,11 @@
 import { Link, type LinkProps } from "@tanstack/react-router";
 import type { LucideIcon } from "lucide-react";
-import { ChevronRight, Info, LoaderCircle, TriangleAlert } from "lucide-react";
+import { ChevronRight, Info, LoaderCircle, RotateCw, TriangleAlert } from "lucide-react";
 import type * as React from "react";
 
 import { MobileNavButton } from "./app-shell-context";
-import { cn } from "~/lib/utils";
+import { useDocumentTitle } from "~/lib/use-document-title";
+import { cn, formatCount } from "~/lib/utils";
 
 type Crumb = { label: string; to?: LinkProps["to"]; params?: LinkProps["params"] };
 
@@ -16,6 +17,8 @@ export function PageHeader({
   count,
   actions,
   children,
+  className,
+  documentTitle,
 }: {
   title: React.ReactNode;
   icon?: LucideIcon;
@@ -23,9 +26,13 @@ export function PageHeader({
   count?: number;
   actions?: React.ReactNode;
   children?: React.ReactNode;
+  className?: string;
+  /** The browser tab title; defaults to a plain-text `title`, and `false` leaves the tab alone. */
+  documentTitle?: string | false;
 }) {
+  useDocumentTitle(documentTitle === false ? undefined : documentTitle ?? (typeof title === "string" ? title : undefined));
   return (
-    <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3 sm:px-4">
+    <header className={cn("flex h-11 shrink-0 items-center gap-2 border-b border-border px-3 sm:px-4", className)}>
       <MobileNavButton />
       <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-1 text-sm">
         {breadcrumbs.map((crumb) => (
@@ -43,7 +50,7 @@ export function PageHeader({
         <h1 className="flex min-w-0 items-center gap-2 px-1.5 font-medium text-foreground">
           {Icon ? <Icon className="size-4 shrink-0 text-muted-foreground" /> : null}
           <span className="truncate">{title}</span>
-          {count !== undefined ? <span className="tabular shrink-0 text-xs font-normal text-faint">{count}</span> : null}
+          {count !== undefined ? <span className="tabular shrink-0 text-xs font-normal text-faint">{formatCount(count)}</span> : null}
         </h1>
         {children}
       </nav>
@@ -117,7 +124,7 @@ export function ListGroup({
       <div className="sticky top-0 z-10 flex h-9 items-center gap-2 border-b border-border bg-panel-subtle/95 px-4 text-xs font-medium backdrop-blur supports-[backdrop-filter]:bg-panel-subtle/80">
         {icon}
         <span className="text-foreground">{label}</span>
-        {count !== undefined ? <span className="tabular text-faint">{count}</span> : null}
+        {count !== undefined ? <span className="tabular text-faint">{formatCount(count)}</span> : null}
         {actions ? <div className="ml-auto flex items-center gap-1">{actions}</div> : null}
       </div>
       <div>{children}</div>
@@ -127,6 +134,13 @@ export function ListGroup({
 
 export const listRowClassName =
   "group/row flex min-h-11 items-center gap-3 border-b border-border px-4 py-2 text-sm transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none has-[[data-list-row]:focus]:bg-hover has-[[data-list-row]:focus]:shadow-[inset_2px_0_0_var(--primary)]";
+
+/**
+ * A row's "⋯" trigger: out of sight until the row is hovered or focused, or its
+ * menu is open, so long lists read as data rather than a column of buttons.
+ */
+export const rowActionClassName =
+  "data-[state=open]:bg-hover can-hover:opacity-0 can-hover:group-hover/row:opacity-100 can-hover:group-focus-within/row:opacity-100 can-hover:data-[state=open]:opacity-100 can-hover:focus-visible:opacity-100";
 
 export function ListRow({ className, ...props }: React.ComponentProps<"div">) {
   return <div className={cn(listRowClassName, className)} {...props} />;
@@ -204,6 +218,21 @@ export function Callout({
   );
 }
 
+/** A failed inline load (a field's options, a panel's data) with an optional way to try again. */
+export function InlineError({ title, children, onRetry, className }: { title: string; children?: React.ReactNode; onRetry?: () => void; className?: string }) {
+  return (
+    <div className={cn("mt-1.5 flex items-start gap-1.5 text-xs leading-5", className)} role="alert">
+      <TriangleAlert className="mt-[3px] size-3.5 shrink-0 text-danger" />
+      <p className="min-w-0 flex-1 text-left text-muted-foreground"><span className="font-medium text-danger">{title}.</span>{children ? <> {children}</> : null}</p>
+      {onRetry ? (
+        <button className="-my-0.5 inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 font-medium text-foreground transition-colors hover:bg-hover" onClick={onRetry} type="button">
+          <RotateCw className="size-3" />Retry
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 /** Right-hand properties column on detail views. */
 export function PropertiesPanel({ children, className }: { children: React.ReactNode; className?: string }) {
   return <aside className={cn("w-full shrink-0 border-t border-border lg:w-[296px] lg:border-l lg:border-t-0", className)}><div className="space-y-6 p-4 lg:sticky lg:top-0">{children}</div></aside>;
@@ -229,7 +258,8 @@ export function PropertyRow({ label, children, title }: { label: string; childre
 
 export function SectionHeading({ children, actions, className }: { children: React.ReactNode; actions?: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("flex items-center justify-between gap-3", className)}>
+    // A fixed height keeps headings level across columns whether or not they carry a control.
+    <div className={cn("flex min-h-8 items-center justify-between gap-3", className)}>
       <h2 className="text-sm font-medium text-foreground">{children}</h2>
       {actions ? <div className="flex items-center gap-1.5">{actions}</div> : null}
     </div>

@@ -11,22 +11,31 @@ export const DialogClose = DialogPrimitive.Close;
 export const DialogTitle = DialogPrimitive.Title;
 export const DialogDescription = DialogPrimitive.Description;
 
-function Overlay({ className }: { className?: string }) {
+function Overlay({ className, instant = false }: { className?: string; instant?: boolean }) {
   return (
     <DialogPrimitive.Overlay
-      className={cn("fixed inset-0 z-[80] bg-black/40 data-[state=open]:animate-in data-[state=open]:fade-in-0 dark:bg-black/60", className)}
+      className={cn(
+        "fixed inset-0 z-[80] bg-black/40 dark:bg-black/60",
+        !instant && "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-150",
+        className,
+      )}
     />
   );
 }
 
-/** Centered modal, sized like Linear's compose and command dialogs. */
-export function DialogContent({ className, children, ...props }: React.ComponentProps<typeof DialogPrimitive.Content>) {
+/**
+ * Centered modal, sized like Linear's compose and command dialogs. `instant`
+ * skips the enter and exit animation for surfaces opened many times a day
+ * from the keyboard, such as the command menu.
+ */
+export function DialogContent({ className, children, instant = false, ...props }: React.ComponentProps<typeof DialogPrimitive.Content> & { instant?: boolean }) {
   return (
     <DialogPrimitive.Portal>
-      <Overlay />
+      <Overlay instant={instant} />
       <DialogPrimitive.Content
         className={cn(
-          "fixed left-1/2 top-[14vh] z-[81] flex max-h-[76vh] w-[calc(100%-2rem)] max-w-xl -translate-x-1/2 flex-col overflow-hidden rounded-xl border border-border-strong bg-popover text-foreground shadow-popover outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.98]",
+          "fixed left-1/2 top-[14vh] z-[81] flex max-h-[76vh] w-[calc(100%-2rem)] max-w-xl -translate-x-1/2 flex-col overflow-hidden rounded-xl border border-border-strong bg-popover text-foreground shadow-popover outline-none",
+          !instant && "ease-out-strong data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.97] data-[state=open]:duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-[0.98] data-[state=closed]:duration-150",
           className,
         )}
         {...props}
@@ -58,7 +67,7 @@ export function SheetContent({
       <Overlay className="bg-black/20 dark:bg-black/40" />
       <DialogPrimitive.Content
         className={cn(
-          "fixed inset-y-2 right-2 z-[81] flex w-[calc(100%-1rem)] max-w-2xl flex-col overflow-hidden rounded-xl border border-border-strong bg-panel text-foreground shadow-popover outline-none data-[state=open]:animate-in data-[state=open]:slide-in-from-right-8 data-[state=open]:fade-in-0",
+          "ease-drawer fixed inset-y-2 right-2 z-[81] flex w-[calc(100%-1rem)] max-w-2xl flex-col overflow-hidden rounded-xl border border-border-strong bg-panel text-foreground shadow-popover outline-none data-[state=open]:animate-in data-[state=open]:slide-in-from-right-8 data-[state=open]:fade-in-0 data-[state=open]:duration-300 data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right-8 data-[state=closed]:fade-out-0 data-[state=closed]:duration-200",
           className,
         )}
         {...props}

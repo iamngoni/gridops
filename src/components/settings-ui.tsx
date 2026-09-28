@@ -1,10 +1,12 @@
 import * as SwitchPrimitive from "@radix-ui/react-switch";
 import type * as React from "react";
 
+import { useDocumentTitle } from "~/lib/use-document-title";
 import { cn } from "~/lib/utils";
 
 /** Centered settings column with a large title, as in Linear's settings screens. */
 export function SettingsLayout({ title, description, actions, children, className }: { title: string; description?: React.ReactNode; actions?: React.ReactNode; children: React.ReactNode; className?: string }) {
+  useDocumentTitle(`${title} · Settings`);
   return (
     <div className={cn("mx-auto w-full max-w-[720px] px-5 pb-20 pt-10 sm:px-8 sm:pt-14", className)}>
       <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -36,13 +38,18 @@ export function SettingsSection({ title, description, actions, children, classNa
   );
 }
 
-/** Label and description on the left, control on the right; stacks on narrow screens. */
+/**
+ * Label and description on the left, control on the right; stacks on narrow
+ * screens. `inline` keeps a compact control such as a switch on the right at
+ * every width.
+ */
 export function SettingsRow({
   label,
   description,
   children,
   htmlFor,
   stacked = false,
+  inline = false,
   className,
 }: {
   label: React.ReactNode;
@@ -50,15 +57,22 @@ export function SettingsRow({
   children?: React.ReactNode;
   htmlFor?: string;
   stacked?: boolean;
+  inline?: boolean;
   className?: string;
 }) {
   return (
-    <div className={cn("flex gap-3 px-4 py-3.5", stacked ? "flex-col" : "flex-col sm:flex-row sm:items-center sm:justify-between sm:gap-6", className)}>
-      <div className={cn("min-w-0", !stacked && "sm:flex-1")}>
+    <div
+      className={cn(
+        "flex gap-3 px-4 py-3.5",
+        stacked ? "flex-col" : inline ? "flex-row items-center justify-between gap-6" : "flex-col sm:flex-row sm:items-center sm:justify-between sm:gap-6",
+        className,
+      )}
+    >
+      <div className={cn("min-w-0", inline ? "flex-1" : !stacked && "sm:flex-1")}>
         <label className="block text-sm font-medium text-foreground" htmlFor={htmlFor}>{label}</label>
         {description ? <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</div> : null}
       </div>
-      {children !== undefined ? <div className={cn("min-w-0", stacked ? "w-full" : "w-full sm:w-[300px] sm:shrink-0 sm:text-right [&>*]:sm:ml-auto")}>{children}</div> : null}
+      {children !== undefined ? <div className={cn("min-w-0", stacked ? "w-full" : inline ? "flex shrink-0" : "w-full sm:w-[300px] sm:shrink-0 sm:text-right [&>*]:sm:ml-auto")}>{children}</div> : null}
     </div>
   );
 }
@@ -72,7 +86,7 @@ export function Switch({ className, ...props }: React.ComponentProps<typeof Swit
       )}
       {...props}
     >
-      <SwitchPrimitive.Thumb className="pointer-events-none block size-3.5 rounded-full bg-white shadow-sm transition-transform data-[state=checked]:translate-x-3 data-[state=unchecked]:translate-x-0" />
+      <SwitchPrimitive.Thumb className="pointer-events-none block size-3.5 rounded-full bg-white shadow-sm transition-transform duration-200 ease-out-strong data-[state=checked]:translate-x-3 data-[state=unchecked]:translate-x-0" />
     </SwitchPrimitive.Root>
   );
 }
@@ -82,7 +96,7 @@ export function SettingsValue({ label, value, mono = false }: { label: string; v
   return (
     <div className="flex items-center justify-between gap-6 px-4 py-3 text-sm">
       <span className="text-muted-foreground">{label}</span>
-      <span className={cn("min-w-0 truncate text-right text-foreground", mono && "font-mono text-xs")}>{value}</span>
+      <span className={cn("min-w-0 truncate text-right text-foreground", mono && "font-mono text-xs", value === "—" && "text-faint")}>{value}</span>
     </div>
   );
 }

@@ -4,7 +4,7 @@ import type * as React from "react";
 import { cn } from "~/lib/utils";
 
 export const buttonVariants = cva(
-  "inline-flex shrink-0 select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-transparent font-medium transition-[background-color,color,border-color,box-shadow] outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-45 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+  "inline-flex shrink-0 select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-transparent font-medium transition-[background-color,color,border-color,box-shadow,transform] duration-150 ease-out-strong outline-none focus-visible:ring-2 focus-visible:ring-ring/50 motion-safe:active:scale-[0.97] disabled:pointer-events-none disabled:opacity-45 [&_svg]:pointer-events-none [&_svg]:shrink-0",
   {
     variants: {
       variant: {
@@ -13,7 +13,7 @@ export const buttonVariants = cva(
         outline: "border-border-strong bg-panel text-foreground shadow-[0_1px_1px_rgb(0_0_0/0.04)] hover:bg-hover",
         secondary: "border-border-strong bg-panel text-foreground shadow-[0_1px_1px_rgb(0_0_0/0.04)] hover:bg-hover",
         ghost: "text-muted-foreground hover:bg-hover hover:text-foreground",
-        link: "h-auto border-0 px-0 text-primary underline-offset-4 hover:underline",
+        link: "h-auto border-0 px-0 text-primary underline-offset-4 hover:underline motion-safe:active:scale-100",
       },
       size: {
         default: "h-8 px-3 text-sm [&_svg]:size-4",

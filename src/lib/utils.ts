@@ -5,6 +5,20 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Counts as people read them: 11,770 rather than 11770. */
+export function formatCount(value: number) {
+  return value.toLocaleString();
+}
+
+export function formatMemory(megabytes: number) {
+  return megabytes >= 1024 ? `${Math.round(megabytes / 102.4) / 10} GB` : `${megabytes} MB`;
+}
+
+/** One runner's size, written the same way everywhere: "2 CPUs · 2 GB". */
+export function formatRunnerShape(cpus: number, memoryMb: number) {
+  return `${cpus} ${cpus === 1 ? "CPU" : "CPUs"} · ${formatMemory(memoryMb)}`;
+}
+
 export function formatDuration(startedAt?: string | null, completedAt?: string | null) {
   if (!startedAt) return "—";
 

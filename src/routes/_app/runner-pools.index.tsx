@@ -14,7 +14,7 @@ import { type RunnerPool, getRunnerPoolsPage } from "~/features/operations/opera
 import { PoolActionsMenu, providerLabel } from "~/features/runner-pools/pool-actions";
 import { validatePageSearch } from "~/lib/pagination";
 import { useLiveRouteRefresh } from "~/lib/use-live-route-refresh";
-import { cn } from "~/lib/utils";
+import { cn, formatRunnerShape } from "~/lib/utils";
 
 export const Route = createFileRoute("/_app/runner-pools/")({
   validateSearch: validatePageSearch,
@@ -101,7 +101,7 @@ function PoolRow({ pool }: { pool: RunnerPool }) {
         <Avatar name={pool.accountLogin} size={16} square src={githubAvatar(pool.accountLogin)} />
         <span className="truncate">{destination}</span>
       </span>
-      <span className="tabular hidden w-24 shrink-0 text-right text-xs text-muted-foreground lg:block">{pool.cpuLimit} CPU · {pool.memoryLimitMb >= 1024 ? `${Math.round(pool.memoryLimitMb / 102.4) / 10} GB` : `${pool.memoryLimitMb} MB`}</span>
+      <span className="tabular hidden w-24 shrink-0 text-right text-xs text-muted-foreground lg:block">{formatRunnerShape(pool.cpuLimit, pool.memoryLimitMb)}</span>
       <CapacityMeter busy={pool.busyRunners} desired={pool.desiredCount} online={pool.onlineRunners} />
       <span className="relative flex w-7 shrink-0 justify-end">{pool.canManage ? <PoolActionsMenu pool={pool} /> : <Tooltip content="Read only"><span className="size-1.5 rounded-full bg-faint" /></Tooltip>}</span>
     </div>

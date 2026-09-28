@@ -1,8 +1,8 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Copy, LoaderCircle, RefreshCw, Settings, ShieldAlert, Webhook } from "lucide-react";
+import { LoaderCircle, RefreshCw, Settings, ShieldAlert, Webhook } from "lucide-react";
 import { useState } from "react";
-import { toast } from "sonner";
 
+import { CopyButton } from "~/components/copy-button";
 import { ListPagination } from "~/components/list-pagination";
 import { Callout, EmptyState, ListGroup, PageBody, PageHeader, listRowClassName } from "~/components/page";
 import { ResourcePageLoading } from "~/components/resource-page-loading";
@@ -89,7 +89,7 @@ function DeliveryRow({ delivery, onOpen }: { delivery: WebhookDelivery; onOpen: 
       <button aria-label={`Inspect delivery ${delivery.id}`} className="absolute inset-0 outline-none" data-list-row="" disabled={!delivery.hasPayload} onClick={onOpen} type="button" />
       <Tooltip content={statusLabel(delivery.status)}><span className="relative inline-flex"><StatusBadge iconOnly status={delivery.status} /></span></Tooltip>
       <span className="shrink-0 font-mono text-xs font-medium text-foreground">{delivery.event}</span>
-      {delivery.action ? <Badge variant="outline">{delivery.action}</Badge> : null}
+      {delivery.action ? <Badge className="font-mono font-normal" variant="outline">{delivery.action}</Badge> : null}
       {!delivery.signatureValid ? <Badge dot={false} variant="destructive"><ShieldAlert className="size-3" />Invalid signature</Badge> : null}
       {delivery.error ? <span className="hidden min-w-0 truncate text-xs text-danger md:block" title={delivery.error}>{delivery.error}</span> : null}
       <span className="flex-1" />
@@ -111,7 +111,7 @@ function PayloadSheet({ state }: { state: PayloadState }) {
   const formatted = payload?.payload == null ? "" : JSON.stringify(payload.payload, null, 2);
   return (
     <SheetContent
-      actions={formatted ? <Button onClick={() => void navigator.clipboard.writeText(formatted).then(() => toast.success("Payload copied."))} size="sm" variant="outline"><Copy />Copy JSON</Button> : null}
+      actions={formatted ? <CopyButton label="Payload" size="sm" value={formatted} variant="outline">Copy JSON</CopyButton> : null}
       aria-describedby={undefined}
       description={`${delivery.id}${payload ? ` · ${formatBytes(payload.payloadBytes)}` : ""}`}
       heading={<span className="font-mono">{delivery.event}{delivery.action ? ` · ${delivery.action}` : ""}</span>}

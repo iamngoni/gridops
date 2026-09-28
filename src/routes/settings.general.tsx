@@ -70,10 +70,10 @@ function GeneralSettings() {
     <form className="contents" onSubmit={submit}>
       <SettingsLayout description="Policy stored in SQLite and included in backups. The runner manager enforces host limits on top of it." title="General">
         <SettingsSection title="Provisioning">
-          <SettingsRow description="Running jobs continue and idle capacity is still removed, but no automatic or manual action can start another runner." label="Pause all new provisioning">
+          <SettingsRow description="Running jobs continue and idle capacity is still removed, but no automatic or manual action can start another runner." inline label="Pause all new provisioning">
             <Switch aria-label="Pause all new provisioning" defaultChecked={settings.provisioningPaused} name="provisioningPaused" />
           </SettingsRow>
-          <SettingsRow description="Pull configured image tags before provisioning replacement runners." label="Refresh runner images">
+          <SettingsRow description="Pull configured image tags before provisioning replacement runners." inline label="Refresh runner images">
             <Switch aria-label="Refresh runner images" defaultChecked={settings.autoUpdateImages} name="autoUpdateImages" />
           </SettingsRow>
           <SettingsRow description="How often the reconciler compares desired and actual runners." htmlFor="reconcile" label="Reconcile interval">

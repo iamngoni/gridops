@@ -1,5 +1,6 @@
 import { ExternalLink, FileArchive, MoreHorizontal, OctagonX, RefreshCw, RotateCcw, Square } from "lucide-react";
 
+import { rowActionClassName } from "~/components/page";
 import { Button } from "~/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "~/components/ui/dropdown-menu";
 import { workflowRunAction } from "~/features/operations/operations.functions";
@@ -19,12 +20,12 @@ export function RunActionsMenu({ run, triggerVariant = "ghost", showDownload = f
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button aria-label={`Actions for ${label}`} className="data-[state=open]:bg-hover" size={triggerVariant === "ghost" ? "icon-xs" : "icon-sm"} variant={triggerVariant}><MoreHorizontal /></Button>
+        <Button aria-label={`Actions for ${label}`} className={triggerVariant === "ghost" ? rowActionClassName : "data-[state=open]:bg-hover"} size={triggerVariant === "ghost" ? "icon-xs" : "icon-sm"} variant={triggerVariant}><MoreHorizontal /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-56">
         {run.canManage && active ? (
           <>
-            <DropdownMenuItem icon={<Square />} onSelect={() => void perform({ action: () => control({ data: { runId: run.id, action: "cancel" } }), confirm: `Cancel ${label}?`, success: "Cancellation requested." })}>Cancel run</DropdownMenuItem>
+            <DropdownMenuItem icon={<Square />} onSelect={() => void perform({ action: () => control({ data: { runId: run.id, action: "cancel" } }), confirm: `Cancel ${label}?`, confirmOptions: { confirmLabel: "Cancel run" }, success: "Cancellation requested." })}>Cancel run</DropdownMenuItem>
             <DropdownMenuItem destructive icon={<OctagonX />} onSelect={() => void perform({ action: () => control({ data: { runId: run.id, action: "force-cancel" } }), confirm: `Force-cancel ${label}? Use this only when normal cancellation is blocked.`, success: "Force cancellation requested." })}>Force cancel</DropdownMenuItem>
           </>
         ) : null}
