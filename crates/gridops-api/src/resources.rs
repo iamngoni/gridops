@@ -144,6 +144,14 @@ pub(crate) struct PaginationQuery {
 }
 
 #[derive(Deserialize)]
+pub(crate) struct RunnersQuery {
+    page: Option<i64>,
+    #[serde(rename = "perPage")]
+    per_page: Option<i64>,
+    pool: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub(crate) struct LogTargetsQuery {
     page: Option<i64>,
     #[serde(rename = "perPage")]
@@ -1382,16 +1390,17 @@ pub async fn update_runner_pool(
 
 pub async fn runners(
     State(state): State<AppState>,
-    Query(query): Query<PaginationQuery>,
+    Query(query): Query<RunnersQuery>,
     OptionalAuth(user): OptionalAuth,
 ) -> ApiResult<Json<Value>> {
     let (requested_page, per_page) = pagination(query.page, query.per_page);
     let Some(user) = user else {
         return Ok(empty_paginated_page(requested_page, per_page));
     };
+    let pool = query.pool.filter(|pool| !pool.is_empty());
     let total = sqlx::query_scalar::<_, i64>(
         r#"SELECT COUNT(*) FROM runners r JOIN runner_pools p ON p.id=r.pool_id
-        WHERE r.deleted_at IS NULL
+        WHERE r.deleted_at IS NULL AND (? IS NULL OR r.pool_id=?)
           AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
           AND NOT EXISTS (
             SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
@@ -1399,6 +1408,8 @@ pub async fn runners(
                 WHERE access.user_id=? AND access.installation_id=mapped.installation_id)
           )"#,
     )
+    .bind(&pool)
+    .bind(&pool)
     .bind(&user.id)
     .fetch_one(&state.database)
     .await?;
@@ -1420,7 +1431,7 @@ pub async fn runners(
         LEFT JOIN repositories repo ON repo.id=r.target_repository_id
         LEFT JOIN installations target_installation ON target_installation.id=repo.installation_id
         LEFT JOIN workflow_jobs wj ON wj.id=r.current_job_id
-        WHERE r.deleted_at IS NULL
+        WHERE r.deleted_at IS NULL AND (? IS NULL OR r.pool_id=?)
           AND EXISTS (SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id)
           AND NOT EXISTS (
             SELECT 1 FROM runner_pool_installations mapped WHERE mapped.pool_id=p.id
@@ -1430,6 +1441,8 @@ pub async fn runners(
         ORDER BY r.created_at DESC LIMIT ? OFFSET ?"#,
     )
     .bind(&user.id)
+    .bind(&pool)
+    .bind(&pool)
     .bind(&user.id)
     .bind(per_page)
     .bind(offset)

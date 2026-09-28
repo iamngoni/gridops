@@ -17,6 +17,23 @@ export function formatDuration(startedAt?: string | null, completedAt?: string |
   return minutes > 0 ? `${minutes}m ${remainder}s` : `${remainder}s`;
 }
 
+/** Compact age for dense rows, as Linear shows it: "now", "5m", "3h", "4d", then a date. */
+export function formatAge(value: string) {
+  const elapsed = Date.now() - new Date(value).getTime();
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  return new Date(value).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+export function formatDateTime(value: string) {
+  return new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 export function formatRelativeTime(value: string) {
   const elapsed = Date.now() - new Date(value).getTime();
   const minutes = Math.floor(elapsed / 60_000);

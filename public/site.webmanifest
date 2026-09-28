@@ -4,8 +4,8 @@
   "description": "Self-hosted control plane for GitHub Actions runners.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#09090b",
-  "theme_color": "#09090b",
+  "background_color": "#08090a",
+  "theme_color": "#08090a",
   "icons": [
     {
       "src": "/favicon.svg",

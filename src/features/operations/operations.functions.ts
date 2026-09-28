@@ -128,8 +128,8 @@ const paginatedUrl = (path: string, page: number) => `${path}?page=${page}&perPa
 
 export const getRunnerPoolsPage = ({ page = 1 }: { page?: number } = {}) =>
   api<PaginatedPage<RunnerPool>>(paginatedUrl("/api/v1/runner-pools", page));
-export const getRunnersPage = ({ page = 1 }: { page?: number } = {}) =>
-  api<PaginatedPage<Runner>>(paginatedUrl("/api/v1/runners", page));
+export const getRunnersPage = ({ page = 1, pool }: { page?: number; pool?: string } = {}) =>
+  api<PaginatedPage<Runner>>(`${paginatedUrl("/api/v1/runners", page)}${pool ? `&pool=${encodeURIComponent(pool)}` : ""}`);
 export const getRepositoriesPage = ({ query = "", page = 1 }: { query?: string; page?: number } = {}) =>
   api<RepositoryPage>(`/api/v1/repositories?q=${encodeURIComponent(query)}&page=${page}&perPage=50`);
 export const getWorkflowRunsPage = ({ page = 1 }: { page?: number } = {}) =>

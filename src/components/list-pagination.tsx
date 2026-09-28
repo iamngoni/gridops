@@ -1,9 +1,11 @@
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
 import { pageNumbers } from "~/lib/pagination";
 
 type ListPaginationProps = {
+  /** Previous/next only, for narrow panes. */
+  compact?: boolean;
   itemCount: number;
   noun: string;
   onPageChange: (page: number) => void;
@@ -12,7 +14,8 @@ type ListPaginationProps = {
   total: number;
 };
 
-export function ListPagination({ itemCount, noun, onPageChange, page, perPage, total }: ListPaginationProps) {
+/** Quiet list footer: range on the left, compact page stepper on the right. */
+export function ListPagination({ compact = false, itemCount, noun, onPageChange, page, perPage, total }: ListPaginationProps) {
   if (total === 0) return null;
   const totalPages = Math.max(1, Math.ceil(total / perPage));
   const currentPage = Math.min(page, totalPages);
@@ -20,28 +23,25 @@ export function ListPagination({ itemCount, noun, onPageChange, page, perPage, t
   const end = start + itemCount - 1;
 
   return (
-    <nav aria-label={`${noun} pagination`} className="flex flex-col gap-3 border-t border-border px-4 py-3">
-      <p className="text-xs leading-5 text-muted-foreground">
-        Showing {start}–{end} of {total} {noun}
-      </p>
+    <nav aria-label={`${noun} pagination`} className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-xs text-muted-foreground">
+      <span className="tabular">{start}–{end} of {total}{compact ? "" : ` ${noun}`}</span>
       {totalPages > 1 ? (
-        <div className="flex max-w-full flex-nowrap items-center gap-1 self-end overflow-x-auto pb-0.5">
-          <Button aria-label={`First ${noun} page`} disabled={currentPage === 1} onClick={() => onPageChange(1)} size="icon" variant="outline"><ChevronsLeft /></Button>
-          <Button aria-label={`Previous ${noun} page`} disabled={currentPage === 1} onClick={() => onPageChange(currentPage - 1)} size="icon" variant="outline"><ChevronLeft /></Button>
-          {pageNumbers(currentPage, totalPages).map((pageNumber) => (
+        <div className="ml-auto flex max-w-full flex-nowrap items-center gap-0.5 overflow-x-auto">
+          <Button aria-label={`Previous ${noun} page`} disabled={currentPage === 1} onClick={() => onPageChange(currentPage - 1)} size="icon-xs" variant="ghost"><ChevronLeft /></Button>
+          {compact ? null : pageNumbers(currentPage, totalPages).map((pageNumber) => (
             <Button
               aria-current={pageNumber === currentPage ? "page" : undefined}
               aria-label={`${noun} page ${pageNumber}`}
+              className={pageNumber === currentPage ? "bg-selected text-foreground" : undefined}
               key={pageNumber}
               onClick={() => onPageChange(pageNumber)}
-              size="icon"
-              variant={pageNumber === currentPage ? "secondary" : "outline"}
+              size="icon-xs"
+              variant="ghost"
             >
-              {pageNumber}
+              <span className="tabular text-xs">{pageNumber}</span>
             </Button>
           ))}
-          <Button aria-label={`Next ${noun} page`} disabled={currentPage === totalPages} onClick={() => onPageChange(currentPage + 1)} size="icon" variant="outline"><ChevronRight /></Button>
-          <Button aria-label={`Last ${noun} page`} disabled={currentPage === totalPages} onClick={() => onPageChange(totalPages)} size="icon" variant="outline"><ChevronsRight /></Button>
+          <Button aria-label={`Next ${noun} page`} disabled={currentPage === totalPages} onClick={() => onPageChange(currentPage + 1)} size="icon-xs" variant="ghost"><ChevronRight /></Button>
         </div>
       ) : null}
     </nav>
