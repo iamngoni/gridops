@@ -41,6 +41,8 @@ use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::Tra
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 use url::Url;
 
+mod sandbox;
+
 #[derive(Clone)]
 struct ManagerState {
     docker: Docker,
@@ -159,6 +161,7 @@ enum ManagerError {
     Forbidden(String),
     BadRequest(String),
     Conflict(String),
+    PayloadTooLarge(String),
     Guardrail {
         code: &'static str,
         message: String,
@@ -183,6 +186,9 @@ impl IntoResponse for ManagerError {
             Self::Forbidden(message) => (StatusCode::FORBIDDEN, "forbidden", message),
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, "bad_request", message),
             Self::Conflict(message) => (StatusCode::CONFLICT, "conflict", message),
+            Self::PayloadTooLarge(message) => {
+                (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", message)
+            }
             Self::Guardrail { code, message } => (StatusCode::TOO_MANY_REQUESTS, code, message),
             Self::NotFound(message) => (StatusCode::NOT_FOUND, "not_found", message),
             Self::Upstream {
@@ -732,7 +738,14 @@ async fn main() -> Result<()> {
         provision_lock: Arc::new(Mutex::new(())),
     };
 
-    let app = Router::new()
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    tracing::info!(address = bind, "GridOps Rust runner manager listening");
+    axum::serve(listener, router(state)).await?;
+    Ok(())
+}
+
+fn router(state: ManagerState) -> Router {
+    let standard = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/policy", put(update_policy))
         .route("/v1/admissions", post(reserve_capacity))
@@ -741,17 +754,36 @@ async fn main() -> Result<()> {
         .route("/v1/runners/{container_id}", delete(delete_runner))
         .route("/v1/runners/{container_id}/logs", get(logs))
         .route("/v1/runners/{container_id}/{action}", post(control_runner))
+        .route(
+            "/v1/sandboxes",
+            get(sandbox::list_sandboxes).post(sandbox::create_sandbox),
+        )
+        .route(
+            "/v1/sandboxes/{sandbox_id}",
+            delete(sandbox::delete_sandbox),
+        )
+        .layer(request_timeout(Duration::from_mins(3)));
+    // Agent commands and repository uploads outlive the standard timeout, so
+    // each carries its own ceiling instead.
+    let long_running = Router::new()
+        .route(
+            "/v1/sandboxes/{sandbox_id}/exec",
+            post(sandbox::exec_in_sandbox).layer(request_timeout(sandbox::EXEC_ROUTE_TIMEOUT)),
+        )
+        .route(
+            "/v1/sandboxes/{sandbox_id}/archive",
+            put(sandbox::upload_sandbox_archive)
+                .layer(request_timeout(sandbox::ARCHIVE_ROUTE_TIMEOUT)),
+        );
+    standard
+        .merge(long_running)
         .with_state(state)
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_mins(3),
-        ))
         .layer(CatchPanicLayer::new())
-        .layer(TraceLayer::new_for_http());
-    let listener = tokio::net::TcpListener::bind(&bind).await?;
-    tracing::info!(address = bind, "GridOps Rust runner manager listening");
-    axum::serve(listener, app).await?;
-    Ok(())
+        .layer(TraceLayer::new_for_http())
+}
+
+fn request_timeout(timeout: Duration) -> TimeoutLayer {
+    TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, timeout)
 }
 
 async fn health(
@@ -762,7 +794,9 @@ async fn health(
     let version = state.docker.version().await?;
     // `capacity` describes the Docker host only; Tart reports its own budget
     // and usage under `providers.tart.health.capacity`.
-    let active = docker_active_capacity(&state.docker).await?;
+    // `active` includes agent sandboxes, which hold runner slots on this host;
+    // `agentSandboxes` breaks them out.
+    let usage = docker_active_usage(&state.docker).await?;
     let reserved = reserved_capacity(&state, "docker").await;
     let disk = disk_capacity(&state.limits)?;
     let (status, tart) = match &state.tart {
@@ -791,8 +825,13 @@ async fn health(
             "cpuBudget": state.limits.cpu_budget,
             "memoryBudgetMb": state.limits.memory_budget_mb,
             "maxRunners": state.limits.max_runners,
-            "active": active,
+            "active": usage.total(),
             "reserved": reserved,
+            "agentSandboxes": {
+                "active": usage.sandboxes.active_runners,
+                "cpu": usage.sandboxes.cpu,
+                "memoryMb": usage.sandboxes.memory_mb,
+            },
         },
         "disk": disk,
     })))
@@ -928,7 +967,7 @@ async fn provision_runner(
         ));
     }
     let lease_id = input.capacity_lease.clone();
-    validate_capacity_lease(&state, &input).await?;
+    validate_capacity_lease(&state, &input.lease_claim()).await?;
     if input.provider == "tart" {
         let result = match &state.tart {
             Some(agent) => {
@@ -1397,25 +1436,52 @@ fn ensure_provisioning_enabled(state: &ManagerState) -> Result<(), ManagerError>
     Ok(())
 }
 
+/// What a provisioning request says its capacity lease was reserved for.
+struct LeaseClaim<'a> {
+    lease_id: &'a str,
+    runner_id: &'a str,
+    pool_id: &'a str,
+    provider: &'a str,
+    cpu_limit: f64,
+    memory_limit_mb: i64,
+}
+
+impl LeaseClaim<'_> {
+    fn matches(&self, reservation: &CapacityReservation) -> bool {
+        reservation.runner_id == self.runner_id
+            && reservation.pool_id == self.pool_id
+            && reservation.provider == self.provider
+            && (reservation.cpu_limit - self.cpu_limit).abs() <= f64::EPSILON
+            && reservation.memory_limit_mb == self.memory_limit_mb
+    }
+}
+
+impl ProvisionRunner {
+    fn lease_claim(&self) -> LeaseClaim<'_> {
+        LeaseClaim {
+            lease_id: &self.capacity_lease,
+            runner_id: &self.runner_id,
+            pool_id: &self.pool_id,
+            provider: &self.provider,
+            cpu_limit: self.cpu_limit,
+            memory_limit_mb: self.memory_limit_mb,
+        }
+    }
+}
+
 async fn validate_capacity_lease(
     state: &ManagerState,
-    input: &ProvisionRunner,
+    claim: &LeaseClaim<'_>,
 ) -> Result<(), ManagerError> {
     let mut reservations = state.reservations.lock().await;
     reservations.retain(|_, reservation| reservation.expires_at > Instant::now());
-    let reservation =
-        reservations
-            .get(&input.capacity_lease)
-            .ok_or_else(|| ManagerError::Guardrail {
-                code: "capacity_lease_invalid",
-                message: "Runner capacity reservation is missing or expired.".into(),
-            })?;
-    if reservation.runner_id != input.runner_id
-        || reservation.pool_id != input.pool_id
-        || reservation.provider != input.provider
-        || (reservation.cpu_limit - input.cpu_limit).abs() > f64::EPSILON
-        || reservation.memory_limit_mb != input.memory_limit_mb
-    {
+    let reservation = reservations
+        .get(claim.lease_id)
+        .ok_or_else(|| ManagerError::Guardrail {
+            code: "capacity_lease_invalid",
+            message: "Runner capacity reservation is missing or expired.".into(),
+        })?;
+    if !claim.matches(reservation) {
         return Err(ManagerError::Forbidden(
             "Runner capacity reservation does not match the provisioning request.".into(),
         ));
@@ -1423,11 +1489,49 @@ async fn validate_capacity_lease(
     Ok(())
 }
 
+/// Docker host usage split by workload. Runners and agent sandboxes share the
+/// host, so admission charges their combined total against one budget.
+#[derive(Clone, Copy, Debug, Default)]
+struct DockerUsage {
+    runners: CapacityUsage,
+    sandboxes: CapacityUsage,
+}
+
+impl DockerUsage {
+    fn total(self) -> CapacityUsage {
+        CapacityUsage {
+            active_runners: self
+                .runners
+                .active_runners
+                .saturating_add(self.sandboxes.active_runners),
+            cpu: self.runners.cpu + self.sandboxes.cpu,
+            memory_mb: self
+                .runners
+                .memory_mb
+                .saturating_add(self.sandboxes.memory_mb),
+        }
+    }
+}
+
 async fn docker_active_capacity(docker: &Docker) -> Result<CapacityUsage, ManagerError> {
-    let filters = HashMap::from([(
-        "label".to_owned(),
-        vec!["io.gridops.managed=true".to_owned()],
-    )]);
+    Ok(docker_active_usage(docker).await?.total())
+}
+
+async fn docker_active_usage(docker: &Docker) -> Result<DockerUsage, ManagerError> {
+    let runners = active_container_ids(docker, "io.gridops.managed=true").await?;
+    let sandboxes = active_container_ids(docker, &format!("{}=true", sandbox::SANDBOX_LABEL))
+        .await?
+        .into_iter()
+        .filter(|id| !runners.contains(id))
+        .collect();
+    Ok(DockerUsage {
+        runners: containers_usage(docker, runners).await?,
+        sandboxes: containers_usage(docker, sandboxes).await?,
+    })
+}
+
+async fn active_container_ids(docker: &Docker, label: &str) -> Result<Vec<String>, ManagerError> {
+    let filters = HashMap::from([("label".to_owned(), vec![label.to_owned()])]);
     let containers = docker
         .list_containers(Some(
             ListContainersOptionsBuilder::default()
@@ -1436,7 +1540,7 @@ async fn docker_active_capacity(docker: &Docker) -> Result<CapacityUsage, Manage
                 .build(),
         ))
         .await?;
-    let active_ids = containers
+    Ok(containers
         .into_iter()
         .filter(|container| {
             container
@@ -1445,14 +1549,30 @@ async fn docker_active_capacity(docker: &Docker) -> Result<CapacityUsage, Manage
                 .is_some_and(|state| active_container_state(state.as_ref()))
         })
         .filter_map(|container| container.id)
-        .collect::<Vec<_>>();
-    let details = futures_util::stream::iter(active_ids)
-        .map(|id| async move { docker.inspect_container(&id, None).await })
+        .collect())
+}
+
+async fn containers_usage(
+    docker: &Docker,
+    ids: Vec<String>,
+) -> Result<CapacityUsage, ManagerError> {
+    let details = futures_util::stream::iter(ids)
+        .map(|id| async move {
+            match docker.inspect_container(&id, None).await {
+                Ok(details) => Ok(Some(details)),
+                // Removed between listing and inspection, so it no longer
+                // holds capacity.
+                Err(DockerError::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => Ok(None),
+                Err(error) => Err(error),
+            }
+        })
         .buffer_unordered(16)
         .try_collect::<Vec<_>>()
         .await?;
     let mut usage = CapacityUsage::default();
-    for details in details {
+    for details in details.into_iter().flatten() {
         let host = details.host_config.unwrap_or_default();
         usage.active_runners += 1;
         usage.cpu += host.nano_cpus.unwrap_or_default() as f64 / 1_000_000_000.0;
@@ -1984,6 +2104,54 @@ mod tests {
         let tart = provider_reservations(&reservations, "tart");
         assert_eq!(tart.active_runners, 2);
         assert!((tart.cpu - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn agent_sandboxes_count_against_the_docker_host_budget() {
+        let usage = DockerUsage {
+            runners: CapacityUsage {
+                active_runners: 2,
+                cpu: 4.0,
+                memory_mb: 4_096,
+            },
+            sandboxes: CapacityUsage {
+                active_runners: 1,
+                cpu: 2.0,
+                memory_mb: 2_048,
+            },
+        };
+        let total = usage.total();
+        assert_eq!(total.active_runners, 3);
+        assert!((total.cpu - 6.0).abs() < f64::EPSILON);
+        assert_eq!(total.memory_mb, 6_144);
+        let budget = CapacityBudget {
+            cpu: 8.0,
+            memory_mb: 16_384,
+            max_runners: 3,
+        };
+        let requested = CapacityUsage {
+            active_runners: 1,
+            cpu: 1.0,
+            memory_mb: 1_024,
+        };
+        // Two runners alone leave a slot; the running sandbox takes it.
+        assert!(
+            enforce_capacity(
+                budget,
+                usage.runners,
+                CapacityUsage::default(),
+                requested,
+                None
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            enforce_capacity(budget, total, CapacityUsage::default(), requested, None),
+            Err(ManagerError::Guardrail {
+                code: "host_capacity_exhausted",
+                ..
+            })
+        ));
     }
 
     #[test]
