@@ -1127,8 +1127,17 @@ async fn next_bitbucket_connection(
     .await?)
 }
 
+/// Bitbucket labels for a pool's runner. Bitbucket requires `self.hosted` and
+/// the runner's OS on every self-hosted runner (it resolves the runner type
+/// from them and refuses the registration otherwise), and steps target runners
+/// with `runs-on: [self.hosted, macos, ...]`. `GridOps` runs Bitbucket runners
+/// only on the macOS host, so the OS is always `macos`.
 fn bitbucket_runner_labels(pool_name: &str, labels: &[String]) -> Result<Vec<String>> {
-    let mut output = vec![format!("gridops.{}", pool_name.replace('-', "."))];
+    let mut output = vec![
+        "self.hosted".to_owned(),
+        "macos".to_owned(),
+        format!("gridops.{}", pool_name.replace('-', ".")),
+    ];
     output.extend(
         labels
             .iter()
@@ -2255,6 +2264,25 @@ mod tests {
             configuration_version,
             updated_at: 1_000,
         }
+    }
+
+    #[test]
+    fn bitbucket_runners_carry_the_labels_bitbucket_requires() -> Result<()> {
+        let labels = bitbucket_runner_labels("toppan", &["gridops".into(), "toppan".into()])?;
+        assert_eq!(
+            labels,
+            ["gridops", "gridops.toppan", "macos", "self.hosted"]
+        );
+        let deduplicated = bitbucket_runner_labels(
+            "ios-builds",
+            &["self.hosted".into(), "macos".into(), "xcode16".into()],
+        )?;
+        assert_eq!(
+            deduplicated,
+            ["gridops.ios.builds", "macos", "self.hosted", "xcode16"]
+        );
+        assert!(bitbucket_runner_labels("toppan", &["Self-Hosted".into()]).is_err());
+        Ok(())
     }
 
     #[test]
