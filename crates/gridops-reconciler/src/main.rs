@@ -1,3 +1,5 @@
+mod agent;
+
 use std::{
     collections::{HashMap, HashSet},
     time::Duration,
@@ -172,6 +174,9 @@ async fn main() -> Result<()> {
     };
 
     tracing::info!("GridOps Rust reconciler started");
+    // Agent runs take minutes, so they get their own task rather than holding
+    // up runner reconciliation.
+    tokio::spawn(agent::worker(reconciler.clone()));
     loop {
         let started = std::time::Instant::now();
         if let Err(error) = reconcile(&reconciler).await {
@@ -242,6 +247,10 @@ async fn reconcile(app: &Reconciler) -> Result<()> {
         .execute(&app.database)
         .await?;
     sqlx::query("DELETE FROM github_app_manifest_states WHERE expires_at < ?")
+        .bind(now_millis())
+        .execute(&app.database)
+        .await?;
+    sqlx::query("DELETE FROM ai_oauth_attempts WHERE expires_at < ?")
         .bind(now_millis())
         .execute(&app.database)
         .await?;
