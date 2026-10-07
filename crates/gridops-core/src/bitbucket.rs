@@ -113,6 +113,7 @@ impl BitbucketClient {
             Some(json!({ "name": name, "labels": labels })),
         )
         .await
+        .map_err(|error| explain_runner_create_failure(target, error))
     }
 
     pub async fn workspace(
@@ -264,6 +265,28 @@ pub struct BitbucketWorkspace {
     pub name: Option<String>,
 }
 
+/// Bitbucket answers a runner registration the token's owner may not make
+/// with a bare 404, which reads like a `GridOps` bug. Reads still work, so the
+/// connection looks healthy until this point.
+fn explain_runner_create_failure(
+    target: &BitbucketRunnerTarget,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    if !error.to_string().contains("(404") {
+        return error;
+    }
+    let (place, role) = match target {
+        BitbucketRunnerTarget::Workspace { workspace } => (workspace.clone(), "a workspace admin"),
+        BitbucketRunnerTarget::Repository {
+            workspace,
+            repository,
+        } => (format!("{workspace}/{repository}"), "a repository admin"),
+    };
+    anyhow::anyhow!(
+        "Bitbucket refused to register a runner in {place} (404). Registering runners needs {role}: the account that owns this connection's API token can read runners but isn't allowed to create them. Use a token from {role} of {place}."
+    )
+}
+
 fn valid_uuid(value: &str) -> bool {
     let value = value.trim_matches(['{', '}']);
     uuid::Uuid::parse_str(value).is_ok()
@@ -272,6 +295,26 @@ fn valid_uuid(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refused_registrations_explain_the_admin_requirement() {
+        let workspace = BitbucketRunnerTarget::Workspace {
+            workspace: "toppanfacetech".into(),
+        };
+        let explained = explain_runner_create_failure(
+            &workspace,
+            anyhow::anyhow!("Bitbucket API request failed (404 Not Found): {{}}"),
+        )
+        .to_string();
+        assert!(explained.contains("register a runner in toppanfacetech (404)"));
+        assert!(explained.contains("a workspace admin"));
+        let other = explain_runner_create_failure(
+            &workspace,
+            anyhow::anyhow!("Bitbucket API request failed (400 Bad Request): {{}}"),
+        )
+        .to_string();
+        assert!(other.contains("400"));
+    }
 
     #[test]
     fn runner_targets_build_scoped_api_paths() {
