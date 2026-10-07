@@ -209,6 +209,11 @@ async fn main() -> Result<()> {
             get(resources::bitbucket_connections).post(resources::create_bitbucket_connection),
         )
         .route(
+            "/api/v1/platform-connections/bitbucket/{connection_id}",
+            put(resources::update_bitbucket_connection)
+                .delete(resources::delete_bitbucket_connection),
+        )
+        .route(
             "/api/v1/github-app/manifest",
             post(github_app::create_manifest),
         )

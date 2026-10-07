@@ -219,6 +219,15 @@ pub struct CreateBitbucketConnection {
     access_token: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateBitbucketConnection {
+    name: String,
+    /// A replacement token; blank or missing keeps the current one.
+    #[serde(default)]
+    access_token: Option<String>,
+}
+
 pub async fn health(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     sqlx::query("SELECT 1").execute(&state.database).await?;
     Ok(Json(json!({
@@ -2826,16 +2835,10 @@ pub async fn bitbucket_connections(
     .await?;
     Ok(Json(json!({
         "canManage": user.role == "admin",
-        "items": rows.into_iter().map(|row| json!({
-            "id": row.get::<String,_>("id"),
-            "provider": "bitbucket",
-            "name": row.get::<String,_>("name"),
-            "workspace": row.get::<String,_>("workspace"),
-            "workspaceUuid": row.get::<String,_>("workspace_uuid"),
-            "createdAt": iso(row.get::<i64,_>("created_at")),
-            "updatedAt": iso(row.get::<i64,_>("updated_at")),
-            "canManage": user.role == "admin",
-        })).collect::<Vec<_>>()
+        "items": rows
+            .iter()
+            .map(|row| bitbucket_connection_json(row, user.role == "admin"))
+            .collect::<Vec<_>>()
     })))
 }
 
@@ -2846,14 +2849,9 @@ pub async fn create_bitbucket_connection(
     Json(input): Json<CreateBitbucketConnection>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     require_system_admin(&user)?;
-    let name = input.name.trim();
+    let name = bitbucket_connection_name(&input.name)?;
     let workspace = input.workspace.trim().to_lowercase();
-    let access_token = input.access_token.trim();
-    if !(2..=80).contains(&name.len()) || name.contains(['\r', '\n']) {
-        return Err(ApiError::BadRequest(
-            "Bitbucket connection name must contain 2-80 visible characters.".into(),
-        ));
-    }
+    let access_token = bitbucket_access_token(&input.access_token)?;
     if workspace.is_empty()
         || workspace.len() > 255
         || !workspace.chars().all(|character| {
@@ -2868,10 +2866,15 @@ pub async fn create_bitbucket_connection(
                 .into(),
         ));
     }
-    if !(20..=4_096).contains(&access_token.len()) || access_token.contains(['\r', '\n']) {
-        return Err(ApiError::BadRequest(
-            "Bitbucket API token is invalid.".into(),
-        ));
+    // Each workspace is connected once; checking first saves a round trip to
+    // Bitbucket and names the connection to edit instead.
+    if let Some(existing) =
+        sqlx::query_scalar::<_, String>("SELECT name FROM bitbucket_connections WHERE workspace=?")
+            .bind(&workspace)
+            .fetch_optional(&state.database)
+            .await?
+    {
+        return Err(duplicate_bitbucket_workspace(&workspace, &existing));
     }
 
     let verified_workspace = state
@@ -2919,6 +2922,17 @@ pub async fn create_bitbucket_connection(
     .await;
     if let Err(error) = result {
         transaction.rollback().await?;
+        if let ApiError::Internal(cause) = &error
+            && cause
+                .downcast_ref::<sqlx::Error>()
+                .and_then(sqlx::Error::as_database_error)
+                .is_some_and(|database| database.is_unique_violation())
+        {
+            return Err(duplicate_bitbucket_workspace(
+                &verified_workspace.slug,
+                "another connection",
+            ));
+        }
         return Err(error);
     }
     transaction.commit().await?;
@@ -2941,6 +2955,196 @@ pub async fn create_bitbucket_connection(
             "workspaceUuid": verified_workspace.uuid,
         })),
     ))
+}
+
+fn bitbucket_connection_name(value: &str) -> ApiResult<&str> {
+    let name = value.trim();
+    if !(2..=80).contains(&name.len()) || name.contains(['\r', '\n']) {
+        return Err(ApiError::BadRequest(
+            "Bitbucket connection name must contain 2-80 visible characters.".into(),
+        ));
+    }
+    Ok(name)
+}
+
+fn bitbucket_access_token(value: &str) -> ApiResult<&str> {
+    let token = value.trim();
+    if !(20..=4_096).contains(&token.len()) || token.contains(['\r', '\n']) {
+        return Err(ApiError::BadRequest(
+            "Bitbucket API token is invalid.".into(),
+        ));
+    }
+    Ok(token)
+}
+
+fn duplicate_bitbucket_workspace(workspace: &str, existing: &str) -> ApiError {
+    ApiError::Conflict(format!(
+        "bitbucket.org/{workspace} is already connected as {existing}. Edit that connection to rename it or replace its token."
+    ))
+}
+
+fn bitbucket_connection_json(row: &sqlx::sqlite::SqliteRow, can_manage: bool) -> Value {
+    json!({
+        "id": row.get::<String, _>("id"),
+        "provider": "bitbucket",
+        "name": row.get::<String, _>("name"),
+        "workspace": row.get::<String, _>("workspace"),
+        "workspaceUuid": row.get::<String, _>("workspace_uuid"),
+        "createdAt": iso(row.get::<i64, _>("created_at")),
+        "updatedAt": iso(row.get::<i64, _>("updated_at")),
+        "canManage": can_manage,
+    })
+}
+
+pub async fn update_bitbucket_connection(
+    State(state): State<AppState>,
+    _same_origin: SameOrigin,
+    user: AuthUser,
+    Path(connection_id): Path<String>,
+    Json(input): Json<UpdateBitbucketConnection>,
+) -> ApiResult<Json<Value>> {
+    require_system_admin(&user)?;
+    let name = bitbucket_connection_name(&input.name)?;
+    let connection = sqlx::query(
+        "SELECT workspace,workspace_uuid,access_token_key FROM bitbucket_connections WHERE id=?",
+    )
+    .bind(&connection_id)
+    .fetch_optional(&state.database)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("That Bitbucket connection does not exist.".into()))?;
+    let workspace = connection.get::<String, _>("workspace");
+    let replacement = input
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(bitbucket_access_token)
+        .transpose()?;
+    let sealed = match replacement {
+        Some(token) => {
+            let verified = state
+                .bitbucket
+                .workspace(&workspace, token)
+                .await
+                .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+            // Pools and runners are tied to this workspace; a token for any
+            // other one would silently retarget them.
+            if verified.uuid != connection.get::<String, _>("workspace_uuid") {
+                return Err(ApiError::BadRequest(format!(
+                    "That token can't access bitbucket.org/{workspace}."
+                )));
+            }
+            Some(state.vault.seal(token).map_err(ApiError::Internal)?)
+        }
+        None => None,
+    };
+    let now = now_millis();
+    let mut transaction = state.database.begin().await?;
+    if let Some(sealed) = &sealed {
+        sqlx::query("UPDATE runtime_secrets SET value=?,updated_by=?,updated_at=? WHERE key=?")
+            .bind(sealed)
+            .bind(&user.id)
+            .bind(now)
+            .bind(connection.get::<&str, _>("access_token_key"))
+            .execute(&mut *transaction)
+            .await?;
+    }
+    sqlx::query("UPDATE bitbucket_connections SET name=?,updated_at=? WHERE id=?")
+        .bind(name)
+        .bind(now)
+        .bind(&connection_id)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    audit(
+        &state,
+        &user,
+        "bitbucket.connection_updated",
+        "bitbucket_connection",
+        Some(&connection_id),
+        json!({ "name": name, "workspace": workspace, "tokenReplaced": sealed.is_some() }),
+    )
+    .await?;
+    let row = sqlx::query(
+        "SELECT id,name,workspace,workspace_uuid,created_at,updated_at FROM bitbucket_connections WHERE id=?",
+    )
+    .bind(&connection_id)
+    .fetch_one(&state.database)
+    .await?;
+    Ok(Json(bitbucket_connection_json(&row, true)))
+}
+
+pub async fn delete_bitbucket_connection(
+    State(state): State<AppState>,
+    _same_origin: SameOrigin,
+    user: AuthUser,
+    Path(connection_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    require_system_admin(&user)?;
+    let connection =
+        sqlx::query("SELECT name,workspace,access_token_key FROM bitbucket_connections WHERE id=?")
+            .bind(&connection_id)
+            .fetch_optional(&state.database)
+            .await?
+            .ok_or_else(|| {
+                ApiError::NotFound("That Bitbucket connection does not exist.".into())
+            })?;
+    let name = connection.get::<String, _>("name");
+    // Deleting would drop the pool assignments and strand registered runners,
+    // which need this connection's token to be removed from Bitbucket.
+    let pools = sqlx::query_scalar::<_, String>(
+        r#"SELECT pool.name FROM runner_pool_bitbucket_connections membership
+          JOIN runner_pools pool ON pool.id=membership.pool_id
+          WHERE membership.connection_id=? ORDER BY lower(pool.name)"#,
+    )
+    .bind(&connection_id)
+    .fetch_all(&state.database)
+    .await?;
+    if !pools.is_empty() {
+        return Err(ApiError::Conflict(format!(
+            "{name} is used by {} {}. Remove it from {} first.",
+            if pools.len() == 1 { "pool" } else { "pools" },
+            pools.join(", "),
+            if pools.len() == 1 {
+                "that pool"
+            } else {
+                "those pools"
+            },
+        )));
+    }
+    let runners = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM runners WHERE bitbucket_connection_id=? AND deleted_at IS NULL",
+    )
+    .bind(&connection_id)
+    .fetch_one(&state.database)
+    .await?;
+    if runners > 0 {
+        return Err(ApiError::Conflict(format!(
+            "{runners} runner{} registered through {name} still exist. Remove {} first.",
+            if runners == 1 { "" } else { "s" },
+            if runners == 1 { "it" } else { "them" },
+        )));
+    }
+    let mut transaction = state.database.begin().await?;
+    sqlx::query("DELETE FROM bitbucket_connections WHERE id=?")
+        .bind(&connection_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("DELETE FROM runtime_secrets WHERE key=?")
+        .bind(connection.get::<&str, _>("access_token_key"))
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    audit(
+        &state,
+        &user,
+        "bitbucket.connection_deleted",
+        "bitbucket_connection",
+        Some(&connection_id),
+        json!({ "name": name, "workspace": connection.get::<String, _>("workspace") }),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn database_backup(State(state): State<AppState>, user: AuthUser) -> ApiResult<Response> {
