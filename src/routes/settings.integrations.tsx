@@ -67,7 +67,7 @@ function BitbucketSettings() {
             <SettingsRow htmlFor="bb-workspace" label="Workspace slug">
               <Input autoCapitalize="none" id="bb-workspace" onChange={(event) => setWorkspace(event.target.value)} placeholder="acme-mobile" required value={workspace} />
             </SettingsRow>
-            <SettingsRow description="Needs workspace read plus Pipelines runner read and write." htmlFor="bb-token" label="API token">
+            <SettingsRow description="Needs the read:workspace, read:runner and write:runner Bitbucket scopes. GridOps checks them before saving." htmlFor="bb-token" label="API token">
               <Input autoComplete="off" id="bb-token" onChange={(event) => setAccessToken(event.target.value)} placeholder="Paste a token" required type="password" value={accessToken} />
             </SettingsRow>
             {error ? <div className="px-4 py-3"><Callout title="Could not connect" tone="danger">{error}</Callout></div> : null}

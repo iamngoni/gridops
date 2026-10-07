@@ -1444,33 +1444,12 @@ async fn delete_runner(app: &Reconciler, pool: &Pool, runner: &Runner) -> Result
         tracing::warn!(runner_id = %runner.id, error = ?error, "could not archive runner logs");
     }
     if runner.ci_platform == "bitbucket" {
-        let connection_id = runner
-            .bitbucket_connection_id
-            .as_deref()
-            .context("Bitbucket runner is missing its workspace connection")?;
-        let runner_uuid = runner
-            .bitbucket_runner_uuid
-            .as_deref()
-            .context("Bitbucket runner is missing its remote registration UUID")?;
-        let connection = sqlx::query_as::<_, BitbucketPoolConnection>(
-            "SELECT id,workspace,workspace_uuid,access_token_key FROM bitbucket_connections WHERE id=?",
-        )
-        .bind(connection_id)
-        .fetch_optional(&app.database)
-        .await?
-        .context("Bitbucket workspace connection no longer exists")?;
-        let access_token = runtime_secret(app, &connection.access_token_key)
-            .await?
-            .context("Bitbucket workspace credentials are unavailable")?;
-        app.bitbucket
-            .delete_runner(
-                &BitbucketRunnerTarget::Workspace {
-                    workspace: connection.workspace,
-                },
-                &access_token,
-                runner_uuid,
-            )
-            .await?;
+        // A runner whose registration failed never reached Bitbucket, so there
+        // is nothing to deregister. Requiring a UUID here used to fail every
+        // pass and wedge the whole pool behind one failed runner.
+        if let Some(runner_uuid) = bitbucket_registration(runner) {
+            deregister_bitbucket_runner(app, runner, runner_uuid).await?;
+        }
     } else {
         let target = match (&runner.repository_owner, &runner.repository_name) {
             (Some(owner), Some(repository)) => RunnerTarget::Repository { owner, repository },
@@ -1535,6 +1514,45 @@ async fn delete_runner(app: &Reconciler, pool: &Pool, runner: &Runner) -> Result
     )
     .await?;
     Ok(())
+}
+
+/// The Bitbucket registration to remove when deleting `runner`, if it ever
+/// registered.
+fn bitbucket_registration(runner: &Runner) -> Option<&str> {
+    runner
+        .bitbucket_runner_uuid
+        .as_deref()
+        .filter(|uuid| !uuid.is_empty())
+}
+
+async fn deregister_bitbucket_runner(
+    app: &Reconciler,
+    runner: &Runner,
+    runner_uuid: &str,
+) -> Result<()> {
+    let connection_id = runner
+        .bitbucket_connection_id
+        .as_deref()
+        .context("Bitbucket runner is missing its workspace connection")?;
+    let connection = sqlx::query_as::<_, BitbucketPoolConnection>(
+        "SELECT id,workspace,workspace_uuid,access_token_key FROM bitbucket_connections WHERE id=?",
+    )
+    .bind(connection_id)
+    .fetch_optional(&app.database)
+    .await?
+    .context("Bitbucket workspace connection no longer exists")?;
+    let access_token = runtime_secret(app, &connection.access_token_key)
+        .await?
+        .context("Bitbucket workspace credentials are unavailable")?;
+    app.bitbucket
+        .delete_runner(
+            &BitbucketRunnerTarget::Workspace {
+                workspace: connection.workspace,
+            },
+            &access_token,
+            runner_uuid,
+        )
+        .await
 }
 
 async fn remove_manager_container(app: &Reconciler, container_id: &str) -> Result<()> {
@@ -2237,6 +2255,21 @@ mod tests {
             configuration_version,
             updated_at: 1_000,
         }
+    }
+
+    #[test]
+    fn bitbucket_runners_that_never_registered_need_no_deregistration() {
+        let mut failed = runner(1);
+        failed.ci_platform = "bitbucket".into();
+        failed.status = "failed".into();
+        assert_eq!(bitbucket_registration(&failed), None);
+        failed.bitbucket_runner_uuid = Some(String::new());
+        assert_eq!(bitbucket_registration(&failed), None);
+        failed.bitbucket_runner_uuid = Some("{0f3b2c1d-aaaa-bbbb-cccc-123456789abc}".into());
+        assert_eq!(
+            bitbucket_registration(&failed),
+            Some("{0f3b2c1d-aaaa-bbbb-cccc-123456789abc}")
+        );
     }
 
     #[tokio::test]
