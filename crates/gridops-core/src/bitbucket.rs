@@ -133,6 +133,34 @@ impl BitbucketClient {
         .await
     }
 
+    /// Confirms the token can manage Pipelines runners in the workspace. A
+    /// token with only workspace or pipeline scopes passes `workspace` but is
+    /// refused when the first runner registers, so this is checked up front.
+    /// Bitbucket has no read-only probe for write access; listing runners
+    /// proves the runner scopes were granted, and tokens get read and write
+    /// together.
+    pub async fn verify_runner_access(&self, workspace: &str, access_token: &str) -> Result<()> {
+        let target = BitbucketRunnerTarget::Workspace {
+            workspace: workspace.to_owned(),
+        };
+        target.validate()?;
+        match self
+            .send(
+                Method::GET,
+                &format!("{}?pagelen=1", target.runner_path()),
+                access_token,
+                None,
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) if error.to_string().contains("(403") => bail!(
+                "This token can't manage Pipelines runners in {workspace}. Create one with the read:runner:bitbucket and write:runner:bitbucket scopes (Runners: read and write) alongside read:workspace:bitbucket."
+            ),
+            Err(error) => Err(error),
+        }
+    }
+
     pub async fn delete_runner(
         &self,
         target: &BitbucketRunnerTarget,

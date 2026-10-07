@@ -2887,6 +2887,11 @@ pub async fn create_bitbucket_connection(
             "Bitbucket returned an incomplete workspace identity.".into(),
         ));
     }
+    state
+        .bitbucket
+        .verify_runner_access(&verified_workspace.slug, access_token)
+        .await
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
     let id = uuid::Uuid::new_v4().to_string();
     let access_token_key = format!("bitbucket.connection.{id}.access_token");
     let now = now_millis();
@@ -3034,6 +3039,11 @@ pub async fn update_bitbucket_connection(
                     "That token can't access bitbucket.org/{workspace}."
                 )));
             }
+            state
+                .bitbucket
+                .verify_runner_access(&workspace, token)
+                .await
+                .map_err(|error| ApiError::BadRequest(error.to_string()))?;
             Some(state.vault.seal(token).map_err(ApiError::Internal)?)
         }
         None => None,
