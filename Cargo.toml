@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/gridops-agent",
   "crates/gridops-api",
   "crates/gridops-core",
   "crates/gridops-manager",
