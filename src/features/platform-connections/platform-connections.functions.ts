@@ -19,3 +19,10 @@ export const createBitbucketConnection = (data: { name: string; workspace: strin
     "/api/v1/platform-connections/bitbucket",
     { method: "POST", body: data },
   );
+
+/** Renames a connection and, when `accessToken` is set, replaces its token. */
+export const updateBitbucketConnection = (connectionId: string, data: { name: string; accessToken?: string }) =>
+  api<BitbucketConnection>(`/api/v1/platform-connections/bitbucket/${encodeURIComponent(connectionId)}`, { method: "PUT", body: data });
+
+export const removeBitbucketConnection = (connectionId: string) =>
+  api<void>(`/api/v1/platform-connections/bitbucket/${encodeURIComponent(connectionId)}`, { method: "DELETE" });
