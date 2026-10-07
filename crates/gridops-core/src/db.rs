@@ -209,8 +209,11 @@ mod tests {
         .fetch_one(&pool)
         .await?
         .get::<i64, _>("count");
-        assert_eq!(tables, 23);
+        assert_eq!(tables, 27);
         assert!(table_exists(&pool, "runner_pool_installations").await?);
+        assert!(table_exists(&pool, "ai_connections").await?);
+        assert!(table_exists(&pool, "agent_runs").await?);
+        assert!(table_exists(&pool, "agent_run_events").await?);
         assert!(table_exists(&pool, "bitbucket_connections").await?);
         assert!(table_exists(&pool, "runner_pool_bitbucket_connections").await?);
         let columns = sqlx::query("PRAGMA table_info(runner_pools)")

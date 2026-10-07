@@ -1,3 +1,4 @@
+mod agent;
 mod auth;
 mod error;
 mod github_app;
@@ -13,7 +14,7 @@ use axum::{
     Router,
     extract::DefaultBodyLimit,
     http::{HeaderName, HeaderValue, Method, Request, StatusCode, header},
-    routing::{any, get, post},
+    routing::{any, delete, get, post, put},
 };
 use gridops_core::{BitbucketClient, Config, GitHubClient, Vault, connect_database};
 use tower::ServiceBuilder;
@@ -72,7 +73,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route(
             "/api/v1/users/{user_id}/role",
-            axum::routing::put(auth::update_user_role),
+            put(auth::update_user_role),
         )
         .route("/api/v1/webhooks/github", post(webhooks::receive))
         .route("/auth/github", get(oauth::begin))
@@ -155,6 +156,31 @@ async fn main() -> Result<()> {
             "/api/v1/workflow-jobs/{job_id}/logs",
             get(resources::workflow_job_log_view),
         )
+        .route(
+            "/api/v1/workflow-jobs/{job_id}/agent-runs",
+            post(agent::start_agent_run),
+        )
+        .route("/api/v1/agent-runs/{run_id}", get(agent::agent_run))
+        .route(
+            "/api/v1/agent-runs/{run_id}/cancel",
+            post(agent::cancel_agent_run),
+        )
+        .route("/api/v1/settings/ai", get(agent::ai_settings))
+        .route("/api/v1/settings/ai/api-key", post(agent::save_api_key))
+        .route("/api/v1/settings/ai/oauth/start", post(agent::start_oauth))
+        .route(
+            "/api/v1/settings/ai/oauth/complete",
+            post(agent::complete_oauth),
+        )
+        .route(
+            "/api/v1/settings/ai/connections/{connection_id}",
+            delete(agent::delete_connection),
+        )
+        .route(
+            "/api/v1/settings/ai/connections/{connection_id}/models",
+            get(agent::connection_models),
+        )
+        .route("/api/v1/settings/ai/agent", put(agent::save_agent_settings))
         .route(
             "/api/workflow-runs/{run_id}/logs",
             get(resources::workflow_run_logs),

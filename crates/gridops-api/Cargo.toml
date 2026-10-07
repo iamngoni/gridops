@@ -12,6 +12,7 @@ axum-extra.workspace = true
 base64.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
+gridops-agent = { path = "../gridops-agent" }
 gridops-core = { path = "../gridops-core" }
 hmac.workspace = true
 hex.workspace = true

@@ -1,5 +1,5 @@
 import { Link, Outlet, createFileRoute, useRouterState } from "@tanstack/react-router";
-import { ChevronLeft, CloudCog, Github, Palette, Server, Settings, Settings2, UsersRound, type LucideIcon } from "lucide-react";
+import { ChevronLeft, CloudCog, Github, Palette, Server, Settings, Settings2, Sparkles, UsersRound, type LucideIcon } from "lucide-react";
 
 import { AppShell } from "~/components/app-shell";
 import { LoadingRows, PageBody, PageHeader } from "~/components/page";
@@ -34,6 +34,7 @@ const sections: Array<{ label: string; items: SettingsNavItem[] }> = [
     items: [
       { label: "GitHub", to: "/settings/github", icon: Github },
       { label: "Bitbucket", to: "/settings/integrations", icon: CloudCog },
+      { label: "AI agent", to: "/settings/ai", icon: Sparkles },
     ],
   },
 ];

@@ -3,7 +3,9 @@ pub mod bitbucket;
 pub mod config;
 pub mod crypto;
 pub mod db;
+pub mod fix_agent;
 pub mod github;
+pub mod job_log;
 pub mod models;
 pub mod provisioning;
 

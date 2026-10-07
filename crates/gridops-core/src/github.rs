@@ -155,14 +155,7 @@ impl GitHubClient {
         {
             return Ok(cached.token.clone());
         }
-        let now = chrono::Utc::now().timestamp();
-        let claims = AppClaims {
-            iat: now - 60,
-            exp: now + 9 * 60,
-            iss: app_id.to_owned(),
-        };
-        let key = EncodingKey::from_rsa_pem(private_key.as_bytes())?;
-        let jwt = encode(&Header::new(Algorithm::RS256), &claims, &key)?;
+        let jwt = app_jwt(app_id, private_key)?;
         let response: InstallationToken = self
             .post(
                 &format!("/app/installations/{installation_id}/access_tokens"),
@@ -180,6 +173,27 @@ impl GitHubClient {
                 expires_at,
             },
         );
+        Ok(response.token)
+    }
+
+    /// A token limited to one repository and the given permissions, for work
+    /// that must not reach anything else the installation can. Never cached.
+    pub async fn scoped_installation_token(
+        &self,
+        installation_id: i64,
+        app_id: &str,
+        private_key: &str,
+        repository: &str,
+        permissions: Value,
+    ) -> Result<String> {
+        let jwt = app_jwt(app_id, private_key)?;
+        let response: InstallationToken = self
+            .post(
+                &format!("/app/installations/{installation_id}/access_tokens"),
+                &jwt,
+                json!({ "repositories": [repository], "permissions": permissions }),
+            )
+            .await?;
         Ok(response.token)
     }
 
@@ -286,6 +300,17 @@ impl GitHubClient {
 struct InstallationToken {
     token: String,
     expires_at: String,
+}
+
+fn app_jwt(app_id: &str, private_key: &str) -> Result<String> {
+    let now = chrono::Utc::now().timestamp();
+    let claims = AppClaims {
+        iat: now - 60,
+        exp: now + 9 * 60,
+        iss: app_id.to_owned(),
+    };
+    let key = EncodingKey::from_rsa_pem(private_key.as_bytes())?;
+    Ok(encode(&Header::new(Algorithm::RS256), &claims, &key)?)
 }
 
 #[derive(Debug, Deserialize)]

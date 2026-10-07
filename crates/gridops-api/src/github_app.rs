@@ -280,12 +280,16 @@ fn build_manifest(
             // callback handler.
             "request_oauth_on_install": false,
             "setup_on_update": true,
+            // Contents and pull requests let the fix agent read the failing
+            // commit and open a pull request with its fix.
             "default_permissions": {
                 "actions": "write",
                 "administration": "write",
+                "contents": "write",
                 "metadata": "read",
                 "members": "read",
-                "organization_self_hosted_runners": "write"
+                "organization_self_hosted_runners": "write",
+                "pull_requests": "write"
             },
             "default_events": [
                 "workflow_job",
@@ -333,6 +337,8 @@ mod tests {
         );
         assert_eq!(manifest["default_permissions"]["actions"], "write");
         assert_eq!(manifest["default_permissions"]["members"], "read");
+        assert_eq!(manifest["default_permissions"]["contents"], "write");
+        assert_eq!(manifest["default_permissions"]["pull_requests"], "write");
         assert_eq!(
             manifest["redirect_url"],
             "http://localhost:3100/auth/github-app/manifest/callback"

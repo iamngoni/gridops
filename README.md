@@ -23,6 +23,7 @@ GridOps is a self-hosted control plane for GitHub Actions runners. Connect a Git
 - Signed, idempotent GitHub webhooks with delivery retry and audit history
 - SQLite WAL persistence, retention policy, and consistent downloadable backups
 - A continuously running reconciler that repairs desired versus actual runner state
+- A fix agent that diagnoses failed jobs in an isolated sandbox and opens a draft pull request with the fix, using a ChatGPT or Claude subscription or an OpenAI, Anthropic, or OpenRouter API key ([docs/fix-agent.md](docs/fix-agent.md))
 
 ## Architecture
 
@@ -42,7 +43,9 @@ Create a GitHub App with these repository permissions:
 
 - Actions: read and write
 - Administration: read and write
+- Contents: read and write (fix agent)
 - Metadata: read-only
+- Pull requests: read and write (fix agent)
 
 For organization-scoped pools, grant organization self-hosted runners read and write access. Subscribe to `workflow_job` and `workflow_run`; GitHub Apps receive `installation`, `installation_repositories`, and `github_app_authorization` automatically, so those events must not be included in a manifest's `default_events`. Enable expiring user access tokens.
 

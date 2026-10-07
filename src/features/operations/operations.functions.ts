@@ -1,3 +1,4 @@
+import type { JobAgentState } from "~/features/agent/agent.functions";
 import { api } from "~/lib/api";
 
 type Page<T> = { authenticated: boolean; items: T[] };
@@ -90,6 +91,8 @@ export type StructuredJobLog = {
     startedAt: string | null; completedAt: string | null;
     lines: Array<{ timestamp: string | null; text: string; level: "output" | "group" | "command" | "error" | "warning" | "notice" }>;
   }>;
+  /** Fix-with-agent availability for this job; missing from servers without the agent. */
+  agent?: JobAgentState;
 };
 
 export type SettingsPage = {

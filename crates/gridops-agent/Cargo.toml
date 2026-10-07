@@ -1,0 +1,32 @@
+[package]
+name = "gridops-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Pinned to the revision Veyra runs, which adds the auto tool-choice strategy and
+# the structured-answer retry on top of the one ccs pins.
+agent-runtime = { git = "https://github.com/iamngoni/agent-runtime", rev = "dd44d81c1914ebb768fa3990e7c291ba08362384" }
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+rand.workspace = true
+# agent-runtime and the adapted subscription transports speak reqwest 0.12;
+# the rest of GridOps uses the workspace's newer reqwest.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar = "0.4"
+thiserror.workspace = true
+time = "0.3"
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
