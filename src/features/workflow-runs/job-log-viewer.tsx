@@ -2,12 +2,19 @@ import { Link } from "@tanstack/react-router";
 import { ArrowDown, ChevronRight, CircleX, LoaderCircle, RefreshCw, Search, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
+import { toast } from "sonner";
 
 import { InlineError } from "~/components/page";
 import { RunStatusIcon } from "~/components/status-icon";
 import { Button, buttonVariants } from "~/components/ui/button";
 import { Tooltip } from "~/components/ui/tooltip";
+import { AgentRunPanel } from "~/features/agent/agent-run-panel";
+import { fixButtonState } from "~/features/agent/agent-state";
+import { startAgentRun } from "~/features/agent/agent.functions";
+import { FixWithAgentButton } from "~/features/agent/fix-with-agent-button";
+import { useAgentRun } from "~/features/agent/use-agent-run";
 import { type StructuredJobLog, getWorkflowJobLogAction } from "~/features/operations/operations.functions";
+import { ApiError } from "~/lib/api";
 import { advanceFollowedSteps, isNearLogEnd } from "~/lib/log-follow";
 import { cn, formatDuration } from "~/lib/utils";
 
@@ -92,6 +99,39 @@ export function JobLogViewer({
     return () => window.clearInterval(interval);
   }, [active, refreshLog]);
 
+  // The job's latest "Fix with agent" run, or the one just started from this view.
+  const [startedAgentRunId, setStartedAgentRunId] = useState<string | null>(null);
+  const [startingAgent, setStartingAgent] = useState(false);
+  const latestAgentRun = jobLog?.agent?.latestRun ?? null;
+  const agentRunId = startedAgentRunId ?? latestAgentRun?.id ?? null;
+  const agentSummary = latestAgentRun?.id === agentRunId ? latestAgentRun : null;
+  // A finished run can change what the job allows next (a daily cap, another attempt).
+  const agentRun = useAgentRun(agentRunId, { onSettled: () => void refreshLog() });
+  const fixState = fixButtonState({
+    agent: jobLog?.agent,
+    conclusion: jobLog?.conclusion,
+    currentRunStatus: agentRun.run?.status ?? agentSummary?.status,
+  });
+
+  async function startFix() {
+    setStartingAgent(true);
+    try {
+      const run = await startAgentRun(jobId);
+      agentRun.accept(run);
+      setStartedAgentRunId(run.id);
+      toast.success("The agent is looking into this failure.");
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : "Could not start the agent.");
+      // A run is already going (started elsewhere or automatically); show that one instead.
+      if (cause instanceof ApiError && cause.status === 409) {
+        setStartedAgentRunId(null);
+        void refreshLog();
+      }
+    } finally {
+      setStartingAgent(false);
+    }
+  }
+
   useLayoutEffect(() => {
     const viewport = logViewport.current;
     if (!viewport || !following || !active) return;
@@ -166,6 +206,7 @@ export function JobLogViewer({
           />
         </label>
         {showRunLink && runId ? <Link className={buttonVariants({ size: "sm", variant: "ghost" })} params={{ runId: String(runId) }} to="/workflow-runs/$runId">View run</Link> : null}
+        {fixState.visible ? <FixWithAgentButton onStart={() => void startFix()} pending={startingAgent} state={fixState} /> : null}
         <Tooltip content="Refresh log">
           <Button aria-label="Refresh job log" disabled={loading} onClick={() => void refreshLog(true)} size="icon-sm" variant="ghost">
             {loading ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
@@ -194,6 +235,17 @@ export function JobLogViewer({
             ))}
           </div>
         </div>
+      ) : null}
+
+      {agentRunId ? (
+        <AgentRunPanel
+          error={agentRun.error}
+          key={agentRunId}
+          onRetry={() => void agentRun.reload()}
+          onUpdate={agentRun.accept}
+          run={agentRun.run}
+          summary={agentSummary}
+        />
       ) : null}
 
       <div className="relative min-h-0 flex-1">
