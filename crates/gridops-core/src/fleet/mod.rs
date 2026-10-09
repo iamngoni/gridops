@@ -1,8 +1,11 @@
 //! Durable fleet-domain identifiers, lifecycle values, and authorization.
 
 pub mod authorization;
+pub mod capabilities;
+pub mod cursor;
 pub mod domain;
 pub mod ids;
+pub mod protocol;
 
 pub use authorization::{
     AuthorizationError, AuthorizationProof, Capability, DockerSocketProof, ExecuteSandboxProof,

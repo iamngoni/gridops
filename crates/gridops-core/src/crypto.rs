@@ -20,6 +20,14 @@ pub struct Vault {
 }
 
 impl Vault {
+    #[cfg(test)]
+    pub(crate) fn test_with_secret(session_secret: &[u8]) -> Self {
+        Self {
+            encryption_key: [7; 32],
+            session_secret: session_secret.to_vec(),
+        }
+    }
+
     pub fn from_config(config: &Config) -> Result<Self> {
         let encoded = config
             .encryption_key()

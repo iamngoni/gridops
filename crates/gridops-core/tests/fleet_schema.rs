@@ -333,3 +333,83 @@ async fn epoch_replacement_and_retirement_preserve_original_ownership() -> Resul
     );
     db.close().await
 }
+
+#[tokio::test]
+async fn inventory_is_invalidated_on_upgrade_and_every_authority_change() -> Result<()> {
+    let db = Database::legacy().await?;
+    MIGRATOR.run_to(22, &db.pool).await?;
+    sqlx::raw_sql(include_str!("fixtures/fleet_ready.sql"))
+        .execute(&db.pool)
+        .await?;
+    sqlx::query("UPDATE fleet_hosts SET inventory_complete=1,last_inventory_at=1 WHERE id=?")
+        .bind(HOST)
+        .execute(&db.pool)
+        .await?;
+    MIGRATOR.run(&db.pool).await?;
+    let snapshot: (i64, Option<i64>) =
+        sqlx::query_as("SELECT inventory_complete,last_inventory_at FROM fleet_hosts WHERE id=?")
+            .bind(HOST)
+            .fetch_one(&db.pool)
+            .await?;
+    assert_eq!(snapshot, (0, None));
+    rejected(&db.pool, "INSERT INTO fleet_hosts (id,name,host_os,architecture,inventory_complete,last_inventory_at,created_at,updated_at) VALUES ('a0000000-0000-4000-8000-000000000001','bad','linux','x64',1,1,1,1)").await;
+    for change in [
+        "UPDATE fleet_hosts SET epoch=epoch+1 WHERE id=?",
+        "UPDATE fleet_hosts SET boot_id='next-boot' WHERE id=?",
+        "UPDATE fleet_hosts SET agent_session_id='next-session' WHERE id=?",
+        "UPDATE fleet_hosts SET authority_incarnation='next-incarnation' WHERE id=?",
+    ] {
+        sqlx::query("UPDATE fleet_hosts SET agent_session_id='current-session',boot_id='current-boot',authority_incarnation='current-incarnation' WHERE id=?")
+            .bind(HOST).execute(&db.pool).await?;
+        sqlx::query("UPDATE fleet_hosts SET inventory_complete=1,last_inventory_at=2,inventory_epoch=epoch,inventory_session_id=agent_session_id,inventory_boot_id=boot_id WHERE id=?")
+            .bind(HOST).execute(&db.pool).await?;
+        sqlx::query("UPDATE fleet_hosts SET epoch=epoch,boot_id=boot_id,agent_session_id=agent_session_id,authority_incarnation=authority_incarnation WHERE id=?")
+            .bind(HOST).execute(&db.pool).await?;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT inventory_complete FROM fleet_hosts WHERE id=?")
+                .bind(HOST)
+                .fetch_one(&db.pool)
+                .await?,
+            1
+        );
+        sqlx::query(change).bind(HOST).execute(&db.pool).await?;
+        let snapshot: (i64, Option<i64>, Option<i64>, Option<String>, Option<String>) = sqlx::query_as("SELECT inventory_complete,last_inventory_at,inventory_epoch,inventory_session_id,inventory_boot_id FROM fleet_hosts WHERE id=?")
+            .bind(HOST).fetch_one(&db.pool).await?;
+        assert_eq!(snapshot, (0, None, None, None, None));
+        assert!(
+            sqlx::query("UPDATE fleet_hosts SET inventory_complete=1 WHERE id=?")
+                .bind(HOST)
+                .execute(&db.pool)
+                .await
+                .is_err()
+        );
+        sqlx::query("UPDATE fleet_hosts SET inventory_complete=1,last_inventory_at=3,inventory_epoch=epoch,inventory_session_id=agent_session_id,inventory_boot_id=boot_id WHERE id=?")
+            .bind(HOST).execute(&db.pool).await?;
+    }
+    // Even one UPDATE that attempts to refresh inventory while replacing the
+    // session must wait for a later authenticated inventory acknowledgment.
+    sqlx::query("UPDATE fleet_hosts SET agent_session_id='replacement',inventory_session_id='replacement',inventory_complete=1 WHERE id=?")
+        .bind(HOST).execute(&db.pool).await?;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT inventory_complete FROM fleet_hosts WHERE id=?")
+            .bind(HOST)
+            .fetch_one(&db.pool)
+            .await?,
+        0
+    );
+    sqlx::query("INSERT INTO fleet_hosts (id,name,host_os,architecture,inventory_complete,last_inventory_at,inventory_epoch,agent_session_id,inventory_session_id,boot_id,inventory_boot_id,authority_incarnation,created_at,updated_at) VALUES ('a0000000-0000-4000-8000-000000000002','valid snapshot','linux','x64',1,1,1,'session','session','boot','boot','incarnation',1,1)")
+        .execute(&db.pool).await?;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM workload_placements")
+            .fetch_one(&db.pool)
+            .await?,
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM capacity_allocations")
+            .fetch_one(&db.pool)
+            .await?,
+        2
+    );
+    db.close().await
+}

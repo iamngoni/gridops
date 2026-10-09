@@ -89,6 +89,17 @@ fleet_uuid!(ProfileId);
 fleet_uuid!(OperationId);
 fleet_uuid!(CiTargetId);
 fleet_uuid!(SessionId);
+fleet_uuid!(AuthoritySessionId);
+fleet_uuid!(ControlPlaneIncarnation);
+fleet_uuid!(PreparedEnvironmentId);
+fleet_uuid!(BootstrapReference);
+fleet_uuid!(LogStreamId);
+fleet_uuid!(ArtifactId);
+fleet_uuid!(ReleaseManifestId);
+fleet_uuid!(EventId);
+fleet_uuid!(ResultId);
+fleet_uuid!(BatchId);
+fleet_uuid!(DiagnosticId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[error("{kind} must be between 1 and {MAX_COUNTER}, got {value}")]
