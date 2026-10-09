@@ -42,6 +42,7 @@ impl ApiFixture {
         let binary = env!("CARGO_BIN_EXE_gridops-api");
         let child = Command::new(binary)
             .env("GRIDOPS_BASE_URL", &base_url)
+            .env("GRIDOPS_FLEET_ALLOW_LOOPBACK_HTTP", "true")
             .env("GRIDOPS_API_BIND", format!("127.0.0.1:{port}"))
             .env("GRIDOPS_DATABASE_PATH", &database_path)
             .env("GRIDOPS_SESSION_SECRET", SESSION_SECRET)

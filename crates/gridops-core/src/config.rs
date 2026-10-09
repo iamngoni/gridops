@@ -1,3 +1,6 @@
+//! Process configuration, including the trusted public endpoint for fleet enrollment.
+//! Endpoint validation never resolves or contacts a caller-supplied address.
+
 use std::{env, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
@@ -28,6 +31,7 @@ struct Inner {
     api_bind: String,
     web_root: PathBuf,
     manager_bind: String,
+    fleet_allow_loopback_http: bool,
 }
 
 impl Config {
@@ -70,6 +74,8 @@ impl Config {
                 .into(),
             manager_bind: env::var("GRIDOPS_MANAGER_BIND")
                 .unwrap_or_else(|_| "127.0.0.1:8788".into()),
+            fleet_allow_loopback_http: optional_bool("GRIDOPS_FLEET_ALLOW_LOOPBACK_HTTP")?
+                .unwrap_or(false),
         })))
     }
 
@@ -77,6 +83,7 @@ impl Config {
         if self.session_secret().is_none() || self.encryption_key().is_none() {
             bail!("GRIDOPS_SESSION_SECRET and GRIDOPS_ENCRYPTION_KEY are required");
         }
+        validate_fleet_endpoint(self.base_url(), self.0.fleet_allow_loopback_http)?;
         Ok(())
     }
 
@@ -169,4 +176,71 @@ fn optional_bool(name: &str) -> Result<Option<bool>> {
             _ => bail!("{name} must be true or false"),
         })
         .transpose()
+}
+
+fn validate_fleet_endpoint(url: &Url, allow_loopback_http: bool) -> Result<()> {
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.query().is_some()
+        || url.host().is_none()
+    {
+        bail!("GRIDOPS_BASE_URL must identify a server without credentials, query or fragment");
+    }
+    let literal_loopback = match url.host() {
+        Some(url::Host::Domain(name)) => name == "localhost",
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    };
+    if url.scheme() == "https"
+        || (url.scheme() == "http" && literal_loopback && allow_loopback_http)
+    {
+        return Ok(());
+    }
+    bail!(
+        "Fleet requires HTTPS in GRIDOPS_BASE_URL; development loopback HTTP requires GRIDOPS_FLEET_ALLOW_LOOPBACK_HTTP=true"
+    )
+}
+
+#[cfg(test)]
+mod fleet_endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn fleet_endpoint_requires_tls_except_explicit_literal_loopback() -> Result<()> {
+        for value in [
+            "https://fleet.example",
+            "https://fleet.example:8443",
+            "https://127.0.0.1",
+        ] {
+            validate_fleet_endpoint(&Url::parse(value)?, false)?;
+        }
+        for value in [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://[::1]:3000",
+        ] {
+            let url = Url::parse(value)?;
+            assert!(validate_fleet_endpoint(&url, false).is_err());
+            validate_fleet_endpoint(&url, true)?;
+        }
+        for value in [
+            "http://fleet.example",
+            "http://localhost.example",
+            "http://192.168.1.2",
+            "http://[::ffff:127.0.0.1]",
+            "ftp://localhost",
+            "https://user:sentinel@fleet.example",
+            "https://fleet.example/#sentinel",
+            "https://fleet.example/?secret=sentinel",
+            "file:///tmp/socket",
+        ] {
+            let Err(error) = validate_fleet_endpoint(&Url::parse(value)?, true) else {
+                bail!("unsafe endpoint was accepted");
+            };
+            assert!(!error.to_string().contains("sentinel"));
+        }
+        Ok(())
+    }
 }

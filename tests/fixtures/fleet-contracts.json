@@ -1,0 +1,1426 @@
+[
+  {
+    "name": "windows physical host",
+    "schema": "host",
+    "valid": true,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "windows host Linux backend",
+    "schema": "backend",
+    "valid": true,
+    "body": {
+      "id": "00000002-0000-4000-8000-000000000001",
+      "hostId": "00000001-0000-4000-8000-000000000001",
+      "runtimeKind": "docker",
+      "executionOs": "linux",
+      "architecture": "x64",
+      "readiness": "ready",
+      "reason": null,
+      "revision": 1
+    }
+  },
+  {
+    "name": "macos physical host",
+    "schema": "host",
+    "valid": true,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "macos",
+      "architecture": "arm64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "macos host Linux backend",
+    "schema": "backend",
+    "valid": true,
+    "body": {
+      "id": "00000002-0000-4000-8000-000000000001",
+      "hostId": "00000001-0000-4000-8000-000000000001",
+      "runtimeKind": "docker",
+      "executionOs": "linux",
+      "architecture": "arm64",
+      "readiness": "ready",
+      "reason": null,
+      "revision": 1
+    }
+  },
+  {
+    "name": "linux physical host",
+    "schema": "host",
+    "valid": true,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "linux",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "linux host Linux backend",
+    "schema": "backend",
+    "valid": true,
+    "body": {
+      "id": "00000002-0000-4000-8000-000000000001",
+      "hostId": "00000001-0000-4000-8000-000000000001",
+      "runtimeKind": "docker",
+      "executionOs": "linux",
+      "architecture": "x64",
+      "readiness": "ready",
+      "reason": null,
+      "revision": 1
+    }
+  },
+  {
+    "name": "independent unknown axes",
+    "schema": "host",
+    "valid": true,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "offline",
+      "pressure": "unknown",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": null,
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": null,
+      "allocated": null
+    }
+  },
+  {
+    "name": "largest exact browser resources",
+    "schema": "resource",
+    "valid": true,
+    "body": {
+      "cpuMillis": 9007199254740991,
+      "memoryMib": 9007199254740991,
+      "diskBytes": 9007199254740991
+    }
+  },
+  {
+    "name": "unsafe resource -1",
+    "schema": "resource",
+    "valid": false,
+    "body": {
+      "cpuMillis": 1000,
+      "memoryMib": 2048,
+      "diskBytes": -1
+    }
+  },
+  {
+    "name": "unsafe resource 0.5",
+    "schema": "resource",
+    "valid": false,
+    "body": {
+      "cpuMillis": 1000,
+      "memoryMib": 2048,
+      "diskBytes": 0.5
+    }
+  },
+  {
+    "name": "unsafe resource 9007199254740992",
+    "schema": "resource",
+    "valid": false,
+    "body": {
+      "cpuMillis": 1000,
+      "memoryMib": 2048,
+      "diskBytes": 9007199254740992
+    }
+  },
+  {
+    "name": "wrong resource units",
+    "schema": "resource",
+    "valid": false,
+    "body": {
+      "cpuMillis": 1000,
+      "memoryMib": 2048,
+      "diskBytes": 1073741824,
+      "diskMib": 1
+    }
+  },
+  {
+    "name": "invalid host id00000000-0000-0000-0000-000000000000",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "invalid host idhost1",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "host1",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "invalid host revision0",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 0,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "invalid host revision9007199254740992",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 9007199254740992,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "invalid host hostOsbsd",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "bsd",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "invalid host host_oswindows",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "host_os": "windows"
+    }
+  },
+  {
+    "name": "invalid host secretfixture",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "secret": "fixture"
+    }
+  },
+  {
+    "name": "invalid timestamp 2016-12-31T23:59:60.000Z",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2016-12-31T23:59:60.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "invalid timestamp +10000-01-01T00:00:00.000Z",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "+10000-01-01T00:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "invalid timestamp 2026-02-30T00:00:00Z",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-02-30T00:00:00Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "invalid timestamp 2026-10-09T00:00:00+02:00",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T00:00:00+02:00",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "invalid timestamp 2026-10-09T00:00:00.000001Z",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T00:00:00.000001Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "invalid timestamp 1791544662185",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": 1791544662185,
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "valid timestamp 0000-01-01T00:00:00.000Z",
+    "schema": "host",
+    "valid": true,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "0000-01-01T00:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "valid timestamp 9999-12-31T23:59:59.999Z",
+    "schema": "host",
+    "valid": true,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "9999-12-31T23:59:59.999Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "valid timestamp 2026-10-09T00:00:00+00:00",
+    "schema": "host",
+    "valid": true,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T00:00:00+00:00",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "valid timestamp 2026-10-09T00:00:00.123000Z",
+    "schema": "host",
+    "valid": true,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T00:00:00.123000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "accepted",
+    "schema": "accepted",
+    "valid": true,
+    "body": {
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "status": "accepted",
+      "statusUrl": "/api/v1/operations/00000003-0000-4000-8000-000000000001"
+    }
+  },
+  {
+    "name": "foreign operation status URL",
+    "schema": "accepted",
+    "valid": false,
+    "body": {
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "status": "accepted",
+      "statusUrl": "/api/v1/operations/00000004-0000-4000-8000-000000000001"
+    }
+  },
+  {
+    "name": "absolute operation URL",
+    "schema": "accepted",
+    "valid": false,
+    "body": {
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "status": "accepted",
+      "statusUrl": "https://example.com/api/v1/operations/00000003-0000-4000-8000-000000000001"
+    }
+  },
+  {
+    "name": "malformed operation URL",
+    "schema": "accepted",
+    "valid": false,
+    "body": {
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "status": "accepted",
+      "statusUrl": "/api/v1/operations/garbage"
+    }
+  },
+  {
+    "name": "operation queued",
+    "schema": "status",
+    "valid": true,
+    "body": {
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "status": "queued",
+      "reason": null,
+      "updatedAt": "2026-10-09T12:00:00.000Z"
+    }
+  },
+  {
+    "name": "operation running",
+    "schema": "status",
+    "valid": true,
+    "body": {
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "status": "running",
+      "reason": null,
+      "updatedAt": "2026-10-09T12:00:00.000Z"
+    }
+  },
+  {
+    "name": "operation succeeded",
+    "schema": "status",
+    "valid": true,
+    "body": {
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "status": "succeeded",
+      "reason": null,
+      "updatedAt": "2026-10-09T12:00:00.000Z"
+    }
+  },
+  {
+    "name": "operation failed",
+    "schema": "status",
+    "valid": true,
+    "body": {
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "status": "failed",
+      "reason": null,
+      "updatedAt": "2026-10-09T12:00:00.000Z"
+    }
+  },
+  {
+    "name": "operation cancelled",
+    "schema": "status",
+    "valid": true,
+    "body": {
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "status": "cancelled",
+      "reason": null,
+      "updatedAt": "2026-10-09T12:00:00.000Z"
+    }
+  },
+  {
+    "name": "operation blocked",
+    "schema": "status",
+    "valid": true,
+    "body": {
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "status": "blocked",
+      "reason": null,
+      "updatedAt": "2026-10-09T12:00:00.000Z"
+    }
+  },
+  {
+    "name": "queued no placement",
+    "schema": "outcome",
+    "valid": true,
+    "body": {
+      "status": "queued",
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "workloadId": "00000004-0000-4000-8000-000000000001",
+      "placementId": null,
+      "explanation": {
+        "selected": null,
+        "rejections": [
+          {
+            "hostId": "00000001-0000-4000-8000-000000000001",
+            "backendId": "00000002-0000-4000-8000-000000000001",
+            "reason": "physical_budget"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "queued with placement",
+    "schema": "outcome",
+    "valid": false,
+    "body": {
+      "status": "queued",
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "workloadId": "00000004-0000-4000-8000-000000000001",
+      "placementId": "00000005-0000-4000-8000-000000000001",
+      "explanation": {
+        "selected": null,
+        "rejections": [
+          {
+            "hostId": "00000001-0000-4000-8000-000000000001",
+            "backendId": "00000002-0000-4000-8000-000000000001",
+            "reason": "physical_budget"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "queued with selected candidate",
+    "schema": "outcome",
+    "valid": false,
+    "body": {
+      "status": "queued",
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "workloadId": "00000004-0000-4000-8000-000000000001",
+      "placementId": null,
+      "explanation": {
+        "selected": {
+          "hostId": "00000001-0000-4000-8000-000000000001",
+          "backendId": "00000002-0000-4000-8000-000000000001"
+        },
+        "rejections": []
+      }
+    }
+  },
+  {
+    "name": "admitted selected backend",
+    "schema": "outcome",
+    "valid": true,
+    "body": {
+      "status": "admitted",
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "workloadId": "00000004-0000-4000-8000-000000000001",
+      "placementId": "00000005-0000-4000-8000-000000000001",
+      "explanation": {
+        "selected": {
+          "hostId": "00000001-0000-4000-8000-000000000001",
+          "backendId": "00000002-0000-4000-8000-000000000001"
+        },
+        "rejections": []
+      }
+    }
+  },
+  {
+    "name": "admitted missing selection",
+    "schema": "outcome",
+    "valid": false,
+    "body": {
+      "status": "admitted",
+      "operationId": "00000003-0000-4000-8000-000000000001",
+      "workloadId": "00000004-0000-4000-8000-000000000001",
+      "placementId": "00000005-0000-4000-8000-000000000001",
+      "explanation": {
+        "selected": null,
+        "rejections": []
+      }
+    }
+  },
+  {
+    "name": "host action pause",
+    "schema": "action",
+    "valid": true,
+    "body": {
+      "action": "pause",
+      "expectedRevision": 1
+    }
+  },
+  {
+    "name": "host action resume",
+    "schema": "action",
+    "valid": true,
+    "body": {
+      "action": "resume",
+      "expectedRevision": 1
+    }
+  },
+  {
+    "name": "host action drain",
+    "schema": "action",
+    "valid": true,
+    "body": {
+      "action": "drain",
+      "expectedRevision": 1
+    }
+  },
+  {
+    "name": "host action maintenance",
+    "schema": "action",
+    "valid": true,
+    "body": {
+      "action": "maintenance",
+      "expectedRevision": 1
+    }
+  },
+  {
+    "name": "host action retire",
+    "schema": "action",
+    "valid": true,
+    "body": {
+      "action": "retire",
+      "expectedRevision": 1
+    }
+  },
+  {
+    "name": "host action revoke",
+    "schema": "action",
+    "valid": true,
+    "body": {
+      "action": "revoke",
+      "expectedRevision": 1
+    }
+  },
+  {
+    "name": "unsafe action hostEpoch",
+    "schema": "action",
+    "valid": false,
+    "body": {
+      "action": "drain",
+      "expectedRevision": 1,
+      "hostEpoch": 2
+    }
+  },
+  {
+    "name": "unsafe action actor",
+    "schema": "action",
+    "valid": false,
+    "body": {
+      "action": "drain",
+      "expectedRevision": 1,
+      "actor": "admin"
+    }
+  },
+  {
+    "name": "unsafe action cancelBusy",
+    "schema": "action",
+    "valid": false,
+    "body": {
+      "action": "drain",
+      "expectedRevision": 1,
+      "cancelBusy": true
+    }
+  },
+  {
+    "name": "unsafe action expectedRevision",
+    "schema": "action",
+    "valid": false,
+    "body": {
+      "action": "drain",
+      "expectedRevision": 0
+    }
+  },
+  {
+    "name": "unsafe action action",
+    "schema": "action",
+    "valid": false,
+    "body": {
+      "action": "shell",
+      "expectedRevision": 1
+    }
+  },
+  {
+    "name": "submit legacy pool",
+    "schema": "submit",
+    "valid": true,
+    "body": {
+      "poolId": "legacy-pool",
+      "profileId": "00000006-0000-4000-8000-000000000001",
+      "targetId": "00000007-0000-4000-8000-000000000001",
+      "expectedRevision": 1
+    }
+  },
+  {
+    "name": "untrusted allocation override",
+    "schema": "submit",
+    "valid": false,
+    "body": {
+      "poolId": "legacy-pool",
+      "profileId": "00000006-0000-4000-8000-000000000001",
+      "targetId": "00000007-0000-4000-8000-000000000001",
+      "expectedRevision": 1,
+      "resources": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "stable event and separate cursor",
+    "schema": "event",
+    "valid": true,
+    "body": {
+      "id": "00000008-0000-4000-8000-000000000001",
+      "cursor": "v1.cGF5bG9hZA.c2lnbmF0dXJl",
+      "hostId": "00000001-0000-4000-8000-000000000001",
+      "placementId": null,
+      "kind": "host_changed",
+      "observedAt": "2026-10-09T12:00:00.000Z"
+    }
+  },
+  {
+    "name": "scoped host page",
+    "schema": "page",
+    "valid": true,
+    "body": {
+      "items": [
+        {
+          "id": "00000001-0000-4000-8000-000000000001",
+          "name": "ThinkPad",
+          "hostOs": "windows",
+          "architecture": "x64",
+          "enrollment": "approved",
+          "lifecycle": "active",
+          "integrity": "verified",
+          "freshness": "fresh",
+          "pressure": "normal",
+          "revision": 1,
+          "agentVersion": "0.1.0",
+          "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+          "backendCount": 2,
+          "runnerCount": 1,
+          "budget": {
+            "cpuMillis": 1000,
+            "memoryMib": 2048,
+            "diskBytes": 1073741824
+          },
+          "allocated": {
+            "cpuMillis": 1000,
+            "memoryMib": 2048,
+            "diskBytes": 1073741824
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "name": "revision conflict",
+    "schema": "error",
+    "valid": true,
+    "body": {
+      "code": "revision_conflict",
+      "message": "Revision changed",
+      "requestId": "00000009-0000-4000-8000-000000000001",
+      "details": {
+        "kind": "revision",
+        "currentRevision": 2
+      }
+    }
+  },
+  {
+    "name": "untyped error detail",
+    "schema": "error",
+    "valid": false,
+    "body": {
+      "code": "revision_conflict",
+      "message": "Revision changed",
+      "requestId": "00000009-0000-4000-8000-000000000001",
+      "details": {
+        "kind": "provider",
+        "token": "fixture"
+      }
+    }
+  },
+  {
+    "name": "bounded log projection",
+    "schema": "log",
+    "valid": true,
+    "body": {
+      "streamId": "00000001-0000-4000-8000-000000000001",
+      "placementId": "00000002-0000-4000-8000-000000000001",
+      "text": "line one\nline two",
+      "nextCursor": "v1.payload.signature",
+      "eof": false,
+      "droppedBytes": null
+    }
+  },
+  {
+    "name": "explicit dropped log bytes",
+    "schema": "log",
+    "valid": true,
+    "body": {
+      "streamId": "00000001-0000-4000-8000-000000000001",
+      "placementId": "00000002-0000-4000-8000-000000000001",
+      "text": "line one\nline two",
+      "nextCursor": "v1.payload.signature",
+      "eof": false,
+      "droppedBytes": 1024
+    }
+  },
+  {
+    "name": "empty log gap invalid",
+    "schema": "log",
+    "valid": false,
+    "body": {
+      "streamId": "00000001-0000-4000-8000-000000000001",
+      "placementId": "00000002-0000-4000-8000-000000000001",
+      "text": "line one\nline two",
+      "nextCursor": "v1.payload.signature",
+      "eof": false,
+      "droppedBytes": 0
+    }
+  },
+  {
+    "name": "expired log metadata",
+    "schema": "logMetadata",
+    "valid": true,
+    "body": {
+      "streamId": "00000001-0000-4000-8000-000000000001",
+      "placementId": "00000002-0000-4000-8000-000000000001",
+      "availability": "expired",
+      "startCursor": null
+    }
+  },
+  {
+    "name": "nested UUID wrappers invalid",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "urn:uuid:{10000000-0000-4000-8000-000000000001}",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "lowercase timezone is not canonical UTC input",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "UUID form 10000000000040008000000000000001",
+    "schema": "host",
+    "valid": true,
+    "body": {
+      "id": "10000000000040008000000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "UUID form {10000000-0000-4000-8000-000000000001}",
+    "schema": "host",
+    "valid": true,
+    "body": {
+      "id": "{10000000-0000-4000-8000-000000000001}",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "UUID form urn:uuid:10000000-0000-4000-8000-000000000001",
+    "schema": "host",
+    "valid": true,
+    "body": {
+      "id": "urn:uuid:10000000-0000-4000-8000-000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "UUID form {10000000000040008000000000000001}",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "{10000000000040008000000000000001}",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "UUID form urn:uuid:10000000000040008000000000000001",
+    "schema": "host",
+    "valid": false,
+    "body": {
+      "id": "urn:uuid:10000000000040008000000000000001",
+      "name": "ThinkPad",
+      "hostOs": "windows",
+      "architecture": "x64",
+      "enrollment": "approved",
+      "lifecycle": "active",
+      "integrity": "verified",
+      "freshness": "fresh",
+      "pressure": "normal",
+      "revision": 1,
+      "agentVersion": "0.1.0",
+      "lastHeartbeatAt": "2026-10-09T12:00:00.000Z",
+      "backendCount": 2,
+      "runnerCount": 1,
+      "budget": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      },
+      "allocated": {
+        "cpuMillis": 1000,
+        "memoryMib": 2048,
+        "diskBytes": 1073741824
+      }
+    }
+  },
+  {
+    "name": "inaccessible resource uses safe not-found error",
+    "schema": "error",
+    "valid": true,
+    "body": {
+      "code": "not_found",
+      "message": "Fleet resource was not found",
+      "requestId": "00000001-0000-4000-8000-000000000001",
+      "details": null
+    }
+  }
+]

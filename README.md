@@ -70,6 +70,8 @@ docker compose up --build -d
 
 Open `http://localhost:3000`. For a different public origin, set `GRIDOPS_BASE_URL` and configure the same URL in the GitHub App.
 
+Fleet enrollment requires HTTPS at that origin. Local development can explicitly enable `GRIDOPS_FLEET_ALLOW_LOOPBACK_HTTP=true` (included in `.env.example`); this permits only `localhost` or a literal loopback address. Set it to `false` for remote deployments. The base URL cannot include credentials, a query, or a fragment.
+
 The published API/UI port binds to `127.0.0.1` by default. Set `GRIDOPS_BIND_ADDRESS` explicitly only when direct host exposure is intended; reverse-proxy deployments should attach `api` to an ingress network instead.
 
 For local credentials already stored in `.env.local`:
