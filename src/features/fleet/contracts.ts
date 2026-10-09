@@ -37,6 +37,8 @@ const operationUrl = z.string().startsWith("/api/v1/operations/").superRefine((v
   }
 }).transform((value) => `/api/v1/operations/${uuid.parse(value.slice("/api/v1/operations/".length))}`);
 
+export { uuid as fleetIdSchema, timestamp as fleetTimestampSchema, counter as fleetCounterSchema };
+
 export const rejectionReasonSchema = z.enum([
   "forbidden", "revoked_grant", "native_trust_required", "docker_socket_trust_required",
   "incompatible_runtime", "incompatible_os", "incompatible_architecture", "unsupported_mode",
@@ -108,7 +110,7 @@ const errorDetails = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("readiness"), reason: rejectionReasonSchema }),
 ]);
 export const fleetErrorSchema = z.strictObject({
-  code: z.enum(["invalid_request", "unauthenticated", "forbidden", "revision_conflict", "idempotency_conflict", "enrollment_expired", "grant_expired", "cursor_expired", "cursor_gap", "payload_too_large", "rate_limited", "dependency_unavailable", "not_ready", "contract_range"]),
+  code: z.enum(["invalid_request", "unauthenticated", "forbidden", "not_found", "revision_conflict", "idempotency_conflict", "enrollment_expired", "grant_expired", "cursor_expired", "cursor_gap", "payload_too_large", "rate_limited", "dependency_unavailable", "not_ready", "contract_range"]),
   message: text, requestId: uuid, details: errorDetails.nullish(),
 });
 export function pageSchema<T extends z.ZodType>(item: T) {

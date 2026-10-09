@@ -1411,5 +1411,16 @@
         "diskBytes": 1073741824
       }
     }
+  },
+  {
+    "name": "inaccessible resource uses safe not-found error",
+    "schema": "error",
+    "valid": true,
+    "body": {
+      "code": "not_found",
+      "message": "Fleet resource was not found",
+      "requestId": "00000001-0000-4000-8000-000000000001",
+      "details": null
+    }
   }
 ]

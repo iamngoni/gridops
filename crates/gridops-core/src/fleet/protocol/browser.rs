@@ -398,6 +398,7 @@ pub enum ErrorCode {
     InvalidRequest,
     Unauthenticated,
     Forbidden,
+    NotFound,
     RevisionConflict,
     IdempotencyConflict,
     EnrollmentExpired,
@@ -442,6 +443,7 @@ impl ErrorCode {
             Self::InvalidRequest | Self::ContractRange => 400,
             Self::Unauthenticated => 401,
             Self::Forbidden => 403,
+            Self::NotFound => 404,
             Self::RevisionConflict | Self::IdempotencyConflict => 409,
             Self::EnrollmentExpired
             | Self::GrantExpired

@@ -209,7 +209,7 @@ mod tests {
         .fetch_one(&pool)
         .await?
         .get::<i64, _>("count");
-        assert_eq!(tables, 54);
+        assert_eq!(tables, 60);
         assert!(table_exists(&pool, "fleet_hosts").await?);
         assert!(table_exists(&pool, "fleet_operations").await?);
         assert!(table_exists(&pool, "capacity_allocations").await?);

@@ -87,6 +87,7 @@ fn server_factories_and_error_mapping_preserve_browser_contracts() -> anyhow::Re
         (ErrorCode::ContractRange, 400),
         (ErrorCode::Unauthenticated, 401),
         (ErrorCode::Forbidden, 403),
+        (ErrorCode::NotFound, 404),
         (ErrorCode::RevisionConflict, 409),
         (ErrorCode::IdempotencyConflict, 409),
         (ErrorCode::EnrollmentExpired, 410),

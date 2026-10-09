@@ -6,6 +6,7 @@ pub mod agent;
 pub mod browser;
 pub mod chunks;
 pub mod events;
+pub mod inventory;
 pub mod limits;
 pub mod outcomes;
 pub mod primitives;
