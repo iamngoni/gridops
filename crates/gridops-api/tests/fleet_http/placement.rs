@@ -1379,6 +1379,18 @@ async fn placement_prefers_the_least_needed_machine_then_the_roomiest() -> Resul
     .await?;
     shared.profile_id.clone_from(&docker);
     dedicated.profile_id = docker;
+    // The dedicated machine takes two runners. Default budgets follow the
+    // test host's CPU count, which on a 2-CPU runner fits only one, so an
+    // administrator gives both machines the same budget for more.
+    for host in [&shared.host, &dedicated.host] {
+        sqlx::query(
+            "UPDATE host_resource_domains SET cpu_millis=4000,revision=revision+1
+              WHERE host_id=? AND parent_domain_id IS NULL",
+        )
+        .bind(host.to_string())
+        .execute(&f.database)
+        .await?;
+    }
     // The shared machine can also run the pool's native platform.
     sqlx::query(
         "INSERT INTO host_backends (id,host_id,domain_id,runtime_kind,execution_os,architecture,readiness,enabled,created_at,updated_at)
