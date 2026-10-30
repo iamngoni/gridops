@@ -730,6 +730,32 @@ async fn admitted_runner_is_prepared_started_streamed_and_cleaned_on_its_host() 
 }
 
 #[tokio::test]
+async fn saving_a_fleet_profile_is_recorded_in_the_audit_trail() -> Result<()> {
+    let f = Fixture::new().await?;
+    seed_pool(&f).await?;
+    let linux = json!({"runtimeKind": "docker", "executionOs": "linux", "architecture": "arm64"});
+    let response = f
+        .client
+        .put(f.url("/pools/fleet-pool/profile"))
+        .header(header::COOKIE, &f.cookie)
+        .header(header::ORIGIN, &f.origin)
+        .json(&json!({
+            "enabled": true, "mode": "ephemeral", "cpuMillis": 1000, "memoryMib": 1024,
+            "diskBytes": 0, "platforms": [linux],
+        }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events WHERE action='fleet.pool.profile_saved' AND target_id='fleet-pool'",
+    )
+    .fetch_one(&f.database)
+    .await?;
+    assert_eq!(count, 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn pool_runs_on_several_platforms_and_keeps_unchanged_ones() -> Result<()> {
     let f = Fixture::new().await?;
     seed_pool(&f).await?;

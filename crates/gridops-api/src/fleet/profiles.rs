@@ -95,7 +95,51 @@ pub(super) async fn save_profile(
     let item = targets::save_pool_fleet(&state.database, &path.pool_id, &body)
         .await
         .map_err(|error| fleet_error(context, &error))?;
+    record_profile_saved(&state, context, user.principal(), &path.pool_id, &body).await?;
     Ok(Json(ProfileResponse { item: Some(item) }))
+}
+
+/// Every other admin change to pool/runner/installation state is logged in
+/// `audit_events` (pool settings, host enrollment/approval, GitHub app events);
+/// a fleet execution profile save is exactly the kind of change you'd most
+/// want in that trail, so it must be too.
+async fn record_profile_saved(
+    state: &AppState,
+    context: RequestContext,
+    principal: &Principal,
+    pool_id: &str,
+    body: &FleetSettingsInput,
+) -> Result<(), FleetApiError> {
+    let Principal::AuthenticatedUser { user_id } = principal else {
+        return Ok(());
+    };
+    let login: Option<String> = sqlx::query_scalar("SELECT login FROM users WHERE id=?")
+        .bind(user_id)
+        .fetch_optional(&state.database)
+        .await
+        .map_err(|_| context.error(ErrorCode::DependencyUnavailable))?;
+    sqlx::query(
+        r#"INSERT INTO audit_events (id,actor_user_id,actor_label,action,target_type,target_id,metadata,created_at)
+           VALUES (?,?,?,'fleet.pool.profile_saved','runner_pool',?,?,?)"#,
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(user_id)
+    .bind(login.unwrap_or_else(|| user_id.clone()))
+    .bind(pool_id)
+    .bind(
+        serde_json::json!({
+            "enabled": body.enabled,
+            "placement": body.placement,
+            "mode": body.mode,
+            "platformCount": body.platforms.len(),
+        })
+        .to_string(),
+    )
+    .bind(gridops_core::now_millis())
+    .execute(&state.database)
+    .await
+    .map_err(|_| context.error(ErrorCode::DependencyUnavailable))?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
