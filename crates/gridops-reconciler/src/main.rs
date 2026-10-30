@@ -929,6 +929,9 @@ async fn maybe_sync_github(app: &Reconciler) -> Result<()> {
     .bind(now)
     .execute(&app.database)
     .await?;
+    if let Err(error) = sync_organization_pool_repositories(app).await {
+        tracing::warn!(error = ?error, "organization repository discovery failed");
+    }
     let repositories = sqlx::query_as::<_, Repository>(
         r#"SELECT repo.id,repo.installation_id,repo.owner,repo.name,repo.full_name
            FROM repositories repo JOIN installations i ON i.id=repo.installation_id
@@ -936,7 +939,9 @@ async fn maybe_sync_github(app: &Reconciler) -> Result<()> {
              AND (EXISTS (SELECT 1 FROM runner_pool_repositories membership
                     WHERE membership.repository_id=repo.id)
                OR EXISTS (SELECT 1 FROM runner_pools p WHERE p.repository_id=repo.id)
-               OR EXISTS (SELECT 1 FROM workflow_runs wr WHERE wr.repository_id=repo.id))
+               OR EXISTS (SELECT 1 FROM workflow_runs wr WHERE wr.repository_id=repo.id)
+               OR EXISTS (SELECT 1 FROM runner_pools op WHERE op.scope='organization'
+                    AND op.installation_id=repo.installation_id AND op.state!='deleted'))
            ORDER BY repo.id"#,
     )
     .fetch_all(&app.database)
@@ -956,6 +961,97 @@ async fn maybe_sync_github(app: &Reconciler) -> Result<()> {
         if let Err(error) = sync_repository_workflows(app, &repository, &token).await {
             tracing::warn!(repository = %repository.full_name, error = ?error, "GitHub workflow polling failed for repository");
         }
+    }
+    Ok(())
+}
+
+/// Populates `repositories` for an organization-scoped pool's installation.
+///
+/// An organization-scoped pool never selects individual repositories, so nothing calls the
+/// API-driven repository sync for the repos it covers. Under webhook delivery this self-heals:
+/// every `workflow_run`/`workflow_job` webhook carries the full repository object, and the first
+/// one for any new repo creates its `repositories` row (see `upsert_repository_from_webhook` in
+/// `gridops-api`). Under polling there is no such event, ever, so without this, a `repositories`
+/// row for a repo under this installation would never exist in the first place — and even once
+/// it does (this function), it still needs the 4th `OR` branch added to the candidate query below
+/// (an organization-scoped pool match by installation) to actually become a polling candidate;
+/// the first three branches all assume either explicit repo selection or a repo that's already
+/// been polled once, neither of which is true for a brand new repo under an organization scope.
+async fn sync_organization_pool_repositories(app: &Reconciler) -> Result<()> {
+    if app.config.webhook_delivery_active() {
+        return Ok(());
+    }
+    let installation_ids: Vec<i64> = sqlx::query_scalar(
+        r#"SELECT DISTINCT p.installation_id FROM runner_pools p
+           JOIN installations i ON i.id=p.installation_id
+           WHERE p.scope='organization' AND p.state!='deleted' AND i.suspended_at IS NULL"#,
+    )
+    .fetch_all(&app.database)
+    .await?;
+    for installation_id in installation_ids {
+        let Some(token) = installation_token(app, installation_id).await? else {
+            continue;
+        };
+        if let Err(error) = sync_installation_repositories(app, installation_id, &token).await {
+            tracing::warn!(installation_id, error = ?error, "organization repository discovery failed for installation");
+        }
+    }
+    Ok(())
+}
+
+async fn sync_installation_repositories(
+    app: &Reconciler,
+    installation_id: i64,
+    token: &str,
+) -> Result<()> {
+    let first_page: gridops_core::github::RepositoryPage = app
+        .github
+        .get("/installation/repositories?per_page=100&page=1", token)
+        .await?;
+    let expected_total = first_page.total_count;
+    let mut repositories = first_page.repositories;
+    let last_page = expected_total.saturating_add(99).div_euclid(100).clamp(1, 100);
+    for page in 2..=last_page {
+        let page_data: gridops_core::github::RepositoryPage = app
+            .github
+            .get(
+                &format!("/installation/repositories?per_page=100&page={page}"),
+                token,
+            )
+            .await?;
+        repositories.extend(page_data.repositories);
+    }
+    let now = now_millis();
+    for repository in repositories {
+        let (owner, name) = repository
+            .full_name
+            .split_once('/')
+            .unwrap_or(("unknown", &repository.full_name));
+        sqlx::query(
+            r#"INSERT INTO repositories (
+              id,installation_id,owner,name,full_name,private,archived,default_branch,
+              html_url,last_synced_at,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET installation_id=excluded.installation_id,
+              owner=excluded.owner,name=excluded.name,full_name=excluded.full_name,
+              private=excluded.private,archived=excluded.archived,default_branch=excluded.default_branch,
+              html_url=excluded.html_url,
+              last_synced_at=excluded.last_synced_at,updated_at=excluded.updated_at"#,
+        )
+        .bind(repository.id)
+        .bind(installation_id)
+        .bind(owner)
+        .bind(name)
+        .bind(&repository.full_name)
+        .bind(repository.private)
+        .bind(repository.archived)
+        .bind(&repository.default_branch)
+        .bind(&repository.html_url)
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(&app.database)
+        .await?;
     }
     Ok(())
 }
